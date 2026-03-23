@@ -24,6 +24,8 @@ interface ChartPoint {
 export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartProps) {
   const [hoveredEmail, setHoveredEmail] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const chartHeight = 400;
+  const chartMargin = { top: 45, right: 45, bottom: 20, left: 20 };
 
   if (metrics.length === 0) {
     return (
@@ -84,14 +86,14 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     ? Math.max(...allPoints.map((point) => point.x))
     : 1;
   const xPadding = Math.max(0.5, maxBubbleRadius / 90);
-  const xDomainMin = Math.max(0, minDays - xPadding);
-  const xDomainMax = Math.max(xDomainMin + 1, maxDays + xPadding);
+  const xDomainMin = Math.max(0, Math.floor(minDays - xPadding));
+  const xDomainMax = Math.max(xDomainMin + 1, Math.ceil(maxDays + xPadding));
 
   const maxGhost = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.y))
     : 100;
-  const yPadding = Math.max(80, Math.ceil(maxBubbleRadius * 2.2));
-  const yDomainMax = Math.max(120, maxGhost + yPadding);
+  const yPadding = Math.max(120, Math.ceil(maxBubbleRadius * 3.2));
+  const yDomainMax = Math.max(120, Math.ceil((maxGhost + yPadding) / 50) * 50);
 
   const makeBubbleRenderer = (opts: {
     baseOpacity: number;
@@ -104,9 +106,21 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     if (cx == null || cy == null) return <circle r={0} />;
     const isHovered = hoveredEmail === payload.email;
     const isDimmed = hoveredEmail != null && !isHovered;
-    const radius = isHovered ? payload.r * 2 : payload.r;
     const opacity = isDimmed ? opts.dimOpacity : opts.baseOpacity;
     const chartWidth = containerRef.current?.clientWidth ?? 800;
+    const plotWidth = chartWidth - chartMargin.left - chartMargin.right;
+    const plotHeight = chartHeight - chartMargin.top - chartMargin.bottom;
+    const baseRadius = payload.r;
+    const desiredHoverRadius = payload.r * 2;
+    const maxRadiusInsidePlot = Math.min(
+      cx - chartMargin.left,
+      chartMargin.left + plotWidth - cx,
+      cy - chartMargin.top,
+      chartMargin.top + plotHeight - cy,
+    ) - 1;
+    const radius = isHovered
+      ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadiusInsidePlot))
+      : baseRadius;
     const labelLeft = cx > chartWidth * 0.6;
     return (
       <g>
@@ -157,8 +171,8 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
 
   return (
     <div ref={containerRef}>
-      <ResponsiveContainer width="100%" height={400} style={{ overflow: 'visible' }}>
-        <ScatterChart margin={{ top: 45, right: 45, bottom: 20, left: 20 }}>
+      <ResponsiveContainer width="100%" height={chartHeight} style={{ overflow: 'visible' }}>
+        <ScatterChart margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="x"
@@ -166,6 +180,9 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             type="number"
             domain={[xDomainMin, xDomainMax]}
             allowDataOverflow
+            allowDecimals={false}
+            tickFormatter={(value: number) => `${Math.round(value)}`}
+            label={{ value: 'Work Days', position: 'insideBottom', offset: -6 }}
           />
           <YAxis
             dataKey="y"
@@ -173,6 +190,9 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             type="number"
             domain={[0, yDomainMax]}
             allowDataOverflow
+            allowDecimals={false}
+            tickFormatter={(value: number) => `${Math.round(value)}`}
+            label={{ value: 'Ghost %', angle: -90, position: 'insideLeft' }}
           />
           <ReferenceLine y={100} stroke="#666" strokeDasharray="5 5" label="Ghost Norm" />
           <ReferenceLine y={80} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
