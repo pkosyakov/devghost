@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/db';
 import { apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { getPipelineLogs, getJobMeta } from '@/lib/services/pipeline-log-store';
@@ -90,23 +91,25 @@ export async function GET(
   const isLive = isLiveStatus;
 
   // Diagnostics events stream (DB-backed, works in modal and local)
-  const events = await prisma.analysisJobEvent.findMany(
-    sinceEventId !== undefined
-      ? {
-          where: {
+  const eventsQuery: Prisma.AnalysisJobEventFindManyArgs = {
+    where:
+      sinceEventId !== undefined
+        ? {
             jobId: job.id,
             id: { gt: sinceEventId },
+          }
+        : {
+            jobId: job.id,
           },
-          orderBy: { id: 'asc' },
-          take: 500,
-        }
-      : {
-          where: { jobId: job.id },
-          // Initial request returns full history (chronological),
-          // so the page can reconstruct complete diagnostics timeline.
-          orderBy: { id: 'asc' },
-        },
-  );
+    // Initial request returns full history (chronological),
+    // so the page can reconstruct complete diagnostics timeline.
+    orderBy: { id: 'asc' },
+  };
+  if (sinceEventId !== undefined) {
+    eventsQuery.take = 500;
+  }
+
+  const events = await prisma.analysisJobEvent.findMany(eventsQuery);
 
   const eventCursor =
     events.length > 0
