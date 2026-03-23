@@ -13,6 +13,7 @@ const mockDailyEffortDeleteMany = vi.fn();
 const mockCommitAnalysisCount = vi.fn();
 const mockExecuteRaw = vi.fn();
 const mockQueryRaw = vi.fn();
+const mockTransaction = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   default: {
@@ -30,6 +31,7 @@ vi.mock('@/lib/db', () => ({
     commitAnalysis: { count: (...a: unknown[]) => mockCommitAnalysisCount(...a) },
     $executeRaw: (...a: unknown[]) => mockExecuteRaw(...a),
     $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
+    $transaction: (...a: unknown[]) => mockTransaction(...a),
   },
 }));
 
@@ -88,6 +90,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockJobFindMany.mockResolvedValue([]);
     mockExecuteRaw.mockResolvedValue(0);
     mockQueryRaw.mockResolvedValue([]);
+    mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
   });
 
   // ── Auth ──
@@ -257,8 +260,9 @@ describe('GET /api/cron/analysis-watchdog', () => {
 
     // Atomic claim returns the job id
     mockQueryRaw
+      .mockResolvedValueOnce([])                 // reconciliation query
       .mockResolvedValueOnce([{ id: 'job-4' }])  // first claim
-      .mockResolvedValueOnce([]);                  // no more
+      .mockResolvedValueOnce([]);                // no more
 
     mockJobFindUnique.mockResolvedValue(llmCompleteJob);
     mockCommitAnalysisCount.mockResolvedValue(10);
@@ -318,8 +322,9 @@ describe('GET /api/cron/analysis-watchdog', () => {
     };
 
     mockQueryRaw
-      .mockResolvedValueOnce([{ id: 'job-5' }])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce([])                 // reconciliation query
+      .mockResolvedValueOnce([{ id: 'job-5' }])  // first claim
+      .mockResolvedValueOnce([]);                // no more
 
     mockJobFindUnique.mockResolvedValue(partialJob);
     mockCommitAnalysisCount.mockResolvedValue(10); // 10 total processed

@@ -829,6 +829,8 @@
       "provider": "Provider",
       "demoLiveMode": "Demo live mode",
       "demoLiveModeHint": "For admin pages, poll analysis status much more frequently for near real-time updates during demos.",
+      "demoLiveChunkSize": "Live chunk size",
+      "demoLiveChunkSizeHint": "How many commits to process per LLM chunk in demo live mode (1-200).",
       "ollamaUrl": "Ollama URL",
       "model": "Model",
       "apiKey": "API Key",

@@ -35,6 +35,7 @@ interface LlmSettings {
   openrouterInputPrice?: number;
   openrouterOutputPrice?: number;
   demoLiveMode: boolean;
+  demoLiveChunkSize: number;
 }
 
 interface OpenRouterModel {
@@ -79,6 +80,7 @@ export default function AdminSettingsPage() {
     openrouterInputPrice: 0.03,
     openrouterOutputPrice: 0.11,
     demoLiveMode: false,
+    demoLiveChunkSize: 10,
   });
   const [llmLoading, setLlmLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
@@ -142,7 +144,11 @@ export default function AdminSettingsPage() {
         if (response.ok) {
           const result = await response.json();
           if (result.success && result.data) {
-            setLlmSettings(result.data);
+            setLlmSettings((prev) => ({
+              ...prev,
+              ...result.data,
+              demoLiveChunkSize: result.data.demoLiveChunkSize ?? prev.demoLiveChunkSize,
+            }));
           }
         }
       } catch {
@@ -301,20 +307,45 @@ export default function AdminSettingsPage() {
                 </Select>
               </div>
 
-              <div className="flex items-start justify-between gap-4 rounded-md border p-3">
-                <div className="space-y-1">
-                  <Label htmlFor="demo-live-mode">{t('demoLiveMode')}</Label>
+              <div className="space-y-3 rounded-md border p-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="demo-live-mode">{t('demoLiveMode')}</Label>
+                    <p className="text-xs text-muted-foreground">
+                      {t('demoLiveModeHint')}
+                    </p>
+                  </div>
+                  <Switch
+                    id="demo-live-mode"
+                    checked={llmSettings.demoLiveMode}
+                    onCheckedChange={(checked) =>
+                      setLlmSettings((prev) => ({ ...prev, demoLiveMode: checked }))
+                    }
+                  />
+                </div>
+                <div className="max-w-56 space-y-1">
+                  <Label htmlFor="demo-live-chunk-size">{t('demoLiveChunkSize')}</Label>
+                  <Input
+                    id="demo-live-chunk-size"
+                    type="number"
+                    min={1}
+                    max={200}
+                    step={1}
+                    disabled={!llmSettings.demoLiveMode}
+                    value={llmSettings.demoLiveChunkSize}
+                    onChange={(e) => {
+                      const parsed = Number.parseInt(e.target.value, 10);
+                      if (Number.isNaN(parsed)) return;
+                      setLlmSettings((prev) => ({
+                        ...prev,
+                        demoLiveChunkSize: Math.max(1, Math.min(200, parsed)),
+                      }));
+                    }}
+                  />
                   <p className="text-xs text-muted-foreground">
-                    {t('demoLiveModeHint')}
+                    {t('demoLiveChunkSizeHint')}
                   </p>
                 </div>
-                <Switch
-                  id="demo-live-mode"
-                  checked={llmSettings.demoLiveMode}
-                  onCheckedChange={(checked) =>
-                    setLlmSettings((prev) => ({ ...prev, demoLiveMode: checked }))
-                  }
-                />
               </div>
 
               {llmSettings.llmProvider === 'ollama' && (

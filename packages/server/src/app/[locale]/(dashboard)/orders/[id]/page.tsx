@@ -408,7 +408,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       }
       return data;
     },
-    enabled: order?.status === 'PROCESSING' || order?.status === 'COMPLETED',
+    enabled:
+      (order?.status === 'PROCESSING' || order?.status === 'COMPLETED') &&
+      !(analysisStarted && order?.status !== 'PROCESSING'),
     refetchInterval: order?.status === 'PROCESSING' ? livePollMs : false,
   });
 
@@ -426,6 +428,16 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     staleTime: 30_000,
   });
 
+  const prepareAnalysisLaunch = useCallback(() => {
+    setAnalysisStarted(true);
+    setAnalysisJobId(null);
+    setPipelineLog([]);
+    logSinceRef.current = 0;
+    setJobEvents([]);
+    eventCursorRef.current = null;
+    queryClient.removeQueries({ queryKey: ['progress', id] });
+  }, [id, queryClient]);
+
   const analyzeMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch(`/api/orders/${id}/analyze`, { method: 'POST' });
@@ -435,17 +447,16 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       }
       return res.json();
     },
+    onMutate: () => {
+      prepareAnalysisLaunch();
+    },
     onSuccess: (data) => {
-      setAnalysisStarted(true);
       setAnalysisJobId(data.data?.jobId ?? null);
-      setPipelineLog([]);
-      logSinceRef.current = 0;
-      setJobEvents([]);
-      eventCursorRef.current = null;
-      // Remove stale progress cache from previous run, then invalidate
-      queryClient.removeQueries({ queryKey: ['progress', id] });
       queryClient.invalidateQueries({ queryKey: ['order', id] });
       queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+    },
+    onError: () => {
+      setAnalysisStarted(false);
     },
   });
 
@@ -468,17 +479,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       }
       return res.json();
     },
+    onMutate: () => {
+      prepareAnalysisLaunch();
+    },
     onSuccess: (data) => {
       setShowEditScope(false);
-      setAnalysisStarted(true);
       setAnalysisJobId(data.data?.jobId ?? null);
-      setPipelineLog([]);
-      logSinceRef.current = 0;
-      setJobEvents([]);
-      eventCursorRef.current = null;
-      queryClient.removeQueries({ queryKey: ['progress', id] });
       queryClient.invalidateQueries({ queryKey: ['order', id] });
       queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+    },
+    onError: () => {
+      setAnalysisStarted(false);
     },
   });
 
@@ -1120,6 +1131,21 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             </div>
           )}
 
+          {/* Bottom duplicated primary action for long developer lists */}
+          <div className="flex justify-end pt-2">
+            <Button
+              onClick={handleSaveMapping}
+              disabled={saving}
+            >
+              {saving ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              {t('detail.saveContinue')}
+            </Button>
+          </div>
+
           {/* Error message */}
           {extractError && (
             <p className="text-sm text-red-600 text-center">{extractError}</p>
@@ -1130,7 +1156,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* READY_FOR_ANALYSIS — Summary and Start                           */}
       {/* ================================================================ */}
-      {order.status === 'READY_FOR_ANALYSIS' && (
+      {order.status === 'READY_FOR_ANALYSIS' && !analysisStarted && (
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-3 mb-4">
@@ -1257,7 +1283,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* INSUFFICIENT_CREDITS — Paused, needs top-up                      */}
       {/* ================================================================ */}
-      {order.status === 'INSUFFICIENT_CREDITS' && (
+      {order.status === 'INSUFFICIENT_CREDITS' && !analysisStarted && (
         <Card className="border-amber-200">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-amber-700 mb-3">
@@ -1316,8 +1342,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* PROCESSING — Progress                                            */}
       {/* ================================================================ */}
-      {order.status === 'PROCESSING' && (() => {
-        const startedAt = progress?.startedAt ? new Date(progress.startedAt) : null;
+      {(order.status === 'PROCESSING' || analysisStarted) && (() => {
+        const isLaunchingTransition = analysisStarted && order.status !== 'PROCESSING';
+        const startedAt = !isLaunchingTransition && progress?.startedAt ? new Date(progress.startedAt) : null;
         const elapsed = startedAt ? now - startedAt.getTime() : 0;
         return (
           <Card>
@@ -1345,11 +1372,14 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              <Progress value={progress?.progress ?? 0} />
+              <Progress value={isLaunchingTransition ? 2 : (progress?.progress ?? 0)} />
               <div className="flex justify-between text-sm text-muted-foreground">
-                <span>{progress?.currentStep ?? t('detail.preparing')}</span>
+                <span>{isLaunchingTransition ? t('detail.preparing') : (progress?.currentStep ?? t('detail.preparing'))}</span>
                 <span>
-                  {t('detail.commitsProgress', { current: progress?.currentCommit ?? 0, total: progress?.totalCommits ?? '?' })}
+                  {t('detail.commitsProgress', {
+                    current: isLaunchingTransition ? 0 : (progress?.currentCommit ?? 0),
+                    total: isLaunchingTransition ? '?' : (progress?.totalCommits ?? '?'),
+                  })}
                 </span>
               </div>
 
@@ -1370,12 +1400,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {t('detail.repositorySize', { size: formatSizeFromMb(repoSizeMb) })}
                   </span>
                 )}
-                {cloneSizeMb != null && cloneSizeMb > 0 && (
+                {!isLaunchingTransition && cloneSizeMb != null && cloneSizeMb > 0 && (
                   <span>
                     {t('detail.clone', { size: formatSizeFromMb(cloneSizeMb) })}
                   </span>
                 )}
-                {cloneSavedMb != null && cloneSavedPercent != null && (
+                {!isLaunchingTransition && cloneSavedMb != null && cloneSavedPercent != null && (
                   <span className="text-emerald-700">
                     {t('detail.cloneSaved', {
                       size: formatSizeFromMb(cloneSavedMb),
@@ -1383,7 +1413,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     })}
                   </span>
                 )}
-                {progress?.llmProvider && (
+                {!isLaunchingTransition && progress?.llmProvider && (
                   <span className="border-l pl-4 ml-2">
                     {progress.llmProvider === 'openrouter' ? 'OpenRouter' : 'Ollama'}
                     {progress.llmModel && (
@@ -1399,7 +1429,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               </div>
 
               {/* Runtime diagnostics */}
-              {progress && (
+              {!isLaunchingTransition && progress && (
                 <div className="rounded-md border bg-muted/30 p-3 space-y-2">
                   <div className="text-xs font-medium">{t('detail.progressDiagnosticsTitle')}</div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
@@ -1511,7 +1541,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* FAILED — Error and Retry                                         */}
       {/* ================================================================ */}
-      {order.status === 'FAILED' && (
+      {order.status === 'FAILED' && !analysisStarted && (
         <Card className="border-red-200">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-red-600 mb-2">
@@ -1534,7 +1564,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* COMPLETED — Full dashboard                                       */}
       {/* ================================================================ */}
-      {order.status === 'COMPLETED' && (
+      {order.status === 'COMPLETED' && !analysisStarted && (
         <>
           <div className="flex items-center justify-between">
             {progress?.totalCostUsd != null && progress.totalCostUsd > 0 ? (
@@ -1690,8 +1720,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             </Card>
           )}
 
-          {/* Collapsible pipeline log */}
-          {pipelineLog.length > 0 && (
+          {/* Collapsible runtime log (events + pipeline log) */}
+          {(jobEvents.length > 0 || pipelineLog.length > 0) && (
             <div>
               <Button
                 variant="ghost"
@@ -1700,7 +1730,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 onClick={() => setShowCompletedLog(!showCompletedLog)}
               >
                 <Terminal className="h-4 w-4 mr-1" />
-                {t('detail.pipelineLog', { count: pipelineLog.length })}
+                {t('detail.pipelineLog', { count: pipelineLog.length + jobEvents.length })}
                 {showCompletedLog ? (
                   <ChevronUp className="h-4 w-4 ml-1" />
                 ) : (
@@ -1708,7 +1738,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 )}
               </Button>
               {showCompletedLog && (
-                <PipelineLog entries={pipelineLog} />
+                <div className="space-y-3">
+                  {jobEvents.length > 0 && (
+                    <AnalysisEventLog
+                      entries={jobEvents}
+                      title={t('detail.liveEventsTitle')}
+                      copyLabel={t('detail.copyEvents')}
+                      copiedLabel={t('detail.copiedEvents')}
+                    />
+                  )}
+                  {pipelineLog.length > 0 && <PipelineLog entries={pipelineLog} />}
+                </div>
               )}
             </div>
           )}

@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import modal
+import requests
 
 app = modal.App("devghost-worker")
 
@@ -50,7 +51,7 @@ if MODAL_SRC_DIR not in sys.path:
 
 from db import (
     connect_db, acquire_job, load_order, load_github_token,
-    load_demo_live_mode,
+    load_demo_live_settings,
     get_existing_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
     set_job_status, set_job_error, increment_total_commits,
@@ -79,11 +80,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
-DEMO_LIVE_CHUNK_SIZE = _env_positive_int("DEMO_LIVE_CHUNK_SIZE", 10)
+DEMO_LIVE_CHUNK_SIZE_ENV_FALLBACK = _env_positive_int("DEMO_LIVE_CHUNK_SIZE", 10)
 LAST_N_SHALLOW_INITIAL_DAYS = _env_positive_int("LAST_N_SHALLOW_INITIAL_DAYS", 30)
 LAST_N_SHALLOW_MAX_DAYS = _env_positive_int("LAST_N_SHALLOW_MAX_DAYS", 3650)
 LAST_N_SHALLOW_GROWTH_FACTOR = max(2, _env_positive_int("LAST_N_SHALLOW_GROWTH_FACTOR", 2))
 REPO_VOLUME_CHECKPOINTS = _env_bool("REPO_VOLUME_CHECKPOINTS", True)
+WATCHDOG_TRIGGER_URL = (os.environ.get("WATCHDOG_TRIGGER_URL") or "").strip()
+WATCHDOG_TRIGGER_TOKEN = (os.environ.get("WATCHDOG_TRIGGER_TOKEN") or "").strip()
+WATCHDOG_TRIGGER_TIMEOUT_SEC = _env_positive_int("WATCHDOG_TRIGGER_TIMEOUT_SEC", 8)
 
 
 class HeartbeatThread(threading.Thread):
@@ -148,7 +152,7 @@ class HeartbeatThread(threading.Thread):
     secrets=[
         modal.Secret.from_name("devghost-db"),    # DIRECT_URL
         modal.Secret.from_name("devghost-llm"),   # OPENROUTER_API_KEY, LLM_PROVIDER, etc.
-        modal.Secret.from_name("devghost-worker-tuning"),  # DEMO_LIVE_CHUNK_SIZE
+        modal.Secret.from_name("devghost-worker-tuning"),  # env fallbacks (DEMO_LIVE_CHUNK_SIZE, etc.)
     ],
 )
 def run_analysis(job_id: str):
@@ -197,7 +201,8 @@ def run_analysis(job_id: str):
         excluded_emails = order.get("excluded_developers") or []
         skip_billing = job.get("skipBilling", False)
         force_recalculate = job.get("forceRecalculate", False)
-        demo_live_mode = load_demo_live_mode(conn)
+        demo_live_mode, demo_live_chunk_size = load_demo_live_settings(conn)
+        demo_live_chunk_size = max(1, min(200, int(demo_live_chunk_size)))
 
         # Setup LLM environment from config snapshot (WITHOUT API key -- read from secret)
         setup_llm_env(llm_config)
@@ -224,6 +229,7 @@ def run_analysis(job_id: str):
                 "llmProvider": llm_config.get("provider"),
                 "llmModel": current_llm_model,
                 "demoLiveMode": demo_live_mode,
+                "demoLiveChunkSize": demo_live_chunk_size,
                 "lastNAdaptive": {
                     "initialDays": LAST_N_SHALLOW_INITIAL_DAYS,
                     "maxDays": LAST_N_SHALLOW_MAX_DAYS,
@@ -439,6 +445,7 @@ def run_analysis(job_id: str):
                 rate_limiter, total_analyzed, total_cache_hits,
                 repo_idx, len(repos), skip_billing=skip_billing,
                 demo_live_mode=demo_live_mode,
+                demo_live_chunk_size=demo_live_chunk_size,
             )
 
         # Phase 1.5 (LAST_N only): Global sort + truncate to top N by date
@@ -481,6 +488,7 @@ def run_analysis(job_id: str):
                     llm_config, rate_limiter, total_analyzed, total_cache_hits,
                     er["repo_idx"], len(repos), skip_billing=skip_billing,
                     demo_live_mode=demo_live_mode,
+                    demo_live_chunk_size=demo_live_chunk_size,
                 )
 
         # (cached commits already accounted per-repo in _process_repo_commits)
@@ -509,6 +517,7 @@ def run_analysis(job_id: str):
             code="WORKER_LLM_COMPLETE",
             payload={"progress": 95},
         )
+        _try_trigger_watchdog_post_processing(conn, job_id)
         _commit_repos_volume_checkpoint(
             conn=conn,
             job_id=job_id,
@@ -566,6 +575,7 @@ def _process_repo_commits(
     commits, cache_mode, current_llm_model, llm_config,
     rate_limiter, total_analyzed, total_cache_hits,
     repo_idx, total_repos, skip_billing=False, demo_live_mode=False,
+    demo_live_chunk_size=DEMO_LIVE_CHUNK_SIZE_ENV_FALLBACK,
 ):
     """Process commits for a single repo: dedup -> cache -> LLM -> save.
     Returns updated (total_analyzed, total_cache_hits) counters.
@@ -583,6 +593,7 @@ def _process_repo_commits(
             "commitCount": initial_commit_count,
             "cacheMode": cache_mode,
             "demoLiveMode": demo_live_mode,
+            "demoLiveChunkSize": demo_live_chunk_size,
         },
     )
 
@@ -692,7 +703,7 @@ def _process_repo_commits(
         repo_name=repo_full_name,
         payload={"commitCount": len(commits), "language": language},
     )
-    chunk_size = DEMO_LIVE_CHUNK_SIZE if demo_live_mode else len(commits)
+    chunk_size = demo_live_chunk_size if demo_live_mode else len(commits)
     chunk_size = max(1, min(chunk_size, len(commits)))
     total_chunks = (len(commits) + chunk_size - 1) // chunk_size
     append_job_event(
@@ -706,16 +717,19 @@ def _process_repo_commits(
             "demoLiveMode": demo_live_mode,
             "chunkSize": chunk_size,
             "chunkCount": total_chunks,
+            "chunkSource": "db" if demo_live_mode else "full-batch",
         },
     )
 
     method_counts = {}
     error_samples = []
     saved_count = 0
+    commit_lookup = {c["sha"]: c for c in commits}
 
     for chunk_index, start in enumerate(range(0, len(commits), chunk_size), start=1):
         chunk_commits = commits[start:start + chunk_size]
         chunk_started = time.time()
+        chunk_sha = chunk_commits[0]["sha"] if len(chunk_commits) == 1 else None
 
         if total_chunks > 1:
             append_job_event(
@@ -725,12 +739,14 @@ def _process_repo_commits(
                 phase="llm",
                 code="LLM_CHUNK_START",
                 repo_name=repo_full_name,
+                sha=chunk_sha,
                 payload={
                     "chunkIndex": chunk_index,
                     "chunkTotal": total_chunks,
                     "chunkCommitCount": len(chunk_commits),
                     "processedBeforeChunk": start,
                     "repoCommitCount": len(commits),
+                    **({"currentSha": chunk_sha} if chunk_sha else {}),
                 },
             )
 
@@ -755,6 +771,15 @@ def _process_repo_commits(
             save_commit_analyses(conn, analyses)
             saved_count += len(analyses)
             total_analyzed += len(analyses)
+
+        if demo_live_mode:
+            _emit_commit_live_results(
+                conn=conn,
+                job_id=job_id,
+                repo_full_name=repo_full_name,
+                commit_lookup=commit_lookup,
+                chunk_results=chunk_results,
+            )
 
         processed_in_repo = min(start + len(chunk_commits), len(commits))
         progress_pct = int(
@@ -831,6 +856,138 @@ def _process_repo_commits(
     )
 
     return total_analyzed, total_cache_hits
+
+
+def _to_float_or_none(value):
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _try_trigger_watchdog_post_processing(conn, job_id: str) -> None:
+    """Best-effort nudge: trigger watchdog immediately after LLM_COMPLETE.
+
+    This removes the usual wait for the next cron tick. If disabled/misconfigured,
+    cron-based watchdog still processes the job later.
+    """
+    if not WATCHDOG_TRIGGER_URL:
+        append_job_event(
+            conn,
+            job_id,
+            "Watchdog trigger URL is not configured; waiting for cron",
+            phase="worker",
+            code="POST_WATCHDOG_TRIGGER_SKIPPED",
+            payload={"reason": "missing_url"},
+        )
+        return
+
+    if not WATCHDOG_TRIGGER_TOKEN:
+        append_job_event(
+            conn,
+            job_id,
+            "Watchdog trigger token is not configured; waiting for cron",
+            level="warn",
+            phase="worker",
+            code="POST_WATCHDOG_TRIGGER_SKIPPED",
+            payload={"reason": "missing_token"},
+        )
+        return
+
+    headers = {"Authorization": f"Bearer {WATCHDOG_TRIGGER_TOKEN}"}
+    try:
+        response = requests.get(
+            WATCHDOG_TRIGGER_URL,
+            headers=headers,
+            timeout=WATCHDOG_TRIGGER_TIMEOUT_SEC,
+        )
+        if response.ok:
+            payload = {"httpStatus": response.status_code}
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    if "processed" in body:
+                        payload["processed"] = body["processed"]
+                    if "partial" in body:
+                        payload["partial"] = body["partial"]
+            except Exception:
+                pass
+            append_job_event(
+                conn,
+                job_id,
+                "Triggered watchdog post-processing immediately",
+                phase="worker",
+                code="POST_WATCHDOG_TRIGGER_OK",
+                payload=payload,
+            )
+        else:
+            append_job_event(
+                conn,
+                job_id,
+                "Watchdog trigger call failed",
+                level="warn",
+                phase="worker",
+                code="POST_WATCHDOG_TRIGGER_HTTP_FAIL",
+                payload={"httpStatus": response.status_code},
+            )
+    except Exception as err:
+        append_job_event(
+            conn,
+            job_id,
+            "Watchdog trigger network error",
+            level="warn",
+            phase="worker",
+            code="POST_WATCHDOG_TRIGGER_NETWORK_FAIL",
+            payload={"error": str(err)[:300]},
+        )
+
+
+def _emit_commit_live_results(
+    conn,
+    job_id: str,
+    repo_full_name: str,
+    commit_lookup: dict[str, dict],
+    chunk_results: list[dict],
+) -> None:
+    """Emit per-commit live telemetry events (demo mode) for UI visibility."""
+    for result in chunk_results:
+        sha = str(result.get("sha") or "")
+        if not sha:
+            continue
+
+        commit = commit_lookup.get(sha) or {}
+        analysis = result.get("analysis") or {}
+        method = str(result.get("method") or "unknown")
+        error_text = result.get("error")
+        level = "warn" if (method == "error" or error_text) else "info"
+
+        estimated_hours = _to_float_or_none(result.get("estimated_hours"))
+        confidence = _to_float_or_none(analysis.get("confidence"))
+        payload = {
+            "method": method,
+            "estimatedHours": round(estimated_hours, 2) if estimated_hours is not None else None,
+            "category": analysis.get("change_type"),
+            "complexity": analysis.get("complexity"),
+            "confidence": round(confidence, 3) if confidence is not None else None,
+            "type": result.get("type"),
+            "subject": str(commit.get("message") or "")[:140] or None,
+        }
+        if error_text:
+            payload["error"] = str(error_text)[:240]
+
+        append_job_event(
+            conn,
+            job_id,
+            "Commit analysis result available",
+            level=level,
+            phase="llm",
+            code="LLM_COMMIT_RESULT",
+            repo_name=repo_full_name,
+            sha=sha,
+            payload=payload,
+        )
 
 
 def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter):

@@ -173,6 +173,49 @@ export async function GET(request: NextRequest) {
     processed += stuckPostProcessing;
   }
 
+  // 3.6. Recovery: latest job is COMPLETED but order still PROCESSING.
+  // This can happen after a partial finalization failure. Reconcile order state.
+  const inconsistentCompleted = await prisma.$queryRaw<{ id: string; orderId: string }[]>`
+    SELECT j.id, j."orderId"
+    FROM "AnalysisJob" j
+    JOIN "Order" o ON o.id = j."orderId"
+    WHERE j.status = 'COMPLETED'
+      AND o.status = 'PROCESSING'
+      AND j."createdAt" = (
+        SELECT MAX(j2."createdAt")
+        FROM "AnalysisJob" j2
+        WHERE j2."orderId" = j."orderId"
+      )
+  `;
+  if (inconsistentCompleted.length > 0) {
+    const now = new Date();
+    const reconciledOrders = new Set<string>();
+    for (const row of inconsistentCompleted) {
+      if (reconciledOrders.has(row.orderId)) continue;
+      await prisma.order.update({
+        where: { id: row.orderId },
+        data: {
+          status: 'COMPLETED',
+          analyzedAt: now,
+        },
+      });
+      reconciledOrders.add(row.orderId);
+      await appendJobEvent({
+        jobId: row.id,
+        level: 'warn',
+        phase: 'watchdog',
+        code: 'ORDER_STATUS_RECONCILED',
+        message: 'Watchdog reconciled order status to COMPLETED from latest completed job',
+        payload: { orderId: row.orderId },
+      });
+    }
+    processed += reconciledOrders.size;
+    log.warn(
+      { jobs: inconsistentCompleted.length, orders: reconciledOrders.size },
+      'Reconciled inconsistent COMPLETED job / PROCESSING order states',
+    );
+  }
+
   // 4. Post-process: LLM_COMPLETE → Ghost% + billing → COMPLETED
   while (true) {
     if (Date.now() - startTime > TIME_BUDGET_MS) {
@@ -305,26 +348,29 @@ async function postProcessJob(job: any) {
   };
   const inScopeCount = await countInScopeCommits(order.id, scopeConfig);
 
-  // 5. Finalize job and order
-  await prisma.analysisJob.update({
-    where: { id: job.id },
-    data: {
-      status: 'COMPLETED',
-      progress: 100,
-      currentStep: 'done',
-      completedAt: new Date(),
-      totalCostUsd: actualCost,
-    },
-  });
-
-  await prisma.order.update({
-    where: { id: order.id },
-    data: {
-      status: 'COMPLETED',
-      analyzedAt: new Date(),
-      totalCommits: inScopeCount,
-    },
-  });
+  // 5. Finalize job and order atomically to avoid split-brain
+  // (job COMPLETED while order still PROCESSING).
+  const completedAt = new Date();
+  await prisma.$transaction([
+    prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'COMPLETED',
+        analyzedAt: completedAt,
+        totalCommits: inScopeCount,
+      },
+    }),
+    prisma.analysisJob.update({
+      where: { id: job.id },
+      data: {
+        status: 'COMPLETED',
+        progress: 100,
+        currentStep: 'done',
+        completedAt,
+        totalCostUsd: actualCost,
+      },
+    }),
+  ]);
 
   // 6. Release unused credits
   if (!skipBilling) {

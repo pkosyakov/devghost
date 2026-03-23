@@ -18,6 +18,7 @@ const updateSchema = z.object({
   openrouterInputPrice: z.number().min(0).optional(),
   openrouterOutputPrice: z.number().min(0).optional(),
   demoLiveMode: z.boolean().optional(),
+  demoLiveChunkSize: z.number().int().min(1).max(200).optional(),
 });
 
 function normalizeCsv(value: string): string {
@@ -47,6 +48,7 @@ function formatSettings(settings: {
   openrouterInputPrice: unknown;
   openrouterOutputPrice: unknown;
   demoLiveMode?: boolean;
+  demoLiveChunkSize?: number;
 }) {
   const hasEnvKey = !!process.env.OPENROUTER_API_KEY;
   const hasDbKey = !!settings.openrouterApiKey;
@@ -69,6 +71,7 @@ function formatSettings(settings: {
     openrouterInputPrice: Number(settings.openrouterInputPrice),
     openrouterOutputPrice: Number(settings.openrouterOutputPrice),
     demoLiveMode: settings.demoLiveMode ?? false,
+    demoLiveChunkSize: settings.demoLiveChunkSize ?? 10,
   };
 }
 
@@ -95,6 +98,7 @@ export async function GET() {
       openrouterInputPrice: 0.03,
       openrouterOutputPrice: 0.11,
       demoLiveMode: false,
+      demoLiveChunkSize: 10,
     });
   }
 
@@ -150,6 +154,7 @@ export async function PATCH(request: NextRequest) {
         openrouterAllowFallbacks: data.openrouterAllowFallbacks ?? envBool('OPENROUTER_ALLOW_FALLBACKS', true),
         openrouterRequireParameters: data.openrouterRequireParameters ?? envBool('OPENROUTER_REQUIRE_PARAMETERS', true),
         demoLiveMode: data.demoLiveMode ?? false,
+        demoLiveChunkSize: data.demoLiveChunkSize ?? 10,
       } as any,
     });
 

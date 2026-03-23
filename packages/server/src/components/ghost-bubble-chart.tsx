@@ -70,6 +70,29 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     metrics.length,
   );
 
+  const allPoints = [...data, ...dimmed];
+  const maxBubbleRadius = allPoints.length > 0
+    ? Math.max(...allPoints.map((point) => point.r))
+    : 8;
+
+  // Recharts domains are based on point centers, so large bubbles near edges
+  // can get clipped. Add a heuristic axis padding that also covers hover growth.
+  const minDays = allPoints.length > 0
+    ? Math.min(...allPoints.map((point) => point.x))
+    : 0;
+  const maxDays = allPoints.length > 0
+    ? Math.max(...allPoints.map((point) => point.x))
+    : 1;
+  const xPadding = Math.max(0.5, maxBubbleRadius / 90);
+  const xDomainMin = Math.max(0, minDays - xPadding);
+  const xDomainMax = Math.max(xDomainMin + 1, maxDays + xPadding);
+
+  const maxGhost = allPoints.length > 0
+    ? Math.max(...allPoints.map((point) => point.y))
+    : 100;
+  const yPadding = Math.max(80, Math.ceil(maxBubbleRadius * 2.2));
+  const yDomainMax = Math.max(120, maxGhost + yPadding);
+
   const makeBubbleRenderer = (opts: {
     baseOpacity: number;
     dimOpacity: number;
@@ -137,11 +160,24 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
       <ResponsiveContainer width="100%" height={400} style={{ overflow: 'visible' }}>
         <ScatterChart margin={{ top: 45, right: 45, bottom: 20, left: 20 }}>
           <CartesianGrid strokeDasharray="3 3" />
-          <XAxis dataKey="x" name="Work Days" type="number" />
-          <YAxis dataKey="y" name="Ghost %" type="number" domain={[0, 'auto']} />
+          <XAxis
+            dataKey="x"
+            name="Work Days"
+            type="number"
+            domain={[xDomainMin, xDomainMax]}
+            allowDataOverflow
+          />
+          <YAxis
+            dataKey="y"
+            name="Ghost %"
+            type="number"
+            domain={[0, yDomainMax]}
+            allowDataOverflow
+          />
           <ReferenceLine y={100} stroke="#666" strokeDasharray="5 5" label="Ghost Norm" />
           <ReferenceLine y={80} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
           <Tooltip
+            allowEscapeViewBox={{ x: true, y: true }}
             content={({ payload }) => {
               if (!payload?.length) return null;
               const d = payload[0]!.payload as ChartPoint;

@@ -153,8 +153,29 @@ def load_order(conn, order_id: str) -> dict:
         return dict(cur.fetchone())
 
 
-def load_demo_live_mode(conn) -> bool:
-    """Read admin demo-live toggle from SystemSettings singleton."""
+def load_demo_live_settings(conn) -> tuple[bool, int]:
+    """Read demo-live settings from SystemSettings singleton."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT "demoLiveMode", "demoLiveChunkSize" FROM "SystemSettings" WHERE id = %s',
+                ('singleton',),
+            )
+            row = cur.fetchone()
+            if not row:
+                return False, 10
+            mode = bool(row[0])
+            chunk_size = row[1]
+            if not isinstance(chunk_size, int):
+                chunk_size = 10
+            return mode, max(1, min(200, chunk_size))
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    # Backward compatibility for DB schemas that still don't have
+    # "demoLiveChunkSize" column.
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -163,14 +184,20 @@ def load_demo_live_mode(conn) -> bool:
             )
             row = cur.fetchone()
             if not row:
-                return False
-            return bool(row[0])
+                return False, 10
+            return bool(row[0]), 10
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
-        return False
+        return False, 10
+
+
+def load_demo_live_mode(conn) -> bool:
+    """Backwards-compatible helper: only demo-live toggle."""
+    mode, _ = load_demo_live_settings(conn)
+    return mode
 
 
 def load_github_token(conn, user_id: str) -> str | None:

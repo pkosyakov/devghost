@@ -829,6 +829,8 @@
       "provider": "Провайдер",
       "demoLiveMode": "Demo live mode",
       "demoLiveModeHint": "Для админов на странице заказа статус будет опрашиваться намного чаще для почти realtime-обновления на демо.",
+      "demoLiveChunkSize": "Размер live-чанка",
+      "demoLiveChunkSizeHint": "Сколько коммитов отправлять в одном LLM чанке в demo live mode (1-200).",
       "ollamaUrl": "URL Ollama",
       "model": "Модель",
       "apiKey": "API-ключ",

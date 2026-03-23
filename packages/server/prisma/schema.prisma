@@ -124,6 +124,7 @@ model SystemSettings {
   referralBonusMultiplier Int @default(2)
   maxReferralsPerUser     Int @default(20)
   demoLiveMode            Boolean @default(false)
+  demoLiveChunkSize       Int @default(10)
 
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

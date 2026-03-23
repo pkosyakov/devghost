@@ -12,6 +12,9 @@ Serverless analysis pipeline running on [Modal](https://modal.com).
    modal secret create devghost-llm OPENROUTER_API_KEY="..." MODAL_WEBHOOK_SECRET="..." LLM_MAX_QPS="5"
    modal secret create devghost-worker-tuning \
      DEMO_LIVE_CHUNK_SIZE="10" \
+     WATCHDOG_TRIGGER_URL="https://devghost.pro/api/cron/analysis-watchdog" \
+     WATCHDOG_TRIGGER_TOKEN="<same-as-CRON_SECRET>" \
+     WATCHDOG_TRIGGER_TIMEOUT_SEC="8" \
      LAST_N_SHALLOW_INITIAL_DAYS="30" \
      LAST_N_SHALLOW_MAX_DAYS="3650" \
      LAST_N_SHALLOW_GROWTH_FACTOR="2" \
