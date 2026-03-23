@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import modal
 
@@ -71,7 +72,18 @@ def _env_positive_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
 DEMO_LIVE_CHUNK_SIZE = _env_positive_int("DEMO_LIVE_CHUNK_SIZE", 10)
+LAST_N_SHALLOW_INITIAL_DAYS = _env_positive_int("LAST_N_SHALLOW_INITIAL_DAYS", 30)
+LAST_N_SHALLOW_MAX_DAYS = _env_positive_int("LAST_N_SHALLOW_MAX_DAYS", 3650)
+LAST_N_SHALLOW_GROWTH_FACTOR = max(2, _env_positive_int("LAST_N_SHALLOW_GROWTH_FACTOR", 2))
+REPO_VOLUME_CHECKPOINTS = _env_bool("REPO_VOLUME_CHECKPOINTS", True)
 
 
 class HeartbeatThread(threading.Thread):
@@ -212,6 +224,11 @@ def run_analysis(job_id: str):
                 "llmProvider": llm_config.get("provider"),
                 "llmModel": current_llm_model,
                 "demoLiveMode": demo_live_mode,
+                "lastNAdaptive": {
+                    "initialDays": LAST_N_SHALLOW_INITIAL_DAYS,
+                    "maxDays": LAST_N_SHALLOW_MAX_DAYS,
+                    "growthFactor": LAST_N_SHALLOW_GROWTH_FACTOR,
+                },
             },
         )
 
@@ -282,22 +299,6 @@ def run_analysis(job_id: str):
                 code="REPO_CLONE_START",
                 repo_name=repo_full_name,
             )
-            repo_path = clone_or_update(
-                clone_url, repo_full_name, token, default_branch,
-                shallow_since=scope.get("since"),
-                volume_path="/repos",
-            )
-            append_job_event(
-                conn,
-                job_id,
-                "Repository clone/update completed",
-                phase="clone",
-                code="REPO_CLONE_DONE",
-                repo_name=repo_full_name,
-                payload={"durationSec": round(time.time() - clone_started, 2)},
-            )
-
-            # b. Extract commits
             update_progress(conn, job_id, step="extracting")
             extract_started = time.time()
             append_job_event(
@@ -308,24 +309,93 @@ def run_analysis(job_id: str):
                 code="REPO_EXTRACT_START",
                 repo_name=repo_full_name,
             )
-            commits = extract_commits(
-                repo_path,
-                since=scope.get("since"),
-                until=scope.get("until"),
-                max_count=scope.get("max_count"),
-                excluded_emails=excluded_emails,
-            )
-            append_job_event(
-                conn,
-                job_id,
-                "Commit extraction finished",
-                phase="extract",
-                code="REPO_EXTRACT_DONE",
+
+            if is_last_n:
+                repo_path, commits, adaptive_meta = _extract_last_n_commits_with_adaptive_shallow(
+                    conn=conn,
+                    job_id=job_id,
+                    repo_full_name=repo_full_name,
+                    clone_url=clone_url,
+                    token=token,
+                    default_branch=default_branch,
+                    target_count=max(1, int(scope.get("max_count") or 1)),
+                    excluded_emails=excluded_emails,
+                )
+                append_job_event(
+                    conn,
+                    job_id,
+                    "Repository clone/update completed",
+                    phase="clone",
+                    code="REPO_CLONE_DONE",
+                    repo_name=repo_full_name,
+                    payload={
+                        "durationSec": round(time.time() - clone_started, 2),
+                        "adaptiveShallow": adaptive_meta,
+                    },
+                )
+                append_job_event(
+                    conn,
+                    job_id,
+                    "Commit extraction finished",
+                    phase="extract",
+                    code="REPO_EXTRACT_DONE",
+                    repo_name=repo_full_name,
+                    payload={
+                        "commitCount": len(commits),
+                        "durationSec": round(time.time() - extract_started, 2),
+                        "adaptiveShallow": adaptive_meta,
+                    },
+                )
+            else:
+                repo_path = clone_or_update(
+                    clone_url, repo_full_name, token, default_branch,
+                    shallow_since=scope.get("since"),
+                    volume_path="/repos",
+                )
+                append_job_event(
+                    conn,
+                    job_id,
+                    "Repository clone/update completed",
+                    phase="clone",
+                    code="REPO_CLONE_DONE",
+                    repo_name=repo_full_name,
+                    payload={"durationSec": round(time.time() - clone_started, 2)},
+                )
+
+                years = scope.get("years")
+                if years:
+                    commits = _extract_commits_for_selected_years(
+                        repo_path=repo_path,
+                        years=years,
+                        excluded_emails=excluded_emails,
+                    )
+                else:
+                    commits = extract_commits(
+                        repo_path,
+                        since=scope.get("since"),
+                        until=scope.get("until"),
+                        max_count=scope.get("max_count"),
+                        excluded_emails=excluded_emails,
+                    )
+                append_job_event(
+                    conn,
+                    job_id,
+                    "Commit extraction finished",
+                    phase="extract",
+                    code="REPO_EXTRACT_DONE",
+                    repo_name=repo_full_name,
+                    payload={
+                        "commitCount": len(commits),
+                        "durationSec": round(time.time() - extract_started, 2),
+                        **({"selectedYears": years} if years else {}),
+                    },
+                )
+
+            _commit_repos_volume_checkpoint(
+                conn=conn,
+                job_id=job_id,
+                reason="repo_cloned",
                 repo_name=repo_full_name,
-                payload={
-                    "commitCount": len(commits),
-                    "durationSec": round(time.time() - extract_started, 2),
-                },
             )
 
             if not commits:
@@ -434,13 +504,10 @@ def run_analysis(job_id: str):
             code="WORKER_LLM_COMPLETE",
             payload={"progress": 95},
         )
-        repos_volume.commit()
-        append_job_event(
-            conn,
-            job_id,
-            "Repository volume committed",
-            phase="worker",
-            code="REPOS_VOLUME_COMMITTED",
+        _commit_repos_volume_checkpoint(
+            conn=conn,
+            job_id=job_id,
+            reason="job_complete",
         )
 
     except Exception as e:
@@ -473,6 +540,12 @@ def run_analysis(job_id: str):
                 fresh_conn.close()
             except Exception:
                 pass  # Watchdog will catch this via stale heartbeat
+
+        _commit_repos_volume_checkpoint(
+            conn=conn,
+            job_id=job_id,
+            reason="job_failed",
+        )
 
         raise
     finally:
@@ -851,6 +924,172 @@ def setup_llm_env(llm_config):
     os.environ["OPENROUTER_REQUIRE_PARAMETERS"] = str(openrouter.get("requireParameters", True)).lower()
 
 
+def _utc_iso_days_ago(days: int) -> str:
+    dt = datetime.now(timezone.utc) - timedelta(days=days)
+    return dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _extract_last_n_commits_with_adaptive_shallow(
+    conn,
+    job_id: str,
+    repo_full_name: str,
+    clone_url: str,
+    token: str | None,
+    default_branch: str,
+    target_count: int,
+    excluded_emails: list[str],
+) -> tuple[str, list[dict], dict]:
+    """Iteratively deepen shallow history until enough commits are available."""
+    lookback_days = LAST_N_SHALLOW_INITIAL_DAYS
+    max_days = max(LAST_N_SHALLOW_INITIAL_DAYS, LAST_N_SHALLOW_MAX_DAYS)
+    attempts = 0
+    previous_count = -1
+    repo_path = ""
+    commits: list[dict] = []
+    last_since = _utc_iso_days_ago(lookback_days)
+    stop_reason = "unknown"
+
+    while True:
+        attempts += 1
+        last_since = _utc_iso_days_ago(lookback_days)
+        append_job_event(
+            conn,
+            job_id,
+            "Adaptive shallow attempt for LAST_N extraction",
+            phase="scope",
+            code="LAST_N_ADAPTIVE_ATTEMPT",
+            repo_name=repo_full_name,
+            payload={
+                "attempt": attempts,
+                "lookbackDays": lookback_days,
+                "targetCount": target_count,
+                "since": last_since,
+            },
+        )
+
+        repo_path = clone_or_update(
+            clone_url,
+            repo_full_name,
+            token,
+            default_branch,
+            shallow_since=last_since,
+            volume_path="/repos",
+        )
+        commits = extract_commits(
+            repo_path,
+            since=last_since,
+            max_count=target_count,
+            excluded_emails=excluded_emails,
+        )
+
+        append_job_event(
+            conn,
+            job_id,
+            "Adaptive shallow extraction probe completed",
+            phase="scope",
+            code="LAST_N_ADAPTIVE_RESULT",
+            repo_name=repo_full_name,
+            payload={
+                "attempt": attempts,
+                "lookbackDays": lookback_days,
+                "commitCount": len(commits),
+                "targetCount": target_count,
+            },
+        )
+
+        if len(commits) >= target_count:
+            stop_reason = "target_reached"
+            break
+        if lookback_days >= max_days:
+            stop_reason = "max_lookback_reached"
+            break
+        if previous_count >= 0 and len(commits) <= previous_count:
+            stop_reason = "stagnated_count"
+            break
+
+        previous_count = len(commits)
+        next_lookback = min(max_days, lookback_days * LAST_N_SHALLOW_GROWTH_FACTOR)
+        if next_lookback == lookback_days:
+            stop_reason = "lookback_saturated"
+            break
+        lookback_days = next_lookback
+
+    return repo_path, commits, {
+        "attempts": attempts,
+        "targetCount": target_count,
+        "finalCount": len(commits),
+        "finalLookbackDays": lookback_days,
+        "finalSince": last_since,
+        "reason": stop_reason,
+    }
+
+
+def _extract_commits_for_selected_years(
+    repo_path: str,
+    years: list[int],
+    excluded_emails: list[str],
+) -> list[dict]:
+    """Extract commits for exact year buckets (non-contiguous years supported)."""
+    unique_years = sorted({int(year) for year in years}, reverse=True)
+    by_sha: dict[str, dict] = {}
+
+    for year in unique_years:
+        since = f"{year}-01-01T00:00:00Z"
+        until = f"{year + 1}-01-01T00:00:00Z"
+        rows = extract_commits(
+            repo_path,
+            since=since,
+            until=until,
+            excluded_emails=excluded_emails,
+        )
+        for row in rows:
+            by_sha[row["sha"]] = row
+
+    commits = list(by_sha.values())
+    commits.sort(key=lambda c: c.get("author_date", ""), reverse=True)
+    return commits
+
+
+def _commit_repos_volume_checkpoint(
+    conn,
+    job_id: str,
+    reason: str,
+    repo_name: str | None = None,
+) -> None:
+    """Best-effort volume commit so retries reuse already downloaded repos."""
+    if not REPO_VOLUME_CHECKPOINTS and reason not in {"job_complete", "job_failed"}:
+        return
+
+    try:
+        repos_volume.commit()
+        try:
+            append_job_event(
+                conn,
+                job_id,
+                "Repository volume checkpoint committed",
+                phase="worker",
+                code="REPOS_VOLUME_COMMITTED",
+                repo_name=repo_name,
+                payload={"reason": reason},
+            )
+        except Exception:
+            pass
+    except Exception as err:
+        try:
+            append_job_event(
+                conn,
+                job_id,
+                "Repository volume checkpoint failed",
+                level="warn",
+                phase="worker",
+                code="REPOS_VOLUME_COMMIT_FAILED",
+                repo_name=repo_name,
+                payload={"reason": reason, "error": str(err)[:300]},
+            )
+        except Exception:
+            pass
+
+
 def build_scope(order):
     """Build commit scope filters from order config.
 
@@ -861,10 +1100,11 @@ def build_scope(order):
     mode = order.get("analysis_period_mode", "ALL_TIME")
 
     if mode == "LAST_N_COMMITS" and order.get("analysis_commit_limit"):
+        commit_limit = int(order["analysis_commit_limit"])
         return {
-            "max_count": order["analysis_commit_limit"] * 2,
+            "max_count": commit_limit * 2,
             "is_last_n": True,
-            "commit_limit": order["analysis_commit_limit"],
+            "commit_limit": commit_limit,
         }
 
     if mode == "DATE_RANGE" and order.get("analysis_start_date") and order.get("analysis_end_date"):
@@ -874,10 +1114,22 @@ def build_scope(order):
         }
 
     if mode == "SELECTED_YEARS" and order.get("analysis_years"):
-        years = order["analysis_years"]
+        years_set: set[int] = set()
+        for raw_year in order["analysis_years"]:
+            try:
+                year = int(raw_year)
+            except (TypeError, ValueError):
+                continue
+            if year <= 0:
+                continue
+            years_set.add(year)
+        years = sorted(years_set)
+        if not years:
+            return {}
         min_year = min(years)
         max_year = max(years)
         return {
+            "years": years,
             "since": f"{min_year}-01-01T00:00:00Z",
             "until": f"{max_year + 1}-01-01T00:00:00Z",
         }

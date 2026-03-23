@@ -14,6 +14,28 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+GIT_SHALLOW_BUFFER_DAYS = _env_positive_int("GIT_SHALLOW_BUFFER_DAYS", 14)
+GIT_FETCH_TIMEOUT_SEC = _env_positive_int("GIT_FETCH_TIMEOUT_SEC", 600)
+GIT_CLONE_TIMEOUT_SEC = _env_positive_int("GIT_CLONE_TIMEOUT_SEC", 1800)
+GIT_LOG_TIMEOUT_SEC = _env_positive_int("GIT_LOG_TIMEOUT_SEC", 300)
+GIT_PARTIAL_CLONE = _env_bool("GIT_PARTIAL_CLONE", True)
+
+
 def clone_or_update(
     clone_url: str,
     full_name: str,
@@ -43,21 +65,28 @@ def clone_or_update(
         "GIT_TERMINAL_PROMPT": "0",
     }
 
-    # Shallow-since with 14-day buffer
+    # Shallow-since with safety buffer for boundary parent commits.
     shallow_date = None
     if shallow_since:
         d = datetime.fromisoformat(shallow_since.replace("Z", "+00:00"))
-        d -= timedelta(days=14)
+        d -= timedelta(days=GIT_SHALLOW_BUFFER_DAYS)
         shallow_date = d.strftime("%Y-%m-%d")
 
     git_dir = os.path.join(repo_path, ".git")
     if os.path.isdir(git_dir):
         # Update existing clone
         _run_git(["remote", "set-url", "origin", auth_url], cwd=repo_path, env=env)
-        fetch_args = ["fetch", "--prune", "origin"]
+        fetch_args = ["fetch", "--prune", "--no-tags", "origin"]
+        if GIT_PARTIAL_CLONE:
+            fetch_args.insert(1, "--filter=blob:none")
         if shallow_date:
             fetch_args.insert(1, f"--shallow-since={shallow_date}")
-        _run_git(fetch_args, cwd=repo_path, env=env, timeout=300)
+        _run_git_with_partial_clone_fallback(
+            fetch_args,
+            cwd=repo_path,
+            env=env,
+            timeout=GIT_FETCH_TIMEOUT_SEC,
+        )
         _run_git(["reset", "--hard", f"origin/{default_branch}"], cwd=repo_path, env=env)
     else:
         # Fresh clone
@@ -65,12 +94,20 @@ def clone_or_update(
         clone_args = [
             "-c", "core.longpaths=true",
             "-c", "core.symlinks=false",
+            "-c", "protocol.version=2",
             "clone", "--single-branch", "--branch", default_branch,
+            "--no-tags",
         ]
+        if GIT_PARTIAL_CLONE:
+            clone_args.append("--filter=blob:none")
         if shallow_date:
             clone_args.append(f"--shallow-since={shallow_date}")
         clone_args.extend([auth_url, repo_path])
-        _run_git(clone_args, env=env, timeout=600)
+        _run_git_with_partial_clone_fallback(
+            clone_args,
+            env=env,
+            timeout=GIT_CLONE_TIMEOUT_SEC,
+        )
 
     return repo_path
 
@@ -96,7 +133,7 @@ def extract_commits(
     if until:
         args.append(f"--until={until}")
 
-    result = _run_git(args, cwd=repo_path, timeout=120)
+    result = _run_git(args, cwd=repo_path, timeout=GIT_LOG_TIMEOUT_SEC)
     if not result.stdout.strip():
         return []
 
@@ -184,3 +221,34 @@ def _run_git(args: list[str], cwd: str | None = None, env: dict | None = None, t
         safe_stderr = re.sub(r"x-access-token:[^@]+@", "x-access-token:***@", result.stderr)
         raise RuntimeError(f"git {args[0]} failed: {safe_stderr.strip()}")
     return result
+
+
+def _run_git_with_partial_clone_fallback(
+    args: list[str],
+    cwd: str | None = None,
+    env: dict | None = None,
+    timeout: int = 120,
+) -> subprocess.CompletedProcess:
+    """Run git command and retry once without --filter=blob:none if unsupported."""
+    try:
+        return _run_git(args, cwd=cwd, env=env, timeout=timeout)
+    except RuntimeError as err:
+        has_filter = "--filter=blob:none" in args
+        if not has_filter or not _looks_like_filter_unsupported(str(err)):
+            raise
+
+        fallback_args = [a for a in args if a != "--filter=blob:none"]
+        return _run_git(fallback_args, cwd=cwd, env=env, timeout=timeout)
+
+
+def _looks_like_filter_unsupported(error_text: str) -> bool:
+    lower = error_text.lower()
+    markers = [
+        "unknown option",
+        "filter-spec",
+        "filtering not recognized by server",
+        "server does not support filter",
+        "did not send all necessary objects",
+        "partial clone",
+    ]
+    return "filter" in lower and any(marker in lower for marker in markers)

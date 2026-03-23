@@ -9,6 +9,25 @@ import os from 'os';
 
 const execFileAsync = promisify(execFile);
 
+function envPositiveInt(name: string, defaultValue: number): number {
+  const raw = process.env[name];
+  if (!raw) return defaultValue;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
+function envBool(name: string, defaultValue: boolean): boolean {
+  const raw = process.env[name];
+  if (raw === undefined) return defaultValue;
+  return !['0', 'false', 'no', 'off'].includes(raw.trim().toLowerCase());
+}
+
+const GIT_SHALLOW_BUFFER_DAYS = envPositiveInt('GIT_SHALLOW_BUFFER_DAYS', 14);
+const GIT_FETCH_TIMEOUT_MS = envPositiveInt('GIT_FETCH_TIMEOUT_SEC', 600) * 1000;
+const GIT_CLONE_TIMEOUT_MS = envPositiveInt('GIT_CLONE_TIMEOUT_SEC', 1800) * 1000;
+const GIT_LOG_TIMEOUT_MS = envPositiveInt('GIT_LOG_TIMEOUT_SEC', 300) * 1000;
+const GIT_PARTIAL_CLONE = envBool('GIT_PARTIAL_CLONE', true);
+
 // ==================== Types ====================
 
 export interface GitCommit {
@@ -53,6 +72,35 @@ async function execGit(
     timeout,
     maxBuffer: 50 * 1024 * 1024, // 50 MB for large git log
   });
+}
+
+function supportsFilterFallback(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  const lower = text.toLowerCase();
+  const markers = [
+    'unknown option',
+    'filter-spec',
+    'filtering not recognized by server',
+    'server does not support filter',
+    'did not send all necessary objects',
+    'partial clone',
+  ];
+  return lower.includes('filter') && markers.some(marker => lower.includes(marker));
+}
+
+async function execGitWithFilterFallback(
+  args: string[],
+  options?: { cwd?: string; env?: Record<string, string>; timeout?: number },
+): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await execGit(args, options);
+  } catch (error) {
+    if (!args.includes('--filter=blob:none') || !supportsFilterFallback(error)) {
+      throw error;
+    }
+    const fallbackArgs = args.filter((arg) => arg !== '--filter=blob:none');
+    return execGit(fallbackArgs, options);
+  }
 }
 
 async function isValidGitRepo(dirPath: string): Promise<boolean> {
@@ -114,7 +162,7 @@ export async function cloneOrUpdateRepo(
   };
 
   // Add 14-day buffer so parent commits exist for git diff sha~1..sha
-  const shallowDate = shallowSince ? toShallowDate(shallowSince, 14) : undefined;
+  const shallowDate = shallowSince ? toShallowDate(shallowSince, GIT_SHALLOW_BUFFER_DAYS) : undefined;
 
   try {
     if (await isValidGitRepo(repoPath)) {
@@ -122,9 +170,10 @@ export async function cloneOrUpdateRepo(
       await execGit(['config', 'core.longpaths', 'true'], { cwd: repoPath }).catch(() => {});
       await execGit(['remote', 'set-url', 'origin', authUrl], { cwd: repoPath, env: gitEnv });
 
-      const fetchArgs = ['fetch', '--prune', 'origin'];
+      const fetchArgs = ['fetch', '--prune', '--no-tags', 'origin'];
+      if (GIT_PARTIAL_CLONE) fetchArgs.splice(1, 0, '--filter=blob:none');
       if (shallowDate) fetchArgs.splice(1, 0, `--shallow-since=${shallowDate}`);
-      await execGit(fetchArgs, { cwd: repoPath, env: gitEnv, timeout: 300_000 });
+      await execGitWithFilterFallback(fetchArgs, { cwd: repoPath, env: gitEnv, timeout: GIT_FETCH_TIMEOUT_MS });
 
       await execGit(['reset', '--hard', `origin/${branch}`], { cwd: repoPath, env: gitEnv });
 
@@ -136,11 +185,12 @@ export async function cloneOrUpdateRepo(
     // Fresh clone
     await fs.mkdir(path.dirname(repoPath), { recursive: true });
 
-    const cloneArgs = ['-c', 'core.longpaths=true', 'clone', '--single-branch', '--branch', branch];
+    const cloneArgs = ['-c', 'core.longpaths=true', '-c', 'protocol.version=2', 'clone', '--single-branch', '--branch', branch, '--no-tags'];
+    if (GIT_PARTIAL_CLONE) cloneArgs.push('--filter=blob:none');
     if (shallowDate) cloneArgs.push(`--shallow-since=${shallowDate}`);
     cloneArgs.push(authUrl, repoPath);
 
-    await execGit(cloneArgs, { env: gitEnv, timeout: 600_000 });
+    await execGitWithFilterFallback(cloneArgs, { env: gitEnv, timeout: GIT_CLONE_TIMEOUT_MS });
 
     const { stdout } = await execGit(['rev-list', '--count', 'HEAD'], { cwd: repoPath });
     const sizeKb = await getRepoSizeKb(repoPath);
@@ -185,7 +235,7 @@ export async function extractCommits(
   if (options?.since) args.push(`--since=${options.since}`);
   if (options?.until) args.push(`--until=${options.until}`);
 
-  const { stdout } = await execGit(args, { cwd: repoPath, timeout: 120_000 });
+  const { stdout } = await execGit(args, { cwd: repoPath, timeout: GIT_LOG_TIMEOUT_MS });
   if (!stdout.trim()) return [];
 
   return parseGitLog(stdout, options?.excludedEmails);

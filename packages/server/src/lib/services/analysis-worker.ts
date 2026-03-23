@@ -202,7 +202,7 @@ export async function processAnalysisJob(
     // 3. Parse repos and build commit scope (normalize snake_case JSONB → camelCase)
     const rawRepos = (order.selectedRepos as unknown as Record<string, unknown>[]) ?? [];
     const repos = rawRepos.map(normalizeRepo);
-    const { since, until, maxCount } = buildCommitScope(order);
+    const { since, until, maxCount, years } = buildCommitScope(order);
     const excludedEmails = order.excludedDevelopers ?? [];
 
     log.info({
@@ -297,7 +297,9 @@ export async function processAnalysisJob(
       rlog.info('Extracting commits');
       await updateJobProgress(jobId, 0, undefined, 'extracting');
 
-      let commits = await gitExtractCommits(repoPath, { since, until, maxCount, excludedEmails });
+      let commits = years?.length
+        ? await extractCommitsForSelectedYears(repoPath, years, excludedEmails)
+        : await gitExtractCommits(repoPath, { since, until, maxCount, excludedEmails });
 
       // Benchmark: pin to the exact same commit set as the base analysis.
       // Without this, git fetch may pull new commits that weren't in the original run.
@@ -1112,13 +1114,39 @@ function createProgressTracker() {
   };
 }
 
+async function extractCommitsForSelectedYears(
+  repoPath: string,
+  years: number[],
+  excludedEmails: string[],
+): Promise<GitCommit[]> {
+  const uniqueYears = [...new Set(years)].sort((a, b) => b - a);
+  const bySha = new Map<string, GitCommit>();
+
+  for (const year of uniqueYears) {
+    const since = `${year}-01-01T00:00:00Z`;
+    const until = `${year + 1}-01-01T00:00:00Z`;
+    const yearCommits = await gitExtractCommits(repoPath, {
+      since,
+      until,
+      excludedEmails,
+    });
+    for (const commit of yearCommits) {
+      bySha.set(commit.sha, commit);
+    }
+  }
+
+  return [...bySha.values()].sort(
+    (a, b) => b.authorDate.getTime() - a.authorDate.getTime(),
+  );
+}
+
 function buildCommitScope(order: {
   analysisPeriodMode: string;
   analysisStartDate: Date | null;
   analysisEndDate: Date | null;
   analysisYears: number[];
   analysisCommitLimit: number | null;
-}): { since?: string; until?: string; maxCount?: number } {
+}): { since?: string; until?: string; maxCount?: number; years?: number[] } {
   if (
     order.analysisPeriodMode === 'LAST_N_COMMITS' &&
     order.analysisCommitLimit
@@ -1142,9 +1170,27 @@ function buildCommitScope(order: {
     order.analysisPeriodMode === 'SELECTED_YEARS' &&
     order.analysisYears.length > 0
   ) {
-    const minYear = Math.min(...order.analysisYears);
-    const maxYear = Math.max(...order.analysisYears);
+    const parseYear = (rawYear: unknown): number => {
+      if (typeof rawYear === 'number') return rawYear;
+      if (typeof rawYear === 'string' && /^\d+$/.test(rawYear.trim())) {
+        return Number.parseInt(rawYear.trim(), 10);
+      }
+      return Number.NaN;
+    };
+
+    const years = [...new Set(
+      (order.analysisYears as unknown[])
+        .map(parseYear)
+        .filter((year) => Number.isInteger(year) && year > 0)
+        .map((year) => Math.trunc(year))
+    )]
+      .sort((a, b) => a - b);
+    if (years.length === 0) return {};
+
+    const minYear = years[0]!;
+    const maxYear = years[years.length - 1]!;
     return {
+      years,
       since: `${minYear}-01-01T00:00:00Z`,
       until: `${maxYear + 1}-01-01T00:00:00Z`,
     };
