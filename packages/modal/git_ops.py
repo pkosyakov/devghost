@@ -140,6 +140,22 @@ def extract_commits(
     return _parse_git_log(result.stdout, excluded_emails)
 
 
+def get_repo_size_kb(repo_path: str) -> int:
+    """
+    Get git object database size in KB using `git count-objects -v`.
+    Returns 0 on any error.
+    """
+    try:
+        result = _run_git(["count-objects", "-v"], cwd=repo_path, timeout=60)
+        pack_match = re.search(r"size-pack:\s*(\d+)", result.stdout)
+        loose_match = re.search(r"^size:\s*(\d+)", result.stdout, flags=re.MULTILINE)
+        pack = int(pack_match.group(1)) if pack_match else 0
+        loose = int(loose_match.group(1)) if loose_match else 0
+        return max(0, pack + loose)
+    except Exception:
+        return 0
+
+
 def _parse_git_log(raw: str, excluded_emails: list[str] | None = None) -> list[dict]:
     """Parse git log output with numstat. Port of parseGitLog() from git-operations.ts."""
     exclude_set = {e.lower() for e in (excluded_emails or [])}

@@ -27,7 +27,7 @@ describe('getOrderWithAuth', () => {
   });
 
   it('returns error when not authenticated', async () => {
-    vi.mocked(auth).mockResolvedValue(null);
+    vi.mocked(auth).mockResolvedValue(null as any);
 
     const result = await getOrderWithAuth('order-123');
 

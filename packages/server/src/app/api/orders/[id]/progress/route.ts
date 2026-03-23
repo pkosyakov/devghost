@@ -4,6 +4,28 @@ import prisma from '@/lib/db';
 import { apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { getPipelineLogs, getJobMeta } from '@/lib/services/pipeline-log-store';
 
+function toPositiveNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function cloneSizeKbFromPayload(payload: unknown): number {
+  if (!payload || typeof payload !== 'object') return 0;
+  const row = payload as Record<string, unknown>;
+  const value =
+    toPositiveNumber(row.cloneSizeKb)
+    ?? toPositiveNumber(row.sizeKb)
+    ?? toPositiveNumber(row.repoSizeKb)
+    ?? 0;
+  return Math.floor(value);
+}
+
 // GET /api/orders/[id]/progress - Poll analysis job progress
 export async function GET(
   request: NextRequest,
@@ -111,6 +133,19 @@ export async function GET(
 
   const events = await prisma.analysisJobEvent.findMany(eventsQuery);
 
+  let cloneSizeKb = meta?.totalCloneSizeKb ?? 0;
+  if (cloneSizeKb <= 0) {
+    const cloneEvents = await prisma.analysisJobEvent.findMany({
+      where: { jobId: job.id, code: 'REPO_CLONE_DONE' },
+      select: { payload: true },
+    });
+    cloneSizeKb = cloneEvents.reduce(
+      (sum, event) => sum + cloneSizeKbFromPayload(event.payload),
+      0,
+    );
+  }
+  const cloneSizeMb = cloneSizeKb > 0 ? +(cloneSizeKb / 1024).toFixed(1) : null;
+
   const eventCursor =
     events.length > 0
       ? events[events.length - 1]!.id.toString()
@@ -138,7 +173,7 @@ export async function GET(
         totalCompletionTokens: job.totalCompletionTokens,
         totalLlmCalls: job.totalLlmCalls,
         totalCostUsd: job.totalCostUsd ? Number(job.totalCostUsd) : null,
-        cloneSizeMb: meta?.totalCloneSizeKb ? +(meta.totalCloneSizeKb / 1024).toFixed(1) : null,
+        cloneSizeMb,
         llmConcurrency: parseInt(process.env.LLM_CONCURRENCY || '1', 10),
         executionMode: job.executionMode,
         modalCallId: job.modalCallId,

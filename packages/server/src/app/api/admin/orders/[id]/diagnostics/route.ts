@@ -87,6 +87,28 @@ function parseSinceEventId(value: string | null): bigint | undefined {
   }
 }
 
+function toPositiveNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function cloneSizeKbFromPayload(payload: unknown): number {
+  if (!payload || typeof payload !== 'object') return 0;
+  const row = payload as Record<string, unknown>;
+  const value =
+    toPositiveNumber(row.cloneSizeKb)
+    ?? toPositiveNumber(row.sizeKb)
+    ?? toPositiveNumber(row.repoSizeKb)
+    ?? 0;
+  return Math.floor(value);
+}
+
 function evaluateAtomicSteps(
   events: Array<{ code: string | null; createdAt: Date }>,
   ageSec: number,
@@ -312,6 +334,19 @@ export async function GET(
     { info: 0, warn: 0, error: 0 },
   );
 
+  let cloneSizeKb = meta?.totalCloneSizeKb ?? 0;
+  if (cloneSizeKb <= 0) {
+    const cloneEvents = await prisma.analysisJobEvent.findMany({
+      where: { jobId: job.id, code: 'REPO_CLONE_DONE' },
+      select: { payload: true },
+    });
+    cloneSizeKb = cloneEvents.reduce(
+      (sum, event) => sum + cloneSizeKbFromPayload(event.payload),
+      0,
+    );
+  }
+  const cloneSizeMb = cloneSizeKb > 0 ? +(cloneSizeKb / 1024).toFixed(1) : null;
+
   return apiResponse({
     access: auth.mode,
     order,
@@ -339,7 +374,7 @@ export async function GET(
       totalCompletionTokens: job.totalCompletionTokens,
       totalLlmCalls: job.totalLlmCalls,
       totalCostUsd: job.totalCostUsd != null ? Number(job.totalCostUsd) : null,
-      cloneSizeMb: meta?.totalCloneSizeKb ? +(meta.totalCloneSizeKb / 1024).toFixed(1) : null,
+      cloneSizeMb,
       llmConcurrency: Number.parseInt(process.env.LLM_CONCURRENCY || '1', 10),
       logSource,
       log: logEntries,

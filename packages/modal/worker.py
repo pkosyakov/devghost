@@ -57,7 +57,7 @@ from db import (
     update_llm_usage, account_cached_batch, delete_existing_analyses,
     append_job_event,
 )
-from git_ops import clone_or_update, extract_commits
+from git_ops import clone_or_update, extract_commits, get_repo_size_kb
 from rate_limiter import RateLimiter
 
 
@@ -321,6 +321,7 @@ def run_analysis(job_id: str):
                     target_count=max(1, int(scope.get("max_count") or 1)),
                     excluded_emails=excluded_emails,
                 )
+                clone_size_kb = get_repo_size_kb(repo_path)
                 append_job_event(
                     conn,
                     job_id,
@@ -330,6 +331,7 @@ def run_analysis(job_id: str):
                     repo_name=repo_full_name,
                     payload={
                         "durationSec": round(time.time() - clone_started, 2),
+                        "cloneSizeKb": clone_size_kb,
                         "adaptiveShallow": adaptive_meta,
                     },
                 )
@@ -359,7 +361,10 @@ def run_analysis(job_id: str):
                     phase="clone",
                     code="REPO_CLONE_DONE",
                     repo_name=repo_full_name,
-                    payload={"durationSec": round(time.time() - clone_started, 2)},
+                    payload={
+                        "durationSec": round(time.time() - clone_started, 2),
+                        "cloneSizeKb": get_repo_size_kb(repo_path),
+                    },
                 )
 
                 years = scope.get("years")

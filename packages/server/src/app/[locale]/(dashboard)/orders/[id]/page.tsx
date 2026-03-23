@@ -183,6 +183,32 @@ function formatElapsed(ms: number): string {
   return `${s}s`;
 }
 
+function toPositiveNumber(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value > 0 ? value : null;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function formatSizeFromMb(sizeMb: number): string {
+  if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
+  if (sizeMb >= 100) return `${Math.round(sizeMb)} MB`;
+  return `${sizeMb.toFixed(1)} MB`;
+}
+
+function sumSelectedRepoSizeKb(selectedRepos: unknown): number {
+  if (!Array.isArray(selectedRepos)) return 0;
+  return selectedRepos.reduce((sum, repo) => {
+    if (!repo || typeof repo !== 'object') return sum;
+    const sizeKb = toPositiveNumber((repo as Record<string, unknown>).sizeKb) ?? 0;
+    return sum + sizeKb;
+  }, 0);
+}
+
 /** Ticking clock — returns current timestamp updating every second. */
 function useNow(enabled: boolean): number {
   const [now, setNow] = useState(Date.now());
@@ -823,6 +849,24 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const isHeartbeatStale = progress?.status === 'RUNNING' && heartbeatAgeMs != null && heartbeatAgeMs > 2 * 60 * 1000;
   const isHeartbeatCritical = progress?.status === 'RUNNING' && heartbeatAgeMs != null && heartbeatAgeMs > 10 * 60 * 1000;
   const isPostProcessingStale = progress?.status === 'LLM_COMPLETE' && updateAgeMs != null && updateAgeMs > 5 * 60 * 1000;
+  const repoSizeMb = useMemo(() => {
+    const totalRepoSizeKb = sumSelectedRepoSizeKb(order?.selectedRepos);
+    if (totalRepoSizeKb <= 0) return null;
+    return +(totalRepoSizeKb / 1024).toFixed(1);
+  }, [order?.selectedRepos]);
+  const cloneSizeMb = progress?.cloneSizeMb ?? null;
+  const cloneSavedMb = useMemo(() => {
+    if (repoSizeMb == null || cloneSizeMb == null) return null;
+    const saved = repoSizeMb - cloneSizeMb;
+    if (saved <= 0) return null;
+    return +saved.toFixed(1);
+  }, [repoSizeMb, cloneSizeMb]);
+  const cloneSavedPercent = useMemo(() => {
+    if (repoSizeMb == null || cloneSizeMb == null || repoSizeMb <= 0) return null;
+    const savedRatio = (repoSizeMb - cloneSizeMb) / repoSizeMb;
+    if (savedRatio <= 0) return null;
+    return Math.max(0, Math.min(100, Math.round(savedRatio * 100)));
+  }, [repoSizeMb, cloneSizeMb]);
 
   const quickTopUpMutation = useMutation({
     mutationFn: async (amount: number) => {
@@ -1321,11 +1365,22 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {t('detail.elapsed', { time: formatElapsed(elapsed) })}
                   </span>
                 )}
-                {progress?.cloneSizeMb != null && progress.cloneSizeMb > 0 && (
+                {repoSizeMb != null && repoSizeMb > 0 && (
                   <span>
-                    {t('detail.clone', { size: progress.cloneSizeMb >= 1024
-                      ? `${(progress.cloneSizeMb / 1024).toFixed(1)} GB`
-                      : `${progress.cloneSizeMb} MB` })}
+                    {t('detail.repositorySize', { size: formatSizeFromMb(repoSizeMb) })}
+                  </span>
+                )}
+                {cloneSizeMb != null && cloneSizeMb > 0 && (
+                  <span>
+                    {t('detail.clone', { size: formatSizeFromMb(cloneSizeMb) })}
+                  </span>
+                )}
+                {cloneSavedMb != null && cloneSavedPercent != null && (
+                  <span className="text-emerald-700">
+                    {t('detail.cloneSaved', {
+                      size: formatSizeFromMb(cloneSavedMb),
+                      percent: cloneSavedPercent,
+                    })}
                   </span>
                 )}
                 {progress?.llmProvider && (
