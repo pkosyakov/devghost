@@ -1,0 +1,733 @@
+// DevGhost - Database Schema
+// PostgreSQL + Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ==================== USER ====================
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+model User {
+  id               String   @id @default(cuid())
+  email            String   @unique
+  passwordHash     String
+  name             String?
+  githubAccessToken String?
+  githubUsername   String?
+  role             UserRole @default(USER)
+  isBlocked        Boolean  @default(false)
+  blockedAt        DateTime?
+  lastLoginAt      DateTime?
+
+  // Credit wallets
+  permanentCredits      Int       @default(0)
+  subscriptionCredits   Int       @default(0)
+  reservedCredits       Int       @default(0)
+  subscriptionExpiresAt DateTime?
+
+  // Stripe
+  stripeCustomerId      String?   @unique
+
+  // Referral
+  referralCode          String    @unique @default(cuid())
+  referredByUserId      String?
+  referredByUser        User?     @relation("Referrals", fields: [referredByUserId], references: [id])
+  referredUsers         User[]    @relation("Referrals")
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relations
+  orders           Order[]
+  auditLogs        AuditLog[]
+  creditTransactions    CreditTransaction[]
+  userSubscription      UserSubscription?
+  promoRedemptions      PromoRedemption[]
+  referralsMade         Referral[] @relation("Referrer")
+  referralsReceived     Referral[] @relation("Referred")
+  publications          RepoPublication[] @relation("UserPublications")
+  developerProfile      DeveloperProfile?
+  comments              Comment[]
+  refreshTokens         RefreshToken[]
+  deviceTokens          DeviceToken[]
+}
+
+// ==================== REFRESH TOKEN (Mobile Auth) ====================
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  deviceId  String
+  expiresAt DateTime
+  rotatedAt DateTime?
+  createdAt DateTime  @default(now())
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tokenHash])
+}
+
+// ==================== DEVICE TOKEN (Push Notifications) ====================
+
+model DeviceToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ==================== APP STORE EVENT (IAP Idempotency) ====================
+
+model AppStoreEvent {
+  id                    String   @id @default(cuid())
+  originalTransactionId String   @unique
+  type                  String
+  productId             String
+  processedAt           DateTime @default(now())
+}
+
+// ==================== SYSTEM SETTINGS (Singleton) ====================
+
+model SystemSettings {
+  id               String   @id @default("singleton")
+  llmProvider      String   @default("ollama")
+  ollamaUrl        String   @default("http://localhost:11434")
+  ollamaModel      String   @default("qwen2.5-coder:32b")
+  openrouterApiKey String   @default("")
+  openrouterModel  String   @default("qwen/qwen-2.5-coder-32b-instruct")
+  // Provider routing prefs for OpenRouter (comma-separated slugs for order/ignore)
+  openrouterProviderOrder String  @default("Chutes")
+  openrouterProviderIgnore String @default("Cloudflare")
+  openrouterAllowFallbacks Boolean @default(true)
+  openrouterRequireParameters Boolean @default(true)
+  openrouterInputPrice  Decimal @default(0.03) @db.Decimal(12, 8)
+  openrouterOutputPrice Decimal @default(0.11) @db.Decimal(12, 8)
+
+  // Monetization
+  defaultFreeCredits      Int @default(100)
+  referralBonusMultiplier Int @default(2)
+  maxReferralsPerUser     Int @default(20)
+  demoLiveMode            Boolean @default(false)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// ==================== AUDIT LOG ====================
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  details    Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// ==================== ORDER (Central Entity) ====================
+
+model Order {
+  id        String      @id @default(cuid())
+  userId    String
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String      @default("New Analysis")
+  status    OrderStatus @default(DRAFT)
+
+  // Selected repositories (JSONB array)
+  // [{id, name, full_name, url, clone_url, language, stars, is_private, owner}]
+  selectedRepos Json @default("[]")
+
+  // Extracted developers (JSONB array) - auto-extracted from commits
+  // [{email, name, login, avatar_url, commit_count, repositories}]
+  selectedDevelopers Json @default("[]")
+
+  // Developer deduplication mapping (JSONB object)
+  // {"primary_email": {primary: Developer, merged_from: Developer[]}}
+  developerMapping Json @default("{}")
+
+  // Excluded developers (array of emails) - not included in analysis
+  excludedDevelopers String[] @default([])
+
+  // Analysis settings
+  analysisPeriodMode AnalysisPeriodMode @default(ALL_TIME)
+  analysisYears      Int[]              @default([])
+
+  // Date range for DATE_RANGE mode
+  analysisStartDate  DateTime?
+  analysisEndDate    DateTime?
+
+  // Commit limit for LAST_N_COMMITS mode
+  analysisCommitLimit Int?
+
+  // Cached available date range from repositories
+  availableStartDate DateTime?
+  availableEndDate   DateTime?
+
+  // Metrics
+  totalCommits Int @default(0)
+
+  // Processing progress
+  repositoriesTotal     Int     @default(0)
+  repositoriesProcessed Int     @default(0)
+  repositoriesFailed    Int     @default(0)
+  currentRepoName       String?
+  errorMessage          String?
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  analyzedAt  DateTime?
+  completedAt DateTime?
+
+  // Relations
+  metrics           OrderMetric[]
+  commitAnalyses    CommitAnalysis[]
+  dailyEfforts      DailyEffort[]
+  developerSettings DeveloperSettings[]
+  analysisJobs      AnalysisJob[]
+  groundTruths      GroundTruth[]
+  publications      RepoPublication[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+// ==================== DEVELOPER SETTINGS (Per-Order Adjustments) ====================
+
+model DeveloperSettings {
+  id             String   @id @default(cuid())
+  orderId        String
+  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  developerEmail      String
+  share               Decimal  @default(1.0) @db.Decimal(5, 4)
+  isExcluded          Boolean  @default(false)
+  shareAutoCalculated Boolean  @default(true)
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([orderId, developerEmail])
+  @@index([orderId])
+}
+
+// ==================== ORDER METRICS ====================
+
+model OrderMetric {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Developer identity (from mapping)
+  developerEmail String
+  developerName  String
+
+  // Period
+  periodType PeriodType
+  year       Int?
+  month      Int?
+
+  // Effort metrics
+  commitCount      Int      @default(0)
+  workDays         Int      @default(0)
+  totalEffortHours Decimal? @db.Decimal(10, 2)
+  avgDailyEffort   Decimal? @db.Decimal(10, 4)
+
+  // Ghost metrics
+  ghostPercentRaw Decimal? @db.Decimal(10, 2)  // Raw ghost % before share adjustment
+  ghostPercent    Decimal? @db.Decimal(10, 2)  // Final ghost % after share adjustment
+
+  // Share
+  share               Decimal? @default(1.0) @db.Decimal(5, 4)
+  shareAutoCalculated Boolean  @default(true)
+
+  calculatedAt DateTime @default(now())
+
+  @@unique([orderId, developerEmail, periodType, year, month])
+  @@index([orderId])
+  @@index([developerEmail])
+}
+
+// ==================== COMMIT ANALYSIS (Order-specific) ====================
+
+model CommitAnalysis {
+  id        String @id @default(cuid())
+  orderId   String
+  order     Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  // Benchmark support — null for original analysis, set for benchmark runs
+  jobId     String?
+  job       AnalysisJob? @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  // Commit info
+  commitHash    String
+  commitMessage String
+  authorEmail   String
+  authorName    String
+  authorDate    DateTime
+  repository    String
+
+  // Metrics from Git
+  additions  Int @default(0)
+  deletions  Int @default(0)
+  filesCount Int @default(0)
+
+  // AI Analysis results
+  effortHours Decimal @default(0) @db.Decimal(8, 2)
+  category    String?  // feature, bugfix, refactor, docs, test, chore
+  complexity  String?  // trivial, simple, moderate, complex, expert
+  confidence  Decimal  @default(0) @db.Decimal(3, 2) // 0.00 - 1.00
+  method      String?  // pipeline estimation method: llm_v16, FD_hybrid, FD_fallback, etc.
+  llmModel    String?   // e.g. "qwen2.5-coder:32b"; null for FD methods or legacy rows
+
+  analyzedAt DateTime @default(now())
+
+  @@unique([orderId, commitHash, jobId])
+  @@index([orderId])
+  @@index([authorEmail])
+  @@index([commitHash, repository])
+  @@index([commitHash, llmModel])
+}
+
+// ==================== DAILY EFFORT (Distributed Layer) ====================
+
+model DailyEffort {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  developerEmail   String
+  date             DateTime @db.Date
+  effortHours      Decimal  @db.Decimal(6, 2)
+
+  sourceCommitHash String
+  sourceCommitDate DateTime
+
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, developerEmail, date, sourceCommitHash])
+  @@index([orderId, developerEmail])
+  @@index([orderId, date])
+}
+
+// ==================== GROUND TRUTH (Expert Estimates) ====================
+
+model GroundTruth {
+  id         String   @id @default(cuid())
+  orderId    String
+  commitHash String
+  author     String   @default("unknown")
+  repository String?
+  hours      Float
+  notes      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([orderId, commitHash, author])
+  @@index([orderId])
+  @@index([orderId, author])
+}
+
+// ==================== ANALYSIS JOB ====================
+
+model AnalysisJob {
+  id              String            @id @default(cuid())
+  orderId         String
+  order           Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  status          AnalysisJobStatus @default(PENDING)
+  progress        Int               @default(0)
+  currentStep     String?
+  currentCommit   Int?
+  totalCommits    Int?
+  error           String?
+  startedAt       DateTime?
+  completedAt     DateTime?
+  lastAnalyzedShas Json?            @db.JsonB
+
+  // Benchmark support
+  type            String    @default("analysis")  // "analysis" | "benchmark"
+  baseJobId       String?
+  baseJob         AnalysisJob?  @relation("BenchmarkBase", fields: [baseJobId], references: [id])
+  benchmarks      AnalysisJob[] @relation("BenchmarkBase")
+  commitAnalyses  CommitAnalysis[]
+  events          AnalysisJobEvent[]
+
+  // LLM usage tracking (populated after pipeline completes)
+  llmProvider         String?
+  llmModel            String?
+  totalPromptTokens   Int?
+  totalCompletionTokens Int?
+  totalLlmCalls       Int?
+  totalCostUsd        Decimal?  @db.Decimal(10, 6)
+  pipelineLog         Json?             @db.JsonB  // Persisted commit-level processing log
+  llmConfigSnapshot     Json?     @db.JsonB  // Resolved launch-time config (provider, model, routing)
+  llmConfigFingerprint  String?              // Stable hash for reproducibility/cache grouping
+
+  // Credit reservation (per-job tracking)
+  creditsReserved       Int       @default(0)
+  creditsConsumed       Int       @default(0)
+  creditsReleased       Int       @default(0)
+
+  // Lease & Heartbeat (Modal execution)
+  lockedBy            String?              // Modal function call ID (prevents double-processing)
+  heartbeatAt         DateTime?            // Last heartbeat from Modal worker (UTC)
+  retryCount          Int       @default(0)  // Number of retry attempts
+  maxRetries          Int       @default(3)  // Max retries before FAILED_FATAL
+
+  // Execution mode
+  executionMode       String    @default("local") // "local" | "modal"
+  modalCallId         String?              // Modal's function call ID for external tracking
+
+  // Pipeline context for Modal worker
+  cacheMode           String    @default("model") // "any" | "model" | "off"
+  skipBilling         Boolean   @default(false)   // true for ADMINs or billing disabled
+  forceRecalculate    Boolean   @default(false)   // true = delete existing CommitAnalysis before re-analyzing
+
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([orderId, status])
+  @@index([status, heartbeatAt])
+  @@index([status])
+}
+
+// ==================== ANALYSIS JOB EVENT (Live Diagnostics) ====================
+
+model AnalysisJobEvent {
+  id        BigInt   @id @default(autoincrement())
+  jobId     String
+  job       AnalysisJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  level     String   @default("info") // info | warn | error
+  phase     String?
+  code      String?
+  message   String
+  repo      String?
+  sha       String?
+  payload   Json?    @db.JsonB
+
+  createdAt DateTime @default(now())
+
+  @@index([jobId, id])
+  @@index([jobId, createdAt])
+}
+
+// ==================== ENUMS ====================
+
+enum OrderStatus {
+  DRAFT
+  DEVELOPERS_LOADED
+  READY_FOR_ANALYSIS
+  PROCESSING
+  COMPLETED
+  FAILED
+  INSUFFICIENT_CREDITS
+}
+
+enum AnalysisPeriodMode {
+  ALL_TIME
+  SELECTED_YEARS
+  DATE_RANGE
+  LAST_N_COMMITS
+}
+
+enum PeriodType {
+  ALL_TIME
+  YEAR
+  QUARTER
+  MONTH
+  WEEK
+  DAY
+}
+
+enum AnalysisJobStatus {
+  PENDING
+  RUNNING
+  LLM_COMPLETE        // Modal done, Vercel post-processing pending
+  COMPLETED
+  FAILED              // Legacy — treated as FAILED_FATAL
+  FAILED_RETRYABLE    // Transient failure, watchdog will retry
+  FAILED_FATAL        // Permanent failure, needs human intervention
+  CANCELLED
+}
+
+// ==================== BILLING ====================
+
+enum CreditTransactionType {
+  REGISTRATION
+  PACK_PURCHASE
+  SUBSCRIPTION_RENEWAL
+  SUBSCRIPTION_EXPIRY
+  PROMO_REDEMPTION
+  REFERRAL_BONUS
+  REFERRAL_REWARD
+  ANALYSIS_RESERVE
+  ANALYSIS_DEBIT
+  ANALYSIS_RELEASE
+  ADMIN_ADJUSTMENT
+  IAP_PURCHASE
+  IAP_SUBSCRIPTION_RENEWAL
+  IAP_REFUND
+}
+
+enum WalletType {
+  PERMANENT
+  SUBSCRIPTION
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+}
+
+// ==================== CREDIT TRANSACTION ====================
+
+model CreditTransaction {
+  id              String                @id @default(cuid())
+  userId          String
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            CreditTransactionType
+  amount          Int
+  wallet          WalletType
+  balanceAfter    Int
+  description     String?
+
+  // Loose references (no FK) — audit trail survives parent deletion
+  relatedOrderId  String?
+  relatedPromoId  String?
+  stripePaymentId String?
+  stripeEventId   String?
+
+  createdAt       DateTime              @default(now())
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@index([type])
+  @@index([relatedOrderId])
+}
+
+// ==================== CREDIT PACK ====================
+
+model CreditPack {
+  id            String   @id @default(cuid())
+  name          String
+  credits       Int
+  priceUsd      Decimal  @db.Decimal(8, 2)
+  stripePriceId String   @unique
+  appStoreProductId String? @unique
+  isActive      Boolean  @default(true)
+  sortOrder     Int      @default(0)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([name])
+}
+
+// ==================== SUBSCRIPTION ====================
+
+model Subscription {
+  id              String   @id @default(cuid())
+  name            String
+  creditsPerMonth Int
+  priceUsd        Decimal  @db.Decimal(8, 2)
+  stripePriceId   String   @unique
+  appStoreProductId String? @unique
+  isActive        Boolean  @default(true)
+  sortOrder       Int      @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  userSubscriptions UserSubscription[]
+
+  @@unique([name])
+}
+
+model UserSubscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  user                 User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId       String
+  subscription         Subscription       @relation(fields: [subscriptionId], references: [id], onDelete: Restrict)
+  stripeSubscriptionId String             @unique
+  appStoreOriginalTransactionId String?  @unique
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime
+  currentPeriodEnd     DateTime
+
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+}
+
+// ==================== PROMO CODE ====================
+
+model PromoCode {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  credits         Int
+  maxRedemptions  Int?
+  redemptionCount Int      @default(0)
+  expiresAt       DateTime
+  isActive        Boolean  @default(true)
+  description     String?
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  redemptions     PromoRedemption[]
+}
+
+model PromoRedemption {
+  id          String    @id @default(cuid())
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  redeemedAt  DateTime  @default(now())
+
+  @@unique([promoCodeId, userId])
+  @@index([userId])
+}
+
+// ==================== STRIPE EVENT (Idempotency) ====================
+
+model StripeEvent {
+  id          String   @id
+  type        String
+  processedAt DateTime @default(now())
+
+  @@index([type])
+}
+
+// ==================== REFERRAL ====================
+
+model Referral {
+  id             String   @id @default(cuid())
+  referrerId     String
+  referrer       User     @relation("Referrer", fields: [referrerId], references: [id], onDelete: Cascade)
+  referredId     String   @unique
+  referred       User     @relation("Referred", fields: [referredId], references: [id], onDelete: Cascade)
+  creditsAwarded Int
+
+  createdAt      DateTime @default(now())
+
+  @@index([referrerId])
+}
+
+// ==================== PUBLIC SHARING ====================
+
+enum PublishType {
+  USER
+  ADMIN
+}
+
+model RepoPublication {
+  id              String      @id @default(cuid())
+
+  owner           String
+  repo            String
+  slug            String      @unique
+
+  orderId         String
+  order           Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  publishedById   String
+  publishedBy     User        @relation("UserPublications", fields: [publishedById], references: [id], onDelete: Cascade)
+
+  publishType     PublishType
+  shareToken      String?     @unique
+  isActive        Boolean     @default(true)
+
+  isFeatured      Boolean     @default(false)
+  title           String?
+  description     String?
+  sortOrder       Int         @default(0)
+
+  visibleDevelopers Json?
+
+  viewCount       Int         @default(0)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([publishType, isActive])
+  @@index([isFeatured, sortOrder])
+}
+
+model DeveloperProfile {
+  id              String      @id @default(cuid())
+
+  userId          String      @unique
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  slug            String      @unique
+
+  displayName     String
+  bio             String?
+  avatarUrl       String?
+
+  includedOrderIds Json?
+
+  isActive        Boolean     @default(true)
+
+  viewCount       Int         @default(0)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
+
+// ==================== COMMENTS ====================
+
+enum CommentTargetType {
+  PUBLICATION
+  PROFILE
+}
+
+model Comment {
+  id         String             @id @default(cuid())
+  content    String             @db.VarChar(1000)
+
+  authorId   String
+  author     User               @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  targetType CommentTargetType
+  targetId   String
+
+  parentId   String?
+  parent     Comment?           @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies    Comment[]          @relation("CommentReplies")
+
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([targetType, targetId])
+  @@index([parentId])
+  @@index([authorId])
+}

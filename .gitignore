@@ -1,0 +1,30 @@
+node_modules/
+.next/
+dist/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+.tmp-prod*.env
+
+# Mobile
+packages/mobile/ios/Pods/
+packages/mobile/android/.gradle/
+*.expo/
+
+# Pipeline
+*.pkl
+__pycache__/
+packages/server/scripts/.cache/
+packages/server/tmp/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.vercel

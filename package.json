@@ -1,0 +1,28 @@
+{
+  "name": "devghost",
+  "private": true,
+  "packageManager": "pnpm@10.23.0",
+  "scripts": {
+    "dev": "pnpm --filter @devghost/server dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "db:push": "pnpm --filter @devghost/server db:push",
+    "db:migrate": "pnpm --filter @devghost/server db:migrate",
+    "db:seed": "pnpm --filter @devghost/server db:seed",
+    "db:studio": "pnpm --filter @devghost/server db:studio"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@prisma/client",
+      "@prisma/engines",
+      "esbuild",
+      "prisma",
+      "sharp",
+      "unrs-resolver"
+    ]
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "pnpm --filter @devghost/server build",
+  "outputDirectory": "packages/server/.next",
+  "installCommand": "pnpm install"
+}
