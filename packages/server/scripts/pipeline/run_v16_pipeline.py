@@ -584,6 +584,18 @@ def call_llm(system, prompt, schema=None, max_tokens=1024):
     return parsed, meta
 
 
+def call_llm_timed(system, prompt, schema=None, max_tokens=1024):
+    """LLM call wrapper that records wall-clock timing for timeline diagnostics."""
+    started_at_ms = int(time.time() * 1000)
+    parsed, meta = call_llm(system, prompt, schema=schema, max_tokens=max_tokens)
+    finished_at_ms = int(time.time() * 1000)
+    meta = dict(meta or {})
+    meta['started_at_ms'] = started_at_ms
+    meta['finished_at_ms'] = finished_at_ms
+    meta['wall_time_ms'] = max(0, finished_at_ms - started_at_ms)
+    return parsed, meta
+
+
 def get_changed_files(repo_dir, sha):
     """Get list of changed file paths for a commit."""
     result = subprocess.run(
@@ -776,7 +788,7 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
             # Wrap to collect meta from each LLM call.
             fd_llm_calls = []
             def call_llm_fd(system, prompt, schema=None, max_tokens=1024):
-                parsed, meta = call_llm(system, prompt, schema, max_tokens)
+                parsed, meta = call_llm_timed(system, prompt, schema, max_tokens)
                 fd_llm_calls.append({**meta, 'step': 'fd'})
                 return parsed
 
@@ -824,9 +836,9 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
 
     # Step 3: Pass 1 — Classification
     llm_calls = []
-    analysis, meta = call_llm(PROMPT_PASS1.format(lang=lang),
-                                  f'{user_base}\n\nClassify this commit:',
-                                  schema=ANALYSIS_SCHEMA)
+    analysis, meta = call_llm_timed(PROMPT_PASS1.format(lang=lang),
+                                    f'{user_base}\n\nClassify this commit:',
+                                    schema=ANALYSIS_SCHEMA)
     llm_calls.append({**meta, 'step': 'pass1_classify'})
     if not analysis:
         return {
@@ -848,11 +860,11 @@ Scope: {scope}, Complexity: {analysis.get('cognitive_complexity', '?')}"""
     if scope in ('none', 'module'):
         # v18: module uses simple estimate only (no decomp ensemble, no MODULE_BIAS)
         # Experiment showed: simple-only MAE=1.11 vs ensemble+bias MAE=1.40 on 51 module commits
-        result, meta = call_llm(PROMPT_2PASS_V2.format(lang=lang), estimate_input, schema=ESTIMATE_SCHEMA)
+        result, meta = call_llm_timed(PROMPT_2PASS_V2.format(lang=lang), estimate_input, schema=ESTIMATE_SCHEMA)
         llm_calls.append({**meta, 'step': 'pass2_estimate'})
         raw_estimate = result.get('estimated_hours', 5.0) if result else 5.0
     else:
-        result, meta = call_llm(PROMPT_HYBRID_C.format(lang=lang), estimate_input, schema=ESTIMATE_SCHEMA)
+        result, meta = call_llm_timed(PROMPT_HYBRID_C.format(lang=lang), estimate_input, schema=ESTIMATE_SCHEMA)
         llm_calls.append({**meta, 'step': 'pass2_hybrid'})
         raw_estimate = result.get('estimated_hours', 5.0) if result else 5.0
 

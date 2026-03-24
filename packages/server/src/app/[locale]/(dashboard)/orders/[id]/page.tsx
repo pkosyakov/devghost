@@ -18,6 +18,7 @@ import { BenchmarkLauncher } from '@/components/benchmark-launcher';
 import { BenchmarkMatrix } from '@/components/benchmark-matrix';
 import { PipelineLog } from '@/components/pipeline-log';
 import { AnalysisEventLog } from '@/components/analysis-event-log';
+import { CommitProcessingTimeline } from '@/components/commit-processing-timeline';
 import { EffortTimeline } from '@/components/effort-timeline';
 import type { PipelineLogEntry } from '@/components/pipeline-log';
 import type { AnalysisEventEntry } from '@/components/analysis-event-log';
@@ -1514,6 +1515,19 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </div>
               )}
 
+              <CommitProcessingTimeline
+                events={jobEvents}
+                pipelineEntries={pipelineLog}
+                jobStartedAt={progress?.startedAt ?? null}
+                title={t('detail.commitTimelineTitle')}
+                emptyLabel={t('detail.commitTimelineEmpty')}
+                spanLabel={t('detail.commitTimelineSpan')}
+                showChildrenLabel={t('detail.commitTimelineShowChildren')}
+                hideChildrenLabel={t('detail.commitTimelineHideChildren')}
+                commitLegendLabel={t('detail.commitTimelineLegendCommit')}
+                fdChildLegendLabel={t('detail.commitTimelineLegendFdChild')}
+              />
+
               {/* Live diagnostics events */}
               {jobEvents.length > 0 ? (
                 <AnalysisEventLog
@@ -1742,6 +1756,18 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               </Button>
               {showCompletedLog && (
                 <div className="space-y-3">
+                  <CommitProcessingTimeline
+                    events={jobEvents}
+                    pipelineEntries={pipelineLog}
+                    jobStartedAt={progress?.startedAt ?? null}
+                    title={t('detail.commitTimelineTitle')}
+                    emptyLabel={t('detail.commitTimelineEmpty')}
+                    spanLabel={t('detail.commitTimelineSpan')}
+                    showChildrenLabel={t('detail.commitTimelineShowChildren')}
+                    hideChildrenLabel={t('detail.commitTimelineHideChildren')}
+                    commitLegendLabel={t('detail.commitTimelineLegendCommit')}
+                    fdChildLegendLabel={t('detail.commitTimelineLegendFdChild')}
+                  />
                   {jobEvents.length > 0 && (
                     <AnalysisEventLog
                       entries={jobEvents}

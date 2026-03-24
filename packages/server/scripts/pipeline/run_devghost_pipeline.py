@@ -16,6 +16,7 @@ import os
 import io
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -82,13 +83,18 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
     def process_one(idx: int, commit: dict):
         sha = commit['sha']
         message = commit.get('message', '')
+        started_at_ms = int(time.time() * 1000)
 
         if fail_event.is_set():
+            finished_at_ms = int(time.time() * 1000)
             return idx, {
                 'sha': sha, 'estimated_hours': 0, 'raw_estimate': 0,
                 'method': 'skipped', 'routed_to': 'fail_fast',
                 'analysis': None, 'rule_applied': None,
                 'complexity_score': 0, 'complexity_guard': None, 'llm_calls': [],
+                'started_at_ms': started_at_ms,
+                'finished_at_ms': finished_at_ms,
+                'wall_time_ms': max(0, finished_at_ms - started_at_ms),
             }, None
 
         try:
@@ -109,10 +115,15 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
                 result = run_commit(repo_dir, language, sha, message, repo_slug=repo_slug)
                 result['sha'] = sha
 
+            finished_at_ms = int(time.time() * 1000)
+            result['started_at_ms'] = started_at_ms
+            result['finished_at_ms'] = finished_at_ms
+            result['wall_time_ms'] = max(0, finished_at_ms - started_at_ms)
             return idx, result, None
 
         except Exception as e:
             err_msg = f"Commit {sha[:8]}: {e}"
+            finished_at_ms = int(time.time() * 1000)
             error_result = {
                 'sha': sha,
                 'estimated_hours': 5.0,
@@ -124,6 +135,9 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
                 'complexity_score': 0,
                 'complexity_guard': None,
                 'llm_calls': [],
+                'started_at_ms': started_at_ms,
+                'finished_at_ms': finished_at_ms,
+                'wall_time_ms': max(0, finished_at_ms - started_at_ms),
             }
             return idx, error_result, err_msg
 
@@ -156,6 +170,9 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
                 'method': result.get('method'),
                 'type': (result.get('analysis') or {}).get('change_type'),
                 'error': llm_error,
+                'startedAtMs': result.get('started_at_ms'),
+                'finishedAtMs': result.get('finished_at_ms'),
+                'wallTimeMs': result.get('wall_time_ms'),
             }
             if llm_calls:
                 log_entry['durationMs'] = sum(c.get('total_duration_ms', 0) for c in llm_calls)

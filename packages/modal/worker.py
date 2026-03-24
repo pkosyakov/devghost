@@ -86,6 +86,7 @@ LAST_N_SHALLOW_INITIAL_DAYS = _env_positive_int("LAST_N_SHALLOW_INITIAL_DAYS", 3
 LAST_N_SHALLOW_MAX_DAYS = _env_positive_int("LAST_N_SHALLOW_MAX_DAYS", 3650)
 LAST_N_SHALLOW_GROWTH_FACTOR = max(2, _env_positive_int("LAST_N_SHALLOW_GROWTH_FACTOR", 2))
 REPO_VOLUME_CHECKPOINTS = _env_bool("REPO_VOLUME_CHECKPOINTS", True)
+COMMIT_TIMELINE_EVENTS = _env_bool("COMMIT_TIMELINE_EVENTS", True)
 PIPELINE_CACHE_DIR = (os.environ.get("PIPELINE_CACHE_DIR") or "/cache/pipeline").strip()
 PIPELINE_CACHE_NAMESPACE = (os.environ.get("PIPELINE_CACHE_NAMESPACE") or "prod").strip()
 WATCHDOG_TRIGGER_URL = (os.environ.get("WATCHDOG_TRIGGER_URL") or "").strip()
@@ -850,7 +851,7 @@ def _process_repo_commits(
             saved_count += len(analyses)
             total_analyzed += len(analyses)
 
-        if demo_live_mode:
+        if COMMIT_TIMELINE_EVENTS:
             _emit_commit_live_results(
                 conn=conn,
                 job_id=job_id,
@@ -977,6 +978,13 @@ def _to_float_or_none(value):
         return None
 
 
+def _to_int_or_none(value):
+    value_f = _to_float_or_none(value)
+    if value_f is None:
+        return None
+    return int(value_f)
+
+
 def _confidence_from_method(method: str) -> float:
     confidence = 0.8
     if method.startswith("FD"):
@@ -1072,7 +1080,9 @@ def _emit_commit_live_results(
     commit_lookup: dict[str, dict],
     chunk_results: list[dict],
 ) -> None:
-    """Emit per-commit live telemetry events (demo mode) for UI visibility."""
+    """Emit per-commit live telemetry events for progress timeline visibility."""
+    fd_child_cap = 120
+
     for result in chunk_results:
         sha = str(result.get("sha") or "")
         if not sha:
@@ -1083,9 +1093,20 @@ def _emit_commit_live_results(
         method = str(result.get("method") or "unknown")
         error_text = result.get("error")
         level = "warn" if (method == "error" or error_text) else "info"
+        llm_calls = result.get("llm_calls") if isinstance(result.get("llm_calls"), list) else []
 
         estimated_hours = _to_float_or_none(result.get("estimated_hours"))
         confidence = _confidence_from_method(method)
+        commit_started_at_ms = _to_int_or_none(result.get("started_at_ms") or result.get("startedAtMs"))
+        commit_finished_at_ms = _to_int_or_none(result.get("finished_at_ms") or result.get("finishedAtMs"))
+        commit_wall_time_ms = _to_float_or_none(result.get("wall_time_ms") or result.get("wallTimeMs"))
+        llm_duration_ms = sum(
+            (_to_float_or_none(call.get("total_duration_ms")) or 0.0)
+            for call in llm_calls
+            if isinstance(call, dict)
+        )
+        duration_ms = llm_duration_ms if llm_duration_ms > 0 else commit_wall_time_ms
+
         payload = {
             "method": method,
             "estimatedHours": round(estimated_hours, 2) if estimated_hours is not None else None,
@@ -1094,9 +1115,70 @@ def _emit_commit_live_results(
             "confidence": round(confidence, 3),
             "type": result.get("type"),
             "subject": str(commit.get("message") or "")[:140] or None,
+            "llmCallCount": len(llm_calls),
+            "durationMs": round(duration_ms, 1) if duration_ms is not None else None,
         }
+        if commit_started_at_ms is not None:
+            payload["commitStartedAtMs"] = commit_started_at_ms
+        if commit_finished_at_ms is not None:
+            payload["commitFinishedAtMs"] = commit_finished_at_ms
+        if commit_wall_time_ms is not None:
+            payload["commitWallTimeMs"] = round(commit_wall_time_ms, 1)
         if error_text:
             payload["error"] = str(error_text)[:240]
+
+        fd_children = []
+        fd_details = result.get("fd_details") if isinstance(result.get("fd_details"), dict) else {}
+        raw_file_timeline = fd_details.get("file_timeline") if isinstance(fd_details, dict) else None
+
+        if isinstance(raw_file_timeline, list):
+            for idx, child in enumerate(raw_file_timeline):
+                if not isinstance(child, dict):
+                    continue
+                child_start = _to_int_or_none(child.get("started_at_ms") or child.get("startedAtMs"))
+                child_finish = _to_int_or_none(child.get("finished_at_ms") or child.get("finishedAtMs"))
+                child_wall = _to_float_or_none(child.get("wall_time_ms") or child.get("wallTimeMs"))
+                fd_children.append({
+                    "id": f"file-{idx + 1}",
+                    "label": str(child.get("file") or f"file-{idx + 1}")[:180],
+                    "startedAtMs": child_start,
+                    "finishedAtMs": child_finish,
+                    "wallTimeMs": round(child_wall, 1) if child_wall is not None else None,
+                    "estimatedHours": _to_float_or_none(child.get("estimated_hours") or child.get("estimatedHours")),
+                    "tags": child.get("tags") if isinstance(child.get("tags"), list) else None,
+                })
+
+        elif method.startswith("FD"):
+            for idx, call in enumerate(llm_calls):
+                if not isinstance(call, dict):
+                    continue
+                child_start = _to_int_or_none(call.get("started_at_ms") or call.get("startedAtMs"))
+                child_finish = _to_int_or_none(call.get("finished_at_ms") or call.get("finishedAtMs"))
+                child_wall = _to_float_or_none(call.get("wall_time_ms") or call.get("wallTimeMs"))
+                child_duration = _to_float_or_none(call.get("total_duration_ms"))
+                fd_children.append({
+                    "id": f"llm-{idx + 1}",
+                    "label": str(call.get("step") or "fd"),
+                    "startedAtMs": child_start,
+                    "finishedAtMs": child_finish,
+                    "wallTimeMs": round(child_wall, 1) if child_wall is not None else None,
+                    "durationMs": round(child_duration, 1) if child_duration is not None else None,
+                    "cacheHit": bool(call.get("cache_hit")),
+                    "provider": str(call.get("provider") or "") or None,
+                    "error": str(call.get("error") or "")[:180] or None,
+                })
+
+        if fd_children:
+            fd_children.sort(
+                key=lambda child: (
+                    child.get("startedAtMs") if isinstance(child, dict) and child.get("startedAtMs") is not None else 0,
+                    child.get("id") if isinstance(child, dict) else "",
+                )
+            )
+            if len(fd_children) > fd_child_cap:
+                payload["fdChildrenTruncated"] = len(fd_children) - fd_child_cap
+                fd_children = fd_children[:fd_child_cap]
+            payload["fdChildren"] = fd_children
 
         append_job_event(
             conn,

@@ -10,6 +10,9 @@ export interface PipelineLogEntry {
   method?: string;
   type?: string;
   durationMs?: number;
+  startedAtMs?: number;
+  finishedAtMs?: number;
+  wallTimeMs?: number;
   error?: string;
   repo?: string;
 }

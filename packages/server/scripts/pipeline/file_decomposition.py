@@ -799,11 +799,19 @@ Classify each file. Reply with ONLY valid JSON."""
 def summarize_file_full(filename, file_diff, tags, commit_message, commit_stats,
                         sys_file, call_ollama_fn, move_info=None, bulk_info=None):
     """Summarize a file with full diff (no truncation). Handles chunking for very large files."""
+    started_at_ms = int(time.time() * 1000)
+
+    def with_timing(payload):
+        finished_at_ms = int(time.time() * 1000)
+        payload["started_at_ms"] = started_at_ms
+        payload["finished_at_ms"] = finished_at_ms
+        payload["wall_time_ms"] = max(0, finished_at_ms - started_at_ms)
+        return payload
 
     # For bulk patterned files, hardcode estimate (no LLM call)
     if bulk_info and bulk_info.get("is_bulk") and filename in bulk_info.get("patterned_files", set()):
         added, deleted = parse_file_stat(file_diff)
-        return {
+        return with_timing({
             "file": filename,
             "summary": "[bulk/systematic edit: repetitive pattern, batch find-replace]",
             "change_type": "refactor",
@@ -811,21 +819,21 @@ def summarize_file_full(filename, file_diff, tags, commit_message, commit_stats,
             "estimated_hours": 0.05,
             "tags": tags + ["bulk_patterned"],
             "lines_added": added, "lines_deleted": deleted,
-        }
+        })
 
     # For skipped categories, return hardcoded summary
     skip_tags = {"generated", "imported_data", "large_data_file", "formatting_only", "locale"}
     if skip_tags & set(tags):
         added, deleted = parse_file_stat(file_diff)
         tag_str = ", ".join(tags)
-        return {
+        return with_timing({
             "file": filename,
             "summary": f"[{tag_str}: +{added}/-{deleted}, auto-classified as non-manual]",
             "change_type": "config" if "config" in tags else "docs" if "locale" in tags else "chore",
             "complexity": "trivial",
             "estimated_hours": 0.05,
             "tags": tags,
-        }
+        })
 
     added, deleted = parse_file_stat(file_diff)
     tag_str = ", ".join(tags) if tags else "manual_code"
@@ -894,14 +902,14 @@ Reply with ONLY the JSON:"""
                 print(f"    CAP: {filename} {result['estimated_hours']}h -> 8.0h")
                 result["estimated_hours_uncapped"] = result["estimated_hours"]
                 result["estimated_hours"] = 8.0
-            return result
+            return with_timing(result)
         except Exception as e:
-            return {
+            return with_timing({
                 "file": filename, "summary": f"Failed: {str(e)[:60]}",
                 "change_type": "unknown", "complexity": "medium",
                 "estimated_hours": 1.0, "tags": tags + ["summary_failed"],
                 "lines_added": added, "lines_deleted": deleted,
-            }
+            })
     else:
         # Chunked summary for very large files
         chunks = []
@@ -929,7 +937,7 @@ Summarize ONLY the changes in this chunk. Reply with ONLY the JSON:"""
             for r in chunk_summaries
         ) if any(isinstance(r, dict) for r in chunk_summaries) else len(chunks) * 0.5
 
-        return {
+        return with_timing({
             "file": filename,
             "summary": f"[large file, {len(chunks)} chunks] {merged_summary[:200]}",
             "change_type": "new_logic",
@@ -937,7 +945,7 @@ Summarize ONLY the changes in this chunk. Reply with ONLY the JSON:"""
             "estimated_hours": min(total_hours, 8.0),
             "tags": tags + ["chunked"],
             "lines_added": added, "lines_deleted": deleted,
-        }
+        })
 
 
 # ===== ORCHESTRATION =====
@@ -1060,7 +1068,10 @@ Reply with ONLY the JSON:"""
         "evaluation_method": "file_decomposition",
         "file_summaries": [
             {"file": s.get("file", ""), "estimated_hours": s.get("estimated_hours", 0),
-             "summary": s.get("summary", ""), "tags": s.get("tags", [])}
+             "summary": s.get("summary", ""), "tags": s.get("tags", []),
+             "started_at_ms": s.get("started_at_ms"),
+             "finished_at_ms": s.get("finished_at_ms"),
+             "wall_time_ms": s.get("wall_time_ms")}
             for s in file_summaries
         ],
         "file_classifications": {
@@ -1068,6 +1079,23 @@ Reply with ONLY the JSON:"""
             "manual": manual_count - test_count,
             "test": test_count,
             "skipped": skipped_count,
+        },
+        "fd_details": {
+            "fd_concurrency": fd_concurrency,
+            "file_timeline": sorted(
+                [
+                    {
+                        "file": s.get("file", ""),
+                        "tags": s.get("tags", []),
+                        "estimated_hours": s.get("estimated_hours", 0),
+                        "started_at_ms": s.get("started_at_ms"),
+                        "finished_at_ms": s.get("finished_at_ms"),
+                        "wall_time_ms": s.get("wall_time_ms"),
+                    }
+                    for s in file_summaries
+                ],
+                key=lambda item: item.get("started_at_ms") or 0,
+            ),
         },
     }
 
