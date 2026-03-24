@@ -41,6 +41,7 @@ OPENROUTER_REQUIRE_PARAMETERS = _env_bool('OPENROUTER_REQUIRE_PARAMETERS', True)
 # --- Cache config ---
 CACHE_VERSION = 1
 PIPELINE_CACHE_DIR = os.environ.get('PIPELINE_CACHE_DIR', os.path.join(os.path.dirname(__file__), '..', '.cache'))
+PIPELINE_CACHE_NAMESPACE = os.environ.get('PIPELINE_CACHE_NAMESPACE', '').strip()
 NO_CACHE = os.environ.get('NO_CACHE', '').lower() in ('1', 'true', 'yes')
 NO_LLM_CACHE = os.environ.get('NO_LLM_CACHE', '').lower() in ('1', 'true', 'yes')
 PROMPT_REPEAT = os.environ.get('PROMPT_REPEAT', '').lower() in ('1', 'true', 'yes')
@@ -66,8 +67,14 @@ sys.stderr.write(f"[pipeline] context={MODEL_CTX} fd_threshold={FD_THRESHOLD} ch
 sys.stderr.flush()
 
 
+def _cache_root():
+    if PIPELINE_CACHE_NAMESPACE:
+        return os.path.join(PIPELINE_CACHE_DIR, PIPELINE_CACHE_NAMESPACE)
+    return PIPELINE_CACHE_DIR
+
+
 def _diff_cache_path(repo_slug, sha):
-    return os.path.join(PIPELINE_CACHE_DIR, 'diffs', repo_slug, f'{sha}.json')
+    return os.path.join(_cache_root(), 'diffs', repo_slug, f'{sha}.json')
 
 
 def _read_diff_cache(repo_slug, sha):
@@ -94,9 +101,7 @@ def _write_diff_cache(repo_slug, sha, data):
         return
     path = _diff_cache_path(repo_slug, sha)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
+        _write_json_atomic(path, data)
     except OSError:
         pass
 
@@ -120,7 +125,7 @@ def _llm_cache_dir():
     else:
         fp_parts.append(f'num_ctx={MODEL_CTX}')
     runtime_fp = hashlib.sha256('|'.join(fp_parts).encode()).hexdigest()[:12]
-    return os.path.join(PIPELINE_CACHE_DIR, 'llm', f'v{CACHE_VERSION}', model_slug, runtime_fp)
+    return os.path.join(_cache_root(), 'llm', f'v{CACHE_VERSION}', model_slug, runtime_fp)
 
 
 def _llm_cache_key(system, prompt, schema, max_tokens):
@@ -157,18 +162,31 @@ def _write_llm_cache(system, prompt, schema, max_tokens, response, meta):
     cache_dir = _llm_cache_dir()
     path = os.path.join(cache_dir, f'{key}.json')
     try:
-        os.makedirs(cache_dir, exist_ok=True)
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump({
-                'cache_version': CACHE_VERSION,
-                'model': OPENROUTER_MODEL if LLM_PROVIDER == 'openrouter' else os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b'),
-                'provider': LLM_PROVIDER,
-                'response': response,
-                'meta': meta,
-                'cached_at': datetime.now().isoformat(),
-            }, f, ensure_ascii=False)
+        _write_json_atomic(path, {
+            'cache_version': CACHE_VERSION,
+            'model': OPENROUTER_MODEL if LLM_PROVIDER == 'openrouter' else os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b'),
+            'provider': LLM_PROVIDER,
+            'response': response,
+            'meta': meta,
+            'cached_at': datetime.now().isoformat(),
+        })
     except OSError:
         pass
+
+
+def _write_json_atomic(path, payload):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f'{path}.tmp.{os.getpid()}.{int(time.time() * 1000)}'
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 # Module bias: average from LORO across 5 repos
@@ -538,9 +556,9 @@ def get_commit_diff(repo_dir, sha, repo_slug=None):
                     cached['stat']['lines_added'], cached['stat']['lines_deleted'],
                     cached['changed_files'])
 
-    diff = subprocess.run(['git', '-C', repo_dir, 'diff', f'{sha}~1..{sha}'],
+    diff = subprocess.run(['git', '-c', 'gc.auto=0', '-C', repo_dir, 'diff', f'{sha}~1..{sha}'],
                           capture_output=True, text=True, encoding='utf-8', errors='replace').stdout
-    stat = subprocess.run(['git', '-C', repo_dir, 'diff', '--stat', f'{sha}~1..{sha}'],
+    stat = subprocess.run(['git', '-c', 'gc.auto=0', '-C', repo_dir, 'diff', '--stat', f'{sha}~1..{sha}'],
                           capture_output=True, text=True, encoding='utf-8', errors='replace').stdout
     stat_line = stat.strip().split('\n')[-1] if stat else ''
     fc = la = ld = 0

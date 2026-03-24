@@ -66,7 +66,9 @@ async function execGit(
   options?: { cwd?: string; env?: Record<string, string>; timeout?: number },
 ): Promise<{ stdout: string; stderr: string }> {
   const timeout = options?.timeout ?? 120_000;
-  return execFileAsync('git', args, {
+  // Disable auto gc to prevent "Auto packing the repository in background"
+  // messages from interfering with git operations (stderr noise + lock contention)
+  return execFileAsync('git', ['-c', 'gc.auto=0', ...args], {
     cwd: options?.cwd,
     env: { ...process.env, ...options?.env },
     timeout,

@@ -224,8 +224,10 @@ def _parse_git_log(raw: str, excluded_emails: list[str] | None = None) -> list[d
 
 def _run_git(args: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 120) -> subprocess.CompletedProcess:
     """Run a git command with error handling."""
+    # Disable auto gc to prevent "Auto packing the repository in background"
+    # messages from interfering with git operations (stderr noise + lock contention)
     result = subprocess.run(
-        ["git"] + args,
+        ["git", "-c", "gc.auto=0"] + args,
         cwd=cwd,
         env=env,
         capture_output=True,

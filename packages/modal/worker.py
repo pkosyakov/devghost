@@ -17,6 +17,7 @@ import requests
 app = modal.App("devghost-worker")
 
 repos_volume = modal.Volume.from_name("devghost-repos", create_if_missing=True)
+pipeline_cache_volume = modal.Volume.from_name("devghost-pipeline-cache", create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -85,6 +86,8 @@ LAST_N_SHALLOW_INITIAL_DAYS = _env_positive_int("LAST_N_SHALLOW_INITIAL_DAYS", 3
 LAST_N_SHALLOW_MAX_DAYS = _env_positive_int("LAST_N_SHALLOW_MAX_DAYS", 3650)
 LAST_N_SHALLOW_GROWTH_FACTOR = max(2, _env_positive_int("LAST_N_SHALLOW_GROWTH_FACTOR", 2))
 REPO_VOLUME_CHECKPOINTS = _env_bool("REPO_VOLUME_CHECKPOINTS", True)
+PIPELINE_CACHE_DIR = (os.environ.get("PIPELINE_CACHE_DIR") or "/cache/pipeline").strip()
+PIPELINE_CACHE_NAMESPACE = (os.environ.get("PIPELINE_CACHE_NAMESPACE") or "prod").strip()
 WATCHDOG_TRIGGER_URL = (os.environ.get("WATCHDOG_TRIGGER_URL") or "").strip()
 WATCHDOG_TRIGGER_TOKEN = (os.environ.get("WATCHDOG_TRIGGER_TOKEN") or "").strip()
 WATCHDOG_TRIGGER_TIMEOUT_SEC = _env_positive_int("WATCHDOG_TRIGGER_TIMEOUT_SEC", 8)
@@ -145,7 +148,7 @@ class HeartbeatThread(threading.Thread):
 
 @app.function(
     image=image,
-    volumes={"/repos": repos_volume},
+    volumes={"/repos": repos_volume, "/cache": pipeline_cache_volume},
     timeout=3600,           # 1 hour max per job
     memory=2048,            # 2 GB RAM
     cpu=2.0,
@@ -867,6 +870,17 @@ def _to_float_or_none(value):
         return None
 
 
+def _confidence_from_method(method: str) -> float:
+    confidence = 0.8
+    if method.startswith("FD"):
+        confidence = 0.6
+    elif method == "error":
+        confidence = 0.1
+    elif method == "root_commit_skip":
+        confidence = 0.5
+    return confidence
+
+
 def _try_trigger_watchdog_post_processing(conn, job_id: str) -> None:
     """Best-effort nudge: trigger watchdog immediately after LLM_COMPLETE.
 
@@ -964,13 +978,13 @@ def _emit_commit_live_results(
         level = "warn" if (method == "error" or error_text) else "info"
 
         estimated_hours = _to_float_or_none(result.get("estimated_hours"))
-        confidence = _to_float_or_none(analysis.get("confidence"))
+        confidence = _confidence_from_method(method)
         payload = {
             "method": method,
             "estimatedHours": round(estimated_hours, 2) if estimated_hours is not None else None,
             "category": analysis.get("change_type"),
-            "complexity": analysis.get("complexity"),
-            "confidence": round(confidence, 3) if confidence is not None else None,
+            "complexity": analysis.get("cognitive_complexity") or analysis.get("complexity"),
+            "confidence": round(confidence, 3),
             "type": result.get("type"),
             "subject": str(commit.get("message") or "")[:140] or None,
         }
@@ -1084,6 +1098,9 @@ def setup_llm_env(llm_config):
 
     os.environ["OPENROUTER_ALLOW_FALLBACKS"] = str(openrouter.get("allowFallbacks", True)).lower()
     os.environ["OPENROUTER_REQUIRE_PARAMETERS"] = str(openrouter.get("requireParameters", True)).lower()
+    os.environ["PIPELINE_CACHE_DIR"] = PIPELINE_CACHE_DIR
+    os.environ["PIPELINE_CACHE_NAMESPACE"] = PIPELINE_CACHE_NAMESPACE
+    os.makedirs(PIPELINE_CACHE_DIR, exist_ok=True)
 
 
 def _utc_iso_days_ago(days: int) -> str:
@@ -1218,35 +1235,55 @@ def _commit_repos_volume_checkpoint(
     reason: str,
     repo_name: str | None = None,
 ) -> None:
-    """Best-effort volume commit so retries reuse already downloaded repos."""
+    """Best-effort volume commit so retries reuse repos and pipeline cache."""
     if not REPO_VOLUME_CHECKPOINTS and reason not in {"job_complete", "job_failed"}:
         return
 
-    try:
-        repos_volume.commit()
+    committed_volumes: list[str] = []
+    failed_volumes: dict[str, str] = {}
+    volumes = [
+        ("repos", repos_volume),
+        ("pipeline_cache", pipeline_cache_volume),
+    ]
+
+    for volume_name, volume in volumes:
+        try:
+            volume.commit()
+            committed_volumes.append(volume_name)
+        except Exception as err:
+            failed_volumes[volume_name] = str(err)[:300]
+
+    if committed_volumes:
         try:
             append_job_event(
                 conn,
                 job_id,
-                "Repository volume checkpoint committed",
+                "Worker volume checkpoint committed",
                 phase="worker",
                 code="REPOS_VOLUME_COMMITTED",
                 repo_name=repo_name,
-                payload={"reason": reason},
+                payload={
+                    "reason": reason,
+                    "committedVolumes": committed_volumes,
+                },
             )
         except Exception:
             pass
-    except Exception as err:
+
+    if failed_volumes:
         try:
             append_job_event(
                 conn,
                 job_id,
-                "Repository volume checkpoint failed",
+                "Worker volume checkpoint failed",
                 level="warn",
                 phase="worker",
                 code="REPOS_VOLUME_COMMIT_FAILED",
                 repo_name=repo_name,
-                payload={"reason": reason, "error": str(err)[:300]},
+                payload={
+                    "reason": reason,
+                    "failedVolumes": failed_volumes,
+                },
             )
         except Exception:
             pass
@@ -1304,13 +1341,7 @@ def map_to_commit_analysis(result, commits, order_id, repo_full_name, llm_model)
     commit = next((c for c in commits if c["sha"] == result["sha"]), None)
     method = result.get("method", "")
 
-    confidence = 0.8
-    if method.startswith("FD"):
-        confidence = 0.6
-    elif method == "error":
-        confidence = 0.1
-    elif method == "root_commit_skip":
-        confidence = 0.5
+    confidence = _confidence_from_method(method)
 
     model_for_row = None if (
         method.startswith("FD") or method == "root_commit_skip" or method == "error"

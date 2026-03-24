@@ -67,13 +67,21 @@ export function PublishModal({
     mutationFn: async () => {
       const allSelected = selectedEmails.size === developers.length;
       const visibleDevelopers = allSelected
-        ? null
+        ? undefined
         : Array.from(selectedEmails);
+      const payload: {
+        orderId: string;
+        repository: string;
+        visibleDevelopers?: string[];
+      } = { orderId, repository };
+      if (visibleDevelopers !== undefined) {
+        payload.visibleDevelopers = visibleDevelopers;
+      }
 
       const res = await fetch('/api/publications', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ orderId, repository, visibleDevelopers }),
+        body: JSON.stringify(payload),
       });
 
       const json = await res.json();

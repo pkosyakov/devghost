@@ -289,18 +289,37 @@ async function postProcessJob(job: any) {
   const userId = order.userId;
   const skipBilling = !isBillingEnabled() || order.user.role === 'ADMIN';
 
-  // 1. Count processed commits and debit.
+  // 1. Count processed commits for THIS job and debit.
+  // We scope by analyzedAt >= job.createdAt so reruns on the same order
+  // don't charge historical rows preserved from previous analyses.
   // Idempotent: debitCredit() increments creditsConsumed internally (CAS guard),
   // so re-claim after recovery (step 3.5) won't double-debit — the loop
   // subtracts already-consumed credits before starting.
   const processedCount = await prisma.commitAnalysis.count({
-    where: { orderId: order.id, jobId: null, method: { not: 'error' } },
+    where: {
+      orderId: order.id,
+      jobId: null,
+      method: { not: 'error' },
+      analyzedAt: { gte: job.createdAt },
+    },
   });
 
   if (!skipBilling) {
     const cachedReleased = job.creditsReleased || 0;
     const alreadyConsumed = job.creditsConsumed || 0;
     const toDebit = Math.max(0, processedCount - cachedReleased - alreadyConsumed);
+    billingLogger.info(
+      {
+        userId,
+        orderId: order.id,
+        jobId: job.id,
+        processedCount,
+        cachedReleased,
+        alreadyConsumed,
+        toDebit,
+      },
+      'Post-processing debit plan computed',
+    );
     for (let i = 0; i < toDebit; i++) {
       const result = await debitCredit(userId, job.id, order.id);
       if (!result) {

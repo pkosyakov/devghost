@@ -19,6 +19,8 @@ Serverless analysis pipeline running on [Modal](https://modal.com).
      LAST_N_SHALLOW_MAX_DAYS="3650" \
      LAST_N_SHALLOW_GROWTH_FACTOR="2" \
      REPO_VOLUME_CHECKPOINTS="1" \
+     PIPELINE_CACHE_DIR="/cache/pipeline" \
+     PIPELINE_CACHE_NAMESPACE="prod" \
      GIT_PARTIAL_CLONE="1" \
      GIT_SHALLOW_BUFFER_DAYS="14" \
      GIT_FETCH_TIMEOUT_SEC="600" \
