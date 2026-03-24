@@ -71,6 +71,33 @@ interface GitHubRepo {
   source?: RepositorySourceType; // 'connected' or 'public'
 }
 
+interface ApiEnvelope<T> {
+  success?: boolean;
+  data?: T;
+  error?: string;
+}
+
+function buildNonJsonResponseError(response: Response, rawBody: string): Error {
+  const body = rawBody.trim();
+  const contentType = response.headers.get('content-type') || 'unknown';
+  if (body.startsWith('<!DOCTYPE') || body.startsWith('<html')) {
+    return new Error(`Server returned HTML instead of JSON (HTTP ${response.status})`);
+  }
+  return new Error(
+    `Server returned unexpected response format (HTTP ${response.status}, content-type: ${contentType})`
+  );
+}
+
+async function parseApiEnvelope<T>(response: Response): Promise<ApiEnvelope<T>> {
+  const raw = await response.text();
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as ApiEnvelope<T>;
+  } catch {
+    throw buildNonJsonResponseError(response, raw);
+  }
+}
+
 export default function NewOrderPage() {
   const router = useRouter();
   const t = useTranslations('orders.new');
@@ -559,13 +586,17 @@ export default function NewOrderPage() {
         }),
       });
 
-      const data = await response.json();
+      const data = await parseApiEnvelope<{ id?: string }>(response);
 
       if (!response.ok) {
         throw new Error(data.error || t('failedCreateOrder'));
       }
 
-      router.push(`/orders/${data.data.id}`);
+      const orderId = data.data?.id;
+      if (!orderId) {
+        throw new Error(t('failedCreateOrder'));
+      }
+      router.push(`/orders/${orderId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : t('failedCreateOrder'));
       setCreating(false);

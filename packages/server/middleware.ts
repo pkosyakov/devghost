@@ -107,6 +107,6 @@ export const config = {
     // Email in path can contain dots. Keep middleware active for this route,
     // otherwise default-locale URLs may bypass intl rewrite and return 404.
     '/orders/:id/developers/:email*',
-    '/:locale/orders/:id/developers/:email*',
+    '/(ru|en)/orders/:id/developers/:email*',
   ],
 };
