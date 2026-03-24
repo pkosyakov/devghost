@@ -1,7 +1,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -28,7 +27,7 @@ export function GitHubConnectButton() {
   useEffect(() => {
     const githubParam = searchParams.get('github');
     if (githubParam === 'connected') {
-      // Token is saved automatically in jwt callback, just refresh status
+      // Token was saved in /api/github/callback, refresh status
       checkStatus();
     }
   }, [searchParams]);
@@ -51,19 +50,10 @@ export function GitHubConnectButton() {
     }
   };
 
-  const handleConnect = async () => {
+  const handleConnect = () => {
     setConnecting(true);
-    try {
-      // Redirect to GitHub OAuth flow
-      // Token will be saved automatically in jwt callback
-      await signIn('github', {
-        callbackUrl: '/settings?github=connected',
-        redirect: true,
-      });
-    } catch (error) {
-      console.error('Failed to connect GitHub:', error);
-      setConnecting(false);
-    }
+    // Custom OAuth flow — does NOT replace the current session
+    window.location.href = '/api/github/oauth';
   };
 
   const handleDisconnect = async () => {
