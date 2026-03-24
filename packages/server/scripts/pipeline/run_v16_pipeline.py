@@ -5,7 +5,7 @@ Usage: python scripts/run_v16_pipeline.py <repo_name> <repo_path> <language>
        python scripts/run_v16_pipeline.py chi C:/repos/chi Go --residual-model
        python scripts/run_v16_pipeline.py chi C:/repos/chi Go --isotonic
 """
-import hashlib, json, requests, re, sys, os, subprocess, pickle, time
+import hashlib, json, requests, re, sys, os, subprocess, pickle, time, random
 import numpy as np
 from datetime import datetime
 
@@ -33,10 +33,37 @@ def _env_csv(name, default_csv):
     return [x.strip() for x in raw.split(',') if x.strip()]
 
 
+def _env_positive_int(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _env_positive_float(name, default):
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == '':
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
 OPENROUTER_PROVIDER_ORDER = _env_csv('OPENROUTER_PROVIDER_ORDER', 'Chutes')
 OPENROUTER_PROVIDER_IGNORE = _env_csv('OPENROUTER_PROVIDER_IGNORE', 'Cloudflare')
 OPENROUTER_ALLOW_FALLBACKS = _env_bool('OPENROUTER_ALLOW_FALLBACKS', True)
 OPENROUTER_REQUIRE_PARAMETERS = _env_bool('OPENROUTER_REQUIRE_PARAMETERS', True)
+OPENROUTER_MAX_RETRIES = _env_positive_int('OPENROUTER_MAX_RETRIES', 4)
+OPENROUTER_CONNECT_TIMEOUT_SEC = _env_positive_float('OPENROUTER_CONNECT_TIMEOUT_SEC', 20.0)
+OPENROUTER_READ_TIMEOUT_SEC = _env_positive_float('OPENROUTER_READ_TIMEOUT_SEC', 120.0)
+OPENROUTER_RETRY_BACKOFF_BASE_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_BASE_SEC', 1.0)
+OPENROUTER_RETRY_BACKOFF_MAX_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_MAX_SEC', 20.0)
 
 # --- Cache config ---
 CACHE_VERSION = 1
@@ -425,23 +452,41 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
         'Content-Type': 'application/json',
     }
 
-    max_retries = 2
+    max_retries = OPENROUTER_MAX_RETRIES
+    total_attempts = max_retries + 1
     last_error = None
     total_elapsed = 0
+    retriable_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
 
-    for attempt in range(max_retries + 1):
+    def retry_sleep(attempt_idx):
+        # Exponential backoff with bounded jitter for transient network/provider faults.
+        exp = OPENROUTER_RETRY_BACKOFF_BASE_SEC * (2 ** attempt_idx)
+        jitter = random.uniform(0, OPENROUTER_RETRY_BACKOFF_BASE_SEC)
+        return min(OPENROUTER_RETRY_BACKOFF_MAX_SEC, exp + jitter)
+
+    for attempt in range(total_attempts):
+        attempt_no = attempt + 1
         start = time.time()
         try:
-            resp = requests.post(OPENROUTER_BASE_URL, json=payload, headers=headers, timeout=120)
+            resp = requests.post(
+                OPENROUTER_BASE_URL,
+                json=payload,
+                headers=headers,
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SEC, OPENROUTER_READ_TIMEOUT_SEC),
+            )
             elapsed_ms = (time.time() - start) * 1000
             total_elapsed += elapsed_ms
 
             if resp.status_code != 200:
                 err_body = resp.text[:500]
                 last_error = f'HTTP {resp.status_code}: {err_body}'
-                print(f"    ERROR: OpenRouter {last_error}", file=sys.stderr, flush=True)
-                if resp.status_code in (429, 502, 503):
-                    time.sleep(1 * (attempt + 1))
+                print(
+                    f"    ERROR: OpenRouter {last_error} (attempt {attempt_no}/{total_attempts})",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                if resp.status_code in retriable_statuses and attempt < max_retries:
+                    time.sleep(retry_sleep(attempt))
                     continue
                 return None, {'prompt_tokens': 0, 'completion_tokens': 0,
                               'total_duration_ms': total_elapsed, 'error': last_error}
@@ -464,8 +509,13 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                 parsed = _extract_json(text)
                 if parsed is None:
                     last_error = f'Invalid JSON from {provider_name}: {text[:200]}'
-                    print(f"    WARN: {last_error} (attempt {attempt+1})", file=sys.stderr, flush=True)
+                    print(
+                        f"    WARN: {last_error} (attempt {attempt_no}/{total_attempts})",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                     if attempt < max_retries:
+                        time.sleep(retry_sleep(attempt))
                         continue
                     return None, {'prompt_tokens': 0, 'completion_tokens': 0,
                                   'total_duration_ms': total_elapsed, 'error': last_error}
@@ -487,15 +537,26 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
             elapsed_ms = (time.time() - start) * 1000
             total_elapsed += elapsed_ms
             last_error = f'Network error: {e}'
-            print(f"    ERROR: {last_error}", file=sys.stderr, flush=True)
+            print(
+                f"    ERROR: {last_error} (attempt {attempt_no}/{total_attempts})",
+                file=sys.stderr,
+                flush=True,
+            )
             if attempt < max_retries:
-                time.sleep(1 * (attempt + 1))
+                time.sleep(retry_sleep(attempt))
                 continue
         except Exception as e:
             elapsed_ms = (time.time() - start) * 1000
             total_elapsed += elapsed_ms
             last_error = f'Unexpected error: {e}'
-            print(f"    ERROR: {last_error}", file=sys.stderr, flush=True)
+            print(
+                f"    ERROR: {last_error} (attempt {attempt_no}/{total_attempts})",
+                file=sys.stderr,
+                flush=True,
+            )
+            if attempt < max_retries:
+                time.sleep(retry_sleep(attempt))
+                continue
 
     return None, {'prompt_tokens': 0, 'completion_tokens': 0,
                   'total_duration_ms': total_elapsed, 'error': last_error}
