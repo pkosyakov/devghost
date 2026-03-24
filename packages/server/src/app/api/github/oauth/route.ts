@@ -4,8 +4,8 @@ import { randomBytes } from 'crypto';
 import { getUserSession } from '@/lib/api-utils';
 import { gitLogger } from '@/lib/logger';
 
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const AUTH_URL = process.env.AUTH_URL || 'http://localhost:3000';
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID?.trim();
+const AUTH_URL = (process.env.AUTH_URL || 'http://localhost:3000').trim();
 
 // GET /api/github/oauth - Initiate GitHub OAuth flow for linking account
 export async function GET() {

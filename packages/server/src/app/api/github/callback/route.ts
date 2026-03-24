@@ -4,9 +4,9 @@ import prisma from '@/lib/db';
 import { getUserSession } from '@/lib/api-utils';
 import { gitLogger } from '@/lib/logger';
 
-const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID;
-const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
-const AUTH_URL = process.env.AUTH_URL || 'http://localhost:3000';
+const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID?.trim();
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET?.trim();
+const AUTH_URL = (process.env.AUTH_URL || 'http://localhost:3000').trim();
 
 // GET /api/github/callback - Handle GitHub OAuth callback
 export async function GET(request: NextRequest) {
