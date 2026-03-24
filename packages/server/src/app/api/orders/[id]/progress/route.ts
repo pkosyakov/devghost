@@ -155,6 +155,34 @@ export async function GET(
       ? events[events.length - 1]!.id.toString()
       : null;
 
+  // In modal mode, retries can continue from previously saved CommitAnalysis rows.
+  // Use persisted successful analyses as effective "current commit" so UI progress
+  // reflects resumed work instead of showing a restart from zero.
+  let persistedSuccessfulCount: number | null = null;
+  if (isLiveStatus && job.executionMode === 'modal') {
+    persistedSuccessfulCount = await prisma.commitAnalysis.count({
+      where: {
+        orderId: id,
+        jobId: null,
+        method: { not: 'error' },
+      },
+    });
+  }
+
+  const rawProgress = (isLive ? meta?.progress : undefined) ?? job.progress;
+  const rawCurrentCommit = (isLive ? meta?.currentCommit : undefined) ?? job.currentCommit;
+  const rawTotalCommits = job.totalCommits;
+  const effectiveCurrentCommit = persistedSuccessfulCount ?? rawCurrentCommit;
+  const effectiveTotalCommits =
+    persistedSuccessfulCount != null
+      ? Math.max(rawTotalCommits ?? 0, persistedSuccessfulCount)
+      : rawTotalCommits;
+  const progressFromCommits =
+    effectiveCurrentCommit != null && effectiveTotalCommits != null && effectiveTotalCommits > 0
+      ? Math.min(99, Math.floor((effectiveCurrentCommit / effectiveTotalCommits) * 90))
+      : 0;
+  const effectiveProgress = Math.max(rawProgress ?? 0, progressFromCommits);
+
   // No browser caching — this endpoint is polled for real-time progress
   return NextResponse.json(
     {
@@ -164,10 +192,10 @@ export async function GET(
         type: job.type ?? 'analysis',
         status: job.status,
         // For live jobs, prefer in-memory values (instant) over DB (fire-and-forget, may lag)
-        progress: (isLive ? meta?.progress : undefined) ?? job.progress,
+        progress: effectiveProgress,
         currentStep: (isLive ? meta?.currentStep : undefined) ?? job.currentStep,
-        currentCommit: (isLive ? meta?.currentCommit : undefined) ?? job.currentCommit,
-        totalCommits: job.totalCommits,
+        currentCommit: effectiveCurrentCommit,
+        totalCommits: effectiveTotalCommits,
         startedAt: job.startedAt,
         completedAt: job.completedAt,
         error: job.error,

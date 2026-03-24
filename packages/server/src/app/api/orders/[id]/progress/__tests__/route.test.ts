@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockJobFindFirst = vi.fn();
 const mockEventFindMany = vi.fn();
+const mockCommitAnalysisCount = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   default: {
@@ -11,6 +12,9 @@ vi.mock('@/lib/db', () => ({
     },
     analysisJobEvent: {
       findMany: (...args: unknown[]) => mockEventFindMany(...args),
+    },
+    commitAnalysis: {
+      count: (...args: unknown[]) => mockCommitAnalysisCount(...args),
     },
   },
 }));
@@ -82,6 +86,7 @@ describe('GET /api/orders/[id]/progress', () => {
     } as never);
     mockGetJobMeta.mockReturnValue(null);
     mockEventFindMany.mockResolvedValue([]);
+    mockCommitAnalysisCount.mockResolvedValue(0);
   });
 
   it('returns 404 when no job exists for order/user', async () => {
@@ -243,5 +248,30 @@ describe('GET /api/orders/[id]/progress', () => {
     expect(json.data.currentStep).toBe('analyzing');
     expect(json.data.currentCommit).toBe(3);
     expect(json.data.log).toEqual([{ ts: 2000, sha: 'def456', status: 'ok' }]);
+    expect(mockCommitAnalysisCount).not.toHaveBeenCalled();
+  });
+
+  it('uses persisted successful analyses as currentCommit for live modal jobs', async () => {
+    mockJobFindFirst.mockResolvedValue(makeJob({
+      status: 'RUNNING',
+      executionMode: 'modal',
+      currentCommit: 160,
+      totalCommits: 1250,
+    }));
+    mockCommitAnalysisCount.mockResolvedValue(860);
+
+    const res = await GET(makeRequest(), { params: Promise.resolve({ id: 'order-1' }) });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(mockCommitAnalysisCount).toHaveBeenCalledWith({
+      where: {
+        orderId: 'order-1',
+        jobId: null,
+        method: { not: 'error' },
+      },
+    });
+    expect(json.data.currentCommit).toBe(860);
+    expect(json.data.totalCommits).toBe(1250);
   });
 });
