@@ -28,6 +28,7 @@ import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
+import { LanguageSwitcher } from '@/components/language-switcher';
 
 const navigation = [
   { nameKey: 'dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -314,6 +315,9 @@ export function Sidebar() {
       {/* Footer */}
       <div className="p-4 space-y-2">
         <Separator />
+        <div className="px-3 py-1">
+          <LanguageSwitcher />
+        </div>
         <Link
           href="/billing"
           className={cn(
