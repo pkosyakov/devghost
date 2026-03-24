@@ -11,6 +11,7 @@ interface GhostKpiCardsProps {
   developerCount: number;
   commitCount: number;
   totalWorkDays: number;
+  ghostNormHours?: number;
 }
 
 const colorClasses = {
@@ -25,6 +26,7 @@ export function GhostKpiCards({
   developerCount,
   commitCount,
   totalWorkDays,
+  ghostNormHours = GHOST_NORM,
 }: GhostKpiCardsProps) {
   const t = useTranslations('kpi');
   const color = ghostColor(avgGhostPercent);
@@ -45,7 +47,7 @@ export function GhostKpiCards({
                         <Info className="h-4 w-4 text-muted-foreground ml-1" />
                       </TooltipTrigger>
                       <TooltipContent className="max-w-xs">
-                        <p>{t('singleDevWarning', { norm: GHOST_NORM })}</p>
+                        <p>{t('singleDevWarning', { norm: ghostNormHours.toFixed(1) })}</p>
                       </TooltipContent>
                     </Tooltip>
                   </TooltipProvider>

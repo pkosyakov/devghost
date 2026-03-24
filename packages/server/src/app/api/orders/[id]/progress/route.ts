@@ -26,6 +26,13 @@ function cloneSizeKbFromPayload(payload: unknown): number {
   return Math.floor(value);
 }
 
+function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 // GET /api/orders/[id]/progress - Poll analysis job progress
 export async function GET(
   request: NextRequest,
@@ -182,6 +189,8 @@ export async function GET(
       ? Math.min(99, Math.floor((effectiveCurrentCommit / effectiveTotalCommits) * 90))
       : 0;
   const effectiveProgress = Math.max(rawProgress ?? 0, progressFromCommits);
+  const llmConcurrency = envPositiveInt('LLM_CONCURRENCY', 1);
+  const fdLlmConcurrency = envPositiveInt('FD_LLM_CONCURRENCY', llmConcurrency);
 
   // No browser caching — this endpoint is polled for real-time progress
   return NextResponse.json(
@@ -206,7 +215,8 @@ export async function GET(
         totalLlmCalls: job.totalLlmCalls,
         totalCostUsd: job.totalCostUsd ? Number(job.totalCostUsd) : null,
         cloneSizeMb,
-        llmConcurrency: parseInt(process.env.LLM_CONCURRENCY || '1', 10),
+        llmConcurrency,
+        fdLlmConcurrency,
         executionMode: job.executionMode,
         modalCallId: job.modalCallId,
         heartbeatAt: job.heartbeatAt,

@@ -71,6 +71,14 @@ function parsePositiveInt(
   return Math.min(parsed, max);
 }
 
+function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
 function parseSince(value: string | null): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
@@ -375,7 +383,11 @@ export async function GET(
       totalLlmCalls: job.totalLlmCalls,
       totalCostUsd: job.totalCostUsd != null ? Number(job.totalCostUsd) : null,
       cloneSizeMb,
-      llmConcurrency: Number.parseInt(process.env.LLM_CONCURRENCY || '1', 10),
+      llmConcurrency: envPositiveInt('LLM_CONCURRENCY', 1),
+      fdLlmConcurrency: envPositiveInt(
+        'FD_LLM_CONCURRENCY',
+        envPositiveInt('LLM_CONCURRENCY', 1),
+      ),
       logSource,
       log: logEntries,
       events,

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { GhostKpiCards } from '@/components/ghost-kpi-cards';
 import { GhostDistributionPanel } from '@/components/ghost-distribution-panel';
@@ -27,7 +28,7 @@ import type { Developer } from '@/components/developer-card';
 import type { DeveloperGroup } from '@/lib/deduplication';
 import { detectDuplicates } from '@/lib/deduplication';
 import { EditScopePanel, type AnalysisPeriodSettings } from '@/components/edit-scope-panel';
-import type { GhostMetric, GhostEligiblePeriod } from '@devghost/shared';
+import { GHOST_NORM, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
 import { Link } from '@/i18n/navigation';
 import {
   Loader2,
@@ -128,6 +129,7 @@ interface AnalysisProgressData {
   totalCostUsd: number | null;
   cloneSizeMb: number | null;
   llmConcurrency: number;
+  fdLlmConcurrency?: number;
   executionMode: string;
   modalCallId: string | null;
   heartbeatAt: string | null;
@@ -141,6 +143,8 @@ interface AnalysisProgressData {
   events: AnalysisEventEntry[];
   eventCursor: string | null;
 }
+
+type GhostNormMode = 'fixed' | 'median';
 
 // Fetch analysis progress
 async function fetchProgress(
@@ -199,6 +203,17 @@ function formatSizeFromMb(sizeMb: number): string {
   if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
   if (sizeMb >= 100) return `${Math.round(sizeMb)} MB`;
   return `${sizeMb.toFixed(1)} MB`;
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[middle] ?? null;
+  const left = sorted[middle - 1];
+  const right = sorted[middle];
+  if (left == null || right == null) return null;
+  return (left + right) / 2;
 }
 
 function sumSelectedRepoSizeKb(selectedRepos: unknown): number {
@@ -302,6 +317,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
+  const [ghostNormMode, setGhostNormMode] = useState<GhostNormMode>('fixed');
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Developer deduplication state
@@ -930,13 +946,47 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     return <div className="text-center p-8">{t('detail.orderNotFound')}</div>;
   }
 
-  // Calculate aggregate KPIs from metrics
-  const activeMetrics = metrics.filter((m: GhostMetric) => m.hasEnoughData);
+  const normCandidates = metrics
+    .filter((m: GhostMetric) => m.hasEnoughData && Number.isFinite(m.avgDailyEffort) && m.avgDailyEffort > 0)
+    .map((m: GhostMetric) => m.avgDailyEffort);
+  const medianGhostNorm = median(normCandidates);
+  const effectiveGhostNorm = ghostNormMode === 'median' && medianGhostNorm != null
+    ? medianGhostNorm
+    : GHOST_NORM;
+  const effectiveGhostNormMode: GhostNormMode = ghostNormMode === 'median' && medianGhostNorm != null
+    ? 'median'
+    : 'fixed';
+  const displayMetrics: GhostMetric[] = metrics.map((metric: GhostMetric) => {
+    if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
+      return metric;
+    }
+    const avgDailyEffort = metric.avgDailyEffort;
+    const raw = (avgDailyEffort / effectiveGhostNorm) * 100;
+    const adjusted = metric.share > 0
+      ? (avgDailyEffort / (effectiveGhostNorm * metric.share)) * 100
+      : null;
+    return {
+      ...metric,
+      ghostPercentRaw: Number.isFinite(raw) ? raw : null,
+      ghostPercent: adjusted != null && Number.isFinite(adjusted) ? adjusted : null,
+    };
+  });
+
+  // Calculate aggregate KPIs from displayed metrics (respect selected Ghost Norm mode)
+  const activeMetrics = displayMetrics.filter((m: GhostMetric) => m.hasEnoughData);
   const avgGhost = activeMetrics.length > 0
     ? activeMetrics.reduce((sum: number, m: GhostMetric) => sum + (m.ghostPercent ?? 0), 0) / activeMetrics.length
     : null;
-  const totalCommits = metrics.reduce((sum: number, m: GhostMetric) => sum + m.commitCount, 0);
-  const totalWorkDays = metrics.reduce((sum: number, m: GhostMetric) => sum + m.actualWorkDays, 0);
+  const totalCommits = displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.commitCount, 0);
+  const totalWorkDays = displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.actualWorkDays, 0);
+  const normNumberFormat = new Intl.NumberFormat(locale === 'ru' ? 'ru-RU' : 'en-US', {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+  });
+  const effectiveGhostNormLabel = normNumberFormat.format(effectiveGhostNorm);
+  const medianGhostNormLabel = medianGhostNorm != null
+    ? normNumberFormat.format(medianGhostNorm)
+    : null;
 
   const repoCount = Array.isArray(order.selectedRepos) ? order.selectedRepos.length : 0;
 
@@ -1426,6 +1476,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {progress.llmConcurrency != null && (
                       <span className="ml-2 text-foreground/50">
                         {progress.llmConcurrency}×
+                        {progress.fdLlmConcurrency != null
+                          && progress.fdLlmConcurrency !== progress.llmConcurrency && (
+                            <> / FD {progress.fdLlmConcurrency}×</>
+                          )}
                       </span>
                     )}
                   </span>
@@ -1784,9 +1838,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
           <GhostKpiCards
             avgGhostPercent={avgGhost}
-            developerCount={metrics.length}
+            developerCount={displayMetrics.length}
             commitCount={totalCommits}
             totalWorkDays={totalWorkDays}
+            ghostNormHours={effectiveGhostNorm}
           />
 
           {/* Commit date range & analysis scope */}
@@ -1834,9 +1889,31 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             </TabsList>
 
             <TabsContent value="overview" className="space-y-6">
-              <div className="flex justify-end">
+              <div className="flex justify-end items-center gap-2 flex-wrap">
                 <GhostPeriodSelector value={period} onChange={setPeriod} />
+                <Select value={ghostNormMode} onValueChange={(value) => setGhostNormMode(value as GhostNormMode)}>
+                  <SelectTrigger className="w-[320px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="fixed">{t('detail.ghostNormModeFixed', { hours: GHOST_NORM.toFixed(1) })}</SelectItem>
+                    <SelectItem value="median">{t('detail.ghostNormModeMedian')}</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Badge variant="outline" className="text-xs">
+                  {t('detail.ghostNormCurrent', { hours: effectiveGhostNormLabel })}
+                </Badge>
               </div>
+              {ghostNormMode === 'median' && effectiveGhostNormMode === 'fixed' && (
+                <p className="text-xs text-muted-foreground text-right">
+                  {t('detail.ghostNormMedianFallback', { hours: GHOST_NORM.toFixed(1) })}
+                </p>
+              )}
+              {ghostNormMode === 'median' && medianGhostNormLabel && (
+                <p className="text-xs text-muted-foreground text-right">
+                  {t('detail.ghostNormMedianValue', { hours: medianGhostNormLabel })}
+                </p>
+              )}
 
               <Card>
                 <CardHeader>
@@ -1844,7 +1921,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </CardHeader>
                 <CardContent>
                   <GhostDistributionPanel
-                    metrics={metrics}
+                    metrics={displayMetrics}
                     onDeveloperClick={(email) => router.push(`/orders/${id}/developers/${encodeURIComponent(email)}`)}
                   />
                 </CardContent>
@@ -1856,7 +1933,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </CardHeader>
                 <CardContent>
                   <GhostDeveloperTable
-                    metrics={metrics}
+                    metrics={displayMetrics}
                     orderId={id}
                     highlightedEmail={highlightedEmail}
                     onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}

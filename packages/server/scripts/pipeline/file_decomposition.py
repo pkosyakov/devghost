@@ -21,6 +21,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ===== CONSTANTS =====
 
 FILE_CHUNK_SIZE = 25000  # chars per chunk for very large files
+FD_LLM_CONCURRENCY_DEFAULT_OPENROUTER = 10
+FD_LLM_CONCURRENCY_DEFAULT_OLLAMA = 1
+FD_LLM_CONCURRENCY_CAP_DEFAULT = 32
+FD_LLM_CONCURRENCY_CAP_MAX = 64
 
 FILE_SUMMARY_SCHEMA = {
     "type": "object",
@@ -97,6 +101,50 @@ DECOMP_SCHEMA = {
     },
     "required": ["coding_hours", "integration_hours", "testing_hours", "estimated_hours", "reasoning"],
 }
+
+
+def _parse_positive_int(raw_value):
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    if not text:
+        return None
+    try:
+        parsed = int(text)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_fd_concurrency(file_count):
+    """Resolve per-file FD parallelism from env with safe caps."""
+    provider = str(os.environ.get("LLM_PROVIDER", "ollama")).strip().lower()
+    provider_default = (
+        FD_LLM_CONCURRENCY_DEFAULT_OPENROUTER
+        if provider == "openrouter"
+        else FD_LLM_CONCURRENCY_DEFAULT_OLLAMA
+    )
+
+    explicit_fd = _parse_positive_int(os.environ.get("FD_LLM_CONCURRENCY"))
+    inherited_llm = _parse_positive_int(os.environ.get("LLM_CONCURRENCY"))
+
+    if explicit_fd is not None:
+        requested = explicit_fd
+        source = "FD_LLM_CONCURRENCY"
+    elif inherited_llm is not None:
+        requested = inherited_llm
+        source = "LLM_CONCURRENCY"
+    else:
+        requested = provider_default
+        source = "provider_default"
+
+    cap_env = _parse_positive_int(os.environ.get("FD_LLM_CONCURRENCY_CAP"))
+    cap = cap_env if cap_env is not None else FD_LLM_CONCURRENCY_CAP_DEFAULT
+    cap = max(1, min(cap, FD_LLM_CONCURRENCY_CAP_MAX))
+
+    constrained = max(1, min(requested, cap))
+    effective = min(constrained, file_count) if file_count > 0 else 0
+    return effective, requested, cap, source
 
 PROMPT_CLASSIFY = """Classify this {lang} commit objectively. Be precise with percentages.
 
@@ -1015,7 +1063,7 @@ def run_file_decomposition(diff, message, language, fc, la, ld, call_ollama_fn):
     commit_stats["test_only"] = len(non_test_code) == 0
 
     # Step 3: Summarize each file (parallel)
-    fd_concurrency = max(1, min(int(os.environ.get('LLM_CONCURRENCY', '5')), 10))
+    fd_concurrency, fd_requested, fd_cap, fd_source = _resolve_fd_concurrency(len(file_info))
     if fd_concurrency <= 1 or len(file_info) <= 1:
         file_summaries = [
             summarize_file_full(
@@ -1082,6 +1130,9 @@ Reply with ONLY the JSON:"""
         },
         "fd_details": {
             "fd_concurrency": fd_concurrency,
+            "fd_concurrency_requested": fd_requested,
+            "fd_concurrency_cap": fd_cap,
+            "fd_concurrency_source": fd_source,
             "file_timeline": sorted(
                 [
                     {

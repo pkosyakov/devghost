@@ -11,6 +11,9 @@ Serverless analysis pipeline running on [Modal](https://modal.com).
    modal secret create devghost-db DIRECT_URL="postgresql://..."
    modal secret create devghost-llm OPENROUTER_API_KEY="..." MODAL_WEBHOOK_SECRET="..." LLM_MAX_QPS="5"
    modal secret create devghost-worker-tuning \
+     LLM_CONCURRENCY="20" \
+     FD_LLM_CONCURRENCY="20" \
+     FD_LLM_CONCURRENCY_CAP="32" \
      DEMO_LIVE_CHUNK_SIZE="10" \
      WATCHDOG_TRIGGER_URL="https://devghost.pro/api/cron/analysis-watchdog" \
      WATCHDOG_TRIGGER_TOKEN="<same-as-CRON_SECRET>" \

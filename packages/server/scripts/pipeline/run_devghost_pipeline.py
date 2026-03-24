@@ -69,6 +69,17 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
         model = os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b')
     print(f"LLM: {llm_provider} ({model}), commits: {total}, concurrency: {concurrency}",
           file=sys.stderr, flush=True)
+    fd_requested = (
+        os.environ.get('FD_LLM_CONCURRENCY')
+        or os.environ.get('LLM_CONCURRENCY')
+        or ('10' if llm_provider == 'openrouter' else '1')
+    )
+    fd_cap = os.environ.get('FD_LLM_CONCURRENCY_CAP', '32')
+    print(
+        f"FD file concurrency: requested={fd_requested}, cap={fd_cap}",
+        file=sys.stderr,
+        flush=True,
+    )
 
     # Save real stdout for JSON output, redirect prints to stderr
     real_stdout = sys.stdout
