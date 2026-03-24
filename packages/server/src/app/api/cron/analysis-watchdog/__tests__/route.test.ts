@@ -14,6 +14,7 @@ const mockCommitAnalysisCount = vi.fn();
 const mockExecuteRaw = vi.fn();
 const mockQueryRaw = vi.fn();
 const mockTransaction = vi.fn();
+const mockCalculateAndSaveBatch = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   default: {
@@ -45,6 +46,7 @@ vi.mock('@/lib/logger', () => {
 vi.mock('@/lib/services/ghost-metrics-service', () => ({
   getGhostMetricsService: vi.fn().mockReturnValue({
     calculateAndSave: vi.fn().mockResolvedValue([]),
+    calculateAndSaveBatch: (...a: unknown[]) => mockCalculateAndSaveBatch(...a),
   }),
 }));
 
@@ -91,6 +93,13 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockExecuteRaw.mockResolvedValue(0);
     mockQueryRaw.mockResolvedValue([]);
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
+    mockCalculateAndSaveBatch.mockResolvedValue({
+      metrics: [],
+      totalDevelopers: 0,
+      processedDevelopers: 0,
+      nextOffset: 0,
+      done: true,
+    });
   });
 
   // ── Auth ──
@@ -341,14 +350,153 @@ describe('GET /api/cron/analysis-watchdog', () => {
     vi.mocked(isBillingEnabled).mockReturnValue(false);
   });
 
-  // ── Stuck post_processing recovery ──
+  // ── Resumable post_processing ──
 
-  it('resets stuck post_processing jobs', async () => {
-    mockExecuteRaw.mockResolvedValue(2); // 2 stuck jobs reset
+  it('resumes stale post_processing checkpoint without reset', async () => {
+    const resumableJob = {
+      id: 'job-6',
+      orderId: 'order-6',
+      status: 'LLM_COMPLETE',
+      currentStep: 'post_processing:active:metrics:10',
+      creditsReleased: 0,
+      totalPromptTokens: null,
+      totalCompletionTokens: null,
+      llmConfigSnapshot: null,
+      order: {
+        id: 'order-6',
+        userId: 'user-6',
+        analysisPeriodMode: 'ALL_TIME',
+        analysisYears: [],
+        analysisStartDate: null,
+        analysisEndDate: null,
+        analysisCommitLimit: null,
+        user: { id: 'user-6', role: 'USER' },
+      },
+    };
+
+    mockQueryRaw
+      .mockResolvedValueOnce([])                  // reconciliation query
+      .mockResolvedValueOnce([{ id: 'job-6' }])   // claim
+      .mockResolvedValueOnce([]);                 // no more claims
+
+    mockJobFindUnique.mockResolvedValue(resumableJob);
+    mockCalculateAndSaveBatch.mockResolvedValue({
+      metrics: [],
+      totalDevelopers: 40,
+      processedDevelopers: 10,
+      nextOffset: 20,
+      done: false,
+    });
 
     const res = await GET(makeRequest('test-cron-secret'));
     const json = await res.json();
 
+    expect(json.processed).toBe(1);
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
+    expect(mockCalculateAndSaveBatch).toHaveBeenCalledWith(
+      'order-6',
+      'user-6',
+      expect.objectContaining({
+        offset: 10,
+        limit: expect.any(Number),
+      }),
+    );
+    expect(mockJobUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-6' },
+        data: expect.objectContaining({
+          currentStep: 'post_processing:metrics:20',
+          progress: 95,
+        }),
+      }),
+    );
+  });
+
+  it('completes post-processing across multiple checkpoint iterations', async () => {
+    const order = {
+      id: 'order-7',
+      userId: 'user-7',
+      analysisPeriodMode: 'ALL_TIME',
+      analysisYears: [],
+      analysisStartDate: null,
+      analysisEndDate: null,
+      analysisCommitLimit: null,
+      user: { id: 'user-7', role: 'USER' },
+    };
+
+    mockQueryRaw
+      .mockResolvedValueOnce([])                  // reconciliation query
+      .mockResolvedValueOnce([{ id: 'job-7' }])   // claim #1
+      .mockResolvedValueOnce([{ id: 'job-7' }])   // claim #2
+      .mockResolvedValueOnce([]);                 // no more claims
+
+    mockJobFindUnique
+      .mockResolvedValueOnce({
+        id: 'job-7',
+        orderId: 'order-7',
+        status: 'LLM_COMPLETE',
+        currentStep: 'post_processing:active:metrics:0',
+        creditsReleased: 0,
+        totalPromptTokens: null,
+        totalCompletionTokens: null,
+        llmConfigSnapshot: null,
+        order,
+      })
+      .mockResolvedValueOnce({
+        id: 'job-7',
+        orderId: 'order-7',
+        status: 'LLM_COMPLETE',
+        currentStep: 'post_processing:active:metrics:10',
+        creditsReleased: 0,
+        totalPromptTokens: null,
+        totalCompletionTokens: null,
+        llmConfigSnapshot: null,
+        order,
+      });
+
+    mockCalculateAndSaveBatch
+      .mockResolvedValueOnce({
+        metrics: [],
+        totalDevelopers: 20,
+        processedDevelopers: 10,
+        nextOffset: 10,
+        done: false,
+      })
+      .mockResolvedValueOnce({
+        metrics: [],
+        totalDevelopers: 20,
+        processedDevelopers: 10,
+        nextOffset: 20,
+        done: true,
+      });
+
+    const res = await GET(makeRequest('test-cron-secret'));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
     expect(json.processed).toBe(2);
+    expect(mockCalculateAndSaveBatch).toHaveBeenCalledTimes(2);
+    expect(mockCalculateAndSaveBatch).toHaveBeenNthCalledWith(
+      1,
+      'order-7',
+      'user-7',
+      expect.objectContaining({ offset: 0 }),
+    );
+    expect(mockCalculateAndSaveBatch).toHaveBeenNthCalledWith(
+      2,
+      'order-7',
+      'user-7',
+      expect.objectContaining({ offset: 10 }),
+    );
+    expect(mockJobUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-7' },
+        data: expect.objectContaining({
+          status: 'COMPLETED',
+          progress: 100,
+          currentStep: 'done',
+        }),
+      }),
+    );
   });
 });

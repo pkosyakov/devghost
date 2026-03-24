@@ -13,8 +13,29 @@ const HEARTBEAT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const POST_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_PENDING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
 const TIME_BUDGET_MS = 45_000; // 45s — leave 15s buffer before 60s maxDuration
+const POST_PROCESSING_MIN_REMAINING_MS = 12_000;
+const POST_PROCESSING_LEASE_HEARTBEAT_MS = 15_000;
+const POST_PROCESSING_DEBIT_BATCH = envPositiveInt('POST_PROCESSING_DEBIT_BATCH', 250);
+const POST_PROCESSING_METRICS_BATCH = envPositiveInt('POST_PROCESSING_METRICS_BATCH', 10);
+const POST_PROCESSING_STEP_PREFIX = 'post_processing:';
+const POST_PROCESSING_ACTIVE_PREFIX = 'post_processing:active:';
+const POST_PROCESSING_DEBIT_STEP = 'post_processing:debit';
+const POST_PROCESSING_FINALIZE_STEP = 'post_processing:finalize';
 
 const log = analysisLogger.child({ component: 'watchdog' });
+
+type PostProcessingStage = 'debit' | 'metrics' | 'finalize';
+
+interface PostProcessingState {
+  stage: PostProcessingStage;
+  metricsOffset: number;
+}
+
+interface PostProcessingOutcome {
+  done: boolean;
+  step: string;
+  reason: 'completed' | 'partial';
+}
 
 export async function GET(request: NextRequest) {
   // Vercel Cron sends Authorization: Bearer <CRON_SECRET> header.
@@ -160,18 +181,9 @@ export async function GET(request: NextRequest) {
     processed++;
   }
 
-  // 3.5. Recovery: stuck post_processing → reset for re-claim
-  const stuckPostProcessing = await prisma.$executeRaw`
-    UPDATE "AnalysisJob"
-    SET "currentStep" = NULL, "updatedAt" = NOW()
-    WHERE status = 'LLM_COMPLETE'
-      AND "currentStep" = 'post_processing'
-      AND "updatedAt" < ${new Date(Date.now() - POST_PROCESSING_TIMEOUT_MS)}
-  `;
-  if (stuckPostProcessing > 0) {
-    log.warn({ count: stuckPostProcessing }, 'Reset stuck post_processing jobs');
-    processed += stuckPostProcessing;
-  }
+  // 3.5. Recovery note:
+  // LLM_COMPLETE jobs can keep resumable post_processing checkpoints in currentStep.
+  // Re-claim logic below treats stale checkpoints as recoverable without resetting.
 
   // 3.6. Recovery: latest job is COMPLETED but order still PROCESSING.
   // This can happen after a partial finalization failure. Reconcile order state.
@@ -217,6 +229,7 @@ export async function GET(request: NextRequest) {
   }
 
   // 4. Post-process: LLM_COMPLETE → Ghost% + billing → COMPLETED
+  // Supports resumable checkpoints in currentStep (post_processing:...).
   while (true) {
     if (Date.now() - startTime > TIME_BUDGET_MS) {
       log.info({ processed }, 'Time budget exceeded, deferring to next cron run');
@@ -224,12 +237,37 @@ export async function GET(request: NextRequest) {
     }
     // Atomic claim: only one cron run can grab each job.
     // Must set updatedAt explicitly — @updatedAt only works with Prisma Client.
+    const postProcessingStaleCutoff = new Date(Date.now() - POST_PROCESSING_TIMEOUT_MS);
     const claimed = await prisma.$queryRaw<{ id: string }[]>`
       UPDATE "AnalysisJob"
-      SET "currentStep" = 'post_processing', "updatedAt" = NOW()
+      SET
+        "currentStep" = CASE
+          WHEN "currentStep" IS NULL
+            OR "currentStep" = 'post_processing'
+            OR "currentStep" NOT LIKE 'post_processing%'
+            THEN ${toActiveStep(POST_PROCESSING_DEBIT_STEP)}
+          WHEN "currentStep" LIKE 'post_processing:active:%'
+            THEN "currentStep"
+          ELSE ${POST_PROCESSING_ACTIVE_PREFIX}
+            || SUBSTRING("currentStep" FROM ${POST_PROCESSING_STEP_PREFIX.length + 1})
+        END,
+        "updatedAt" = NOW()
       WHERE id = (
         SELECT id FROM "AnalysisJob"
-        WHERE status = 'LLM_COMPLETE' AND ("currentStep" IS NULL OR "currentStep" != 'post_processing')
+        WHERE status = 'LLM_COMPLETE'
+          AND (
+            "currentStep" IS NULL
+            OR "currentStep" = 'post_processing'
+            OR "currentStep" NOT LIKE 'post_processing%'
+            OR (
+              "currentStep" LIKE 'post_processing:%'
+              AND "currentStep" NOT LIKE 'post_processing:active:%'
+            )
+            OR (
+              "currentStep" LIKE 'post_processing:active:%'
+              AND "updatedAt" < ${postProcessingStaleCutoff}
+            )
+          )
         LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
@@ -251,16 +289,20 @@ export async function GET(request: NextRequest) {
         jobId: job.id,
         phase: 'post_processing',
         code: 'POST_PROCESSING_START',
-        message: 'Watchdog started post-processing for LLM_COMPLETE job',
+        message: 'Watchdog started or resumed post-processing for LLM_COMPLETE job',
       });
-      await postProcessJob(job);
-      await appendJobEvent({
-        jobId: job.id,
-        phase: 'post_processing',
-        code: 'POST_PROCESSING_DONE',
-        message: 'Watchdog completed post-processing',
-      });
-      log.info({ jobId: job.id }, 'Post-processing completed');
+      const outcome = await postProcessJob(job, startTime + TIME_BUDGET_MS);
+      if (outcome.done) {
+        await appendJobEvent({
+          jobId: job.id,
+          phase: 'post_processing',
+          code: 'POST_PROCESSING_DONE',
+          message: 'Watchdog completed post-processing',
+        });
+        log.info({ jobId: job.id }, 'Post-processing completed');
+      } else {
+        log.info({ jobId: job.id, step: outcome.step }, 'Post-processing checkpoint saved');
+      }
     } catch (err) {
       log.error({ err, jobId: job.id }, 'Post-processing failed');
       await appendJobEvent({
@@ -284,117 +326,235 @@ export async function GET(request: NextRequest) {
 }
 
 
-async function postProcessJob(job: any) {
+async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcessingOutcome> {
   const order = job.order;
   const userId = order.userId;
   const skipBilling = !isBillingEnabled() || order.user.role === 'ADMIN';
+  let state = parsePostProcessingState(job.currentStep);
+  let lastLeaseRefreshMs = 0;
 
-  // 1. Count processed commits for THIS job and debit.
-  // We scope by analyzedAt >= job.createdAt so reruns on the same order
-  // don't charge historical rows preserved from previous analyses.
-  // Idempotent: debitCredit() increments creditsConsumed internally (CAS guard),
-  // so re-claim after recovery (step 3.5) won't double-debit — the loop
-  // subtracts already-consumed credits before starting.
-  const processedCount = await prisma.commitAnalysis.count({
-    where: {
-      orderId: order.id,
-      jobId: null,
-      method: { not: 'error' },
-      analyzedAt: { gte: job.createdAt },
-    },
-  });
+  const refreshLease = async (force = false) => {
+    const nowMs = Date.now();
+    if (!force && nowMs - lastLeaseRefreshMs < POST_PROCESSING_LEASE_HEARTBEAT_MS) return;
+    await prisma.analysisJob.update({
+      where: { id: job.id },
+      data: { updatedAt: new Date(nowMs) },
+    });
+    lastLeaseRefreshMs = nowMs;
+  };
 
-  if (!skipBilling) {
-    const cachedReleased = job.creditsReleased || 0;
-    const alreadyConsumed = job.creditsConsumed || 0;
-    const toDebit = Math.max(0, processedCount - cachedReleased - alreadyConsumed);
-    billingLogger.info(
-      {
-        userId,
+  await refreshLease(true);
+
+  // 1) Debit phase (resumable)
+  if (state.stage === 'debit') {
+    const processedCount = await prisma.commitAnalysis.count({
+      where: {
         orderId: order.id,
-        jobId: job.id,
-        processedCount,
-        cachedReleased,
-        alreadyConsumed,
-        toDebit,
+        jobId: null,
+        method: { not: 'error' },
+        analyzedAt: { gte: job.createdAt },
       },
-      'Post-processing debit plan computed',
-    );
-    for (let i = 0; i < toDebit; i++) {
-      const result = await debitCredit(userId, job.id, order.id);
-      if (!result) {
-        log.warn({ userId, jobId: job.id }, 'Credits exhausted during post-processing');
-        break;
+    });
+
+    if (!skipBilling) {
+      const cachedReleased = job.creditsReleased || 0;
+      const alreadyConsumed = job.creditsConsumed || 0;
+      const toDebit = Math.max(0, processedCount - cachedReleased - alreadyConsumed);
+      let debitedNow = 0;
+      let budgetExhausted = false;
+
+      billingLogger.info(
+        {
+          userId,
+          orderId: order.id,
+          jobId: job.id,
+          processedCount,
+          cachedReleased,
+          alreadyConsumed,
+          toDebit,
+        },
+        'Post-processing debit plan computed',
+      );
+
+      for (let i = 0; i < toDebit; i++) {
+        if (debitedNow >= POST_PROCESSING_DEBIT_BATCH) break;
+        if (Date.now() >= deadlineMs - POST_PROCESSING_MIN_REMAINING_MS) break;
+
+        const result = await debitCredit(userId, job.id, order.id);
+        if (!result) {
+          budgetExhausted = true;
+          log.warn({ userId, jobId: job.id }, 'Credits exhausted during post-processing');
+          break;
+        }
+        debitedNow++;
+
+        if ((debitedNow % 50) === 0) {
+          await prisma.analysisJob.update({
+            where: { id: job.id },
+            data: { updatedAt: new Date() },
+          });
+        }
       }
-      // Refresh updatedAt every 50 debits to extend the post_processing lease.
-      // Without this, step 3.5 resets the job after 5 min even if we're still alive.
-      if ((i + 1) % 50 === 0) {
+
+      if (!budgetExhausted && debitedNow < toDebit) {
         await prisma.analysisJob.update({
           where: { id: job.id },
-          data: { updatedAt: new Date() },
+          data: {
+            currentStep: POST_PROCESSING_DEBIT_STEP,
+            progress: 95,
+            updatedAt: new Date(),
+          },
         });
+        await appendJobEvent({
+          jobId: job.id,
+          phase: 'post_processing',
+          code: 'POST_PROCESSING_DEBIT_PROGRESS',
+          message: 'Post-processing debit checkpoint saved',
+          payload: { debitedNow, remaining: Math.max(0, toDebit - debitedNow) },
+        });
+        return { done: false, step: POST_PROCESSING_DEBIT_STEP, reason: 'partial' };
       }
     }
-  }
 
-  // 2. Calculate Ghost% metrics (can be slow for large orders — refresh lease first)
-  await prisma.analysisJob.update({
-    where: { id: job.id },
-    data: { updatedAt: new Date() },
-  });
-  const ghostService = getGhostMetricsService();
-  await prisma.orderMetric.deleteMany({ where: { orderId: order.id } });
-  await prisma.dailyEffort.deleteMany({ where: { orderId: order.id } });
-  const metrics = await ghostService.calculateAndSave(order.id, userId);
-  log.info({ jobId: job.id, developers: metrics.length }, 'Ghost metrics calculated');
-
-  // 3. Aggregate LLM usage and compute cost
-  const llmConfig = job.llmConfigSnapshot
-    ? JSON.parse(JSON.stringify(job.llmConfigSnapshot))
-    : await getLlmConfig();
-  const actualCost = llmConfig.provider === 'openrouter'
-    ? ((job.totalPromptTokens ?? 0) / 1e6 * (llmConfig.openrouter?.inputPrice ?? 0) +
-       (job.totalCompletionTokens ?? 0) / 1e6 * (llmConfig.openrouter?.outputPrice ?? 0))
-    : 0;
-
-  // 4. Count in-scope commits
-  const scopeConfig: ScopeConfig = {
-    analysisPeriodMode: order.analysisPeriodMode,
-    analysisYears: order.analysisYears,
-    analysisStartDate: order.analysisStartDate,
-    analysisEndDate: order.analysisEndDate,
-    analysisCommitLimit: order.analysisCommitLimit,
-  };
-  const inScopeCount = await countInScopeCommits(order.id, scopeConfig);
-
-  // 5. Finalize job and order atomically to avoid split-brain
-  // (job COMPLETED while order still PROCESSING).
-  const completedAt = new Date();
-  await prisma.$transaction([
-    prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: 'COMPLETED',
-        analyzedAt: completedAt,
-        totalCommits: inScopeCount,
-      },
-    }),
-    prisma.analysisJob.update({
+    state = { stage: 'metrics', metricsOffset: 0 };
+    await prisma.analysisJob.update({
       where: { id: job.id },
       data: {
-        status: 'COMPLETED',
-        progress: 100,
-        currentStep: 'done',
-        completedAt,
-        totalCostUsd: actualCost,
+        currentStep: formatMetricsStep(0),
+        progress: 95,
+        updatedAt: new Date(),
       },
-    }),
-  ]);
-
-  // 6. Release unused credits
-  if (!skipBilling) {
-    await releaseReservedCredits(userId, job.id, order.id);
+    });
+    await appendJobEvent({
+      jobId: job.id,
+      phase: 'post_processing',
+      code: 'POST_PROCESSING_DEBIT_DONE',
+      message: 'Post-processing debit phase completed',
+    });
   }
+
+  // 2) Metrics phase (resumable chunked processing)
+  if (state.stage === 'metrics') {
+    if (Date.now() >= deadlineMs - POST_PROCESSING_MIN_REMAINING_MS) {
+      const step = formatMetricsStep(state.metricsOffset);
+      await prisma.analysisJob.update({
+        where: { id: job.id },
+        data: { currentStep: step, progress: 95, updatedAt: new Date() },
+      });
+      return { done: false, step, reason: 'partial' };
+    }
+
+    const ghostService = getGhostMetricsService();
+    const batch = await ghostService.calculateAndSaveBatch(order.id, userId, {
+      periodType: 'ALL_TIME',
+      offset: state.metricsOffset,
+      limit: POST_PROCESSING_METRICS_BATCH,
+      resetExisting: state.metricsOffset === 0,
+      onProgress: async () => {
+        await refreshLease(false);
+      },
+    });
+
+    if (!batch.done && batch.nextOffset <= state.metricsOffset) {
+      throw new Error('POST_PROCESSING_NO_PROGRESS');
+    }
+
+    const nextStep = batch.done ? POST_PROCESSING_FINALIZE_STEP : formatMetricsStep(batch.nextOffset);
+    await prisma.analysisJob.update({
+      where: { id: job.id },
+      data: {
+        currentStep: nextStep,
+        progress: batch.done ? 98 : 95,
+        updatedAt: new Date(),
+      },
+    });
+
+    await appendJobEvent({
+      jobId: job.id,
+      phase: 'post_processing',
+      code: 'POST_PROCESSING_METRICS_BATCH',
+      message: 'Post-processing metrics batch completed',
+      payload: {
+        offset: state.metricsOffset,
+        nextOffset: batch.nextOffset,
+        totalDevelopers: batch.totalDevelopers,
+        processedDevelopers: batch.processedDevelopers,
+        done: batch.done,
+      },
+    });
+
+    log.info(
+      {
+        jobId: job.id,
+        offset: state.metricsOffset,
+        nextOffset: batch.nextOffset,
+        totalDevelopers: batch.totalDevelopers,
+        done: batch.done,
+      },
+      'Post-processing metrics batch complete',
+    );
+
+    if (!batch.done) {
+      return { done: false, step: nextStep, reason: 'partial' };
+    }
+
+    state = { stage: 'finalize', metricsOffset: batch.nextOffset };
+  }
+
+  // 3) Finalize phase
+  if (state.stage === 'finalize') {
+    const llmConfig = job.llmConfigSnapshot
+      ? JSON.parse(JSON.stringify(job.llmConfigSnapshot))
+      : await getLlmConfig();
+    const actualCost = llmConfig.provider === 'openrouter'
+      ? ((job.totalPromptTokens ?? 0) / 1e6 * (llmConfig.openrouter?.inputPrice ?? 0) +
+         (job.totalCompletionTokens ?? 0) / 1e6 * (llmConfig.openrouter?.outputPrice ?? 0))
+      : 0;
+
+    const scopeConfig: ScopeConfig = {
+      analysisPeriodMode: order.analysisPeriodMode,
+      analysisYears: order.analysisYears,
+      analysisStartDate: order.analysisStartDate,
+      analysisEndDate: order.analysisEndDate,
+      analysisCommitLimit: order.analysisCommitLimit,
+    };
+    const inScopeCount = await countInScopeCommits(order.id, scopeConfig);
+
+    const completedAt = new Date();
+    await prisma.$transaction([
+      prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: 'COMPLETED',
+          analyzedAt: completedAt,
+          totalCommits: inScopeCount,
+        },
+      }),
+      prisma.analysisJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          progress: 100,
+          currentStep: 'done',
+          completedAt,
+          totalCostUsd: actualCost,
+        },
+      }),
+    ]);
+
+    if (!skipBilling) {
+      await releaseReservedCredits(userId, job.id, order.id);
+    }
+
+    return { done: true, step: 'done', reason: 'completed' };
+  }
+
+  const fallbackStep = formatMetricsStep(state.metricsOffset);
+  await prisma.analysisJob.update({
+    where: { id: job.id },
+    data: { currentStep: fallbackStep, progress: 95, updatedAt: new Date() },
+  });
+  return { done: false, step: fallbackStep, reason: 'partial' };
 }
 
 
@@ -417,6 +577,63 @@ async function handleJobFailure(job: any) {
     where: { id: order.id },
     data: { status: 'FAILED', errorMessage: job.error ?? 'Analysis failed' },
   });
+}
+
+function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return parsed;
+}
+
+function formatMetricsStep(offset: number): string {
+  return `${POST_PROCESSING_STEP_PREFIX}metrics:${Math.max(0, Math.floor(offset))}`;
+}
+
+function toActiveStep(step: string): string {
+  const checkpoint = toCheckpointStep(step);
+  return `${POST_PROCESSING_ACTIVE_PREFIX}${checkpoint.slice(POST_PROCESSING_STEP_PREFIX.length)}`;
+}
+
+function toCheckpointStep(step: string | null | undefined): string {
+  if (!step || step === 'post_processing') {
+    return POST_PROCESSING_DEBIT_STEP;
+  }
+  if (step.startsWith(POST_PROCESSING_ACTIVE_PREFIX)) {
+    return `${POST_PROCESSING_STEP_PREFIX}${step.slice(POST_PROCESSING_ACTIVE_PREFIX.length)}`;
+  }
+  if (step.startsWith(POST_PROCESSING_STEP_PREFIX)) {
+    return step;
+  }
+  return POST_PROCESSING_DEBIT_STEP;
+}
+
+function parsePostProcessingState(step: string | null | undefined): PostProcessingState {
+  const checkpoint = toCheckpointStep(step);
+
+  if (checkpoint === POST_PROCESSING_FINALIZE_STEP) {
+    return { stage: 'finalize', metricsOffset: 0 };
+  }
+
+  if (checkpoint === POST_PROCESSING_DEBIT_STEP) {
+    return { stage: 'debit', metricsOffset: 0 };
+  }
+
+  if (checkpoint.startsWith(`${POST_PROCESSING_STEP_PREFIX}metrics:`)) {
+    const rawOffset = checkpoint.slice(`${POST_PROCESSING_STEP_PREFIX}metrics:`.length);
+    const parsed = Number.parseInt(rawOffset, 10);
+    return {
+      stage: 'metrics',
+      metricsOffset: Number.isFinite(parsed) && parsed >= 0 ? parsed : 0,
+    };
+  }
+
+  if (checkpoint.startsWith('post_processing')) {
+    return { stage: 'debit', metricsOffset: 0 };
+  }
+
+  return { stage: 'debit', metricsOffset: 0 };
 }
 
 
