@@ -25,7 +25,7 @@ Serverless analysis pipeline running on [Modal](https://modal.com).
      GIT_SHALLOW_BUFFER_DAYS="14" \
      GIT_FETCH_TIMEOUT_SEC="600" \
      GIT_CLONE_TIMEOUT_SEC="1800" \
-     GIT_LOG_TIMEOUT_SEC="300"
+     GIT_LOG_TIMEOUT_SEC="900"
    ```
 
 ## Deploy

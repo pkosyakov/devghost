@@ -56,7 +56,7 @@ from db import (
     get_existing_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
     set_job_status, set_job_error, increment_total_commits,
-    update_llm_usage, account_cached_batch, delete_existing_analyses,
+    update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
     append_job_event,
 )
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
@@ -169,6 +169,8 @@ def run_analysis(job_id: str):
     job = acquire_job(conn, job_id)
     if not job:
         return  # Already running, cancelled, or doesn't exist
+    order_id = job.get("orderId") or job.get("order_id")
+    job_started_at = job.get("startedAt") or job.get("started_at")
 
     append_job_event(
         conn,
@@ -197,8 +199,24 @@ def run_analysis(job_id: str):
 
     try:
         order = load_order(conn, job["orderId"])
+        order_id = order["id"]
         repos = json.loads(order["selected_repos"]) if isinstance(order["selected_repos"], str) else order["selected_repos"]
         llm_config = load_llm_config_snapshot(job)
+        llm_config_error = validate_llm_config_snapshot(llm_config)
+        if llm_config_error:
+            fatal_message = f"FATAL_LLM: {llm_config_error}"
+            append_job_event(
+                conn,
+                job_id,
+                "LLM config snapshot is missing or invalid",
+                level="error",
+                phase="worker",
+                code="LLM_SNAPSHOT_INVALID",
+                payload={"error": fatal_message},
+            )
+            set_job_error(conn, job_id, fatal_message, fatal=True)
+            return
+
         github_token = load_github_token(conn, order["user_id"])
         scope = build_scope(order)
         excluded_emails = order.get("excluded_developers") or []
@@ -529,12 +547,47 @@ def run_analysis(job_id: str):
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
+        error_lower = error_msg.lower()
 
         # Classify error: retryable vs fatal
-        is_fatal = any(keyword in error_msg.lower() for keyword in [
+        is_fatal = any(keyword in error_lower for keyword in [
+            "fatal_llm:",
+            "openrouter",
+            "llm_snapshot_invalid",
+            "missing llmconfigsnapshot",
+            "all providers have been ignored",
             "authentication", "permission", "invalid token",
             "schema", "column", "relation",  # DB schema issues
         ])
+
+        rollback_deleted = 0
+        if order_id and job_started_at:
+            try:
+                rollback_deleted = delete_analyses_since(conn, order_id, job_started_at)
+                if rollback_deleted > 0:
+                    append_job_event(
+                        conn,
+                        job_id,
+                        "Rolled back partial analyses from failed run",
+                        level="warn",
+                        phase="worker",
+                        code="ANALYSES_ROLLBACK_OK",
+                        payload={"deletedCount": rollback_deleted},
+                    )
+            except Exception as rollback_err:
+                try:
+                    append_job_event(
+                        conn,
+                        job_id,
+                        "Rollback of partial analyses failed",
+                        level="warn",
+                        phase="worker",
+                        code="ANALYSES_ROLLBACK_FAILED",
+                        payload={"error": str(rollback_err)[:300]},
+                    )
+                except Exception:
+                    pass
+
         append_job_event(
             conn,
             job_id,
@@ -542,7 +595,11 @@ def run_analysis(job_id: str):
             level="error",
             phase="worker",
             code="WORKER_EXCEPTION",
-            payload={"fatal": is_fatal, "error": error_msg[:500]},
+            payload={
+                "fatal": is_fatal,
+                "error": error_msg[:500],
+                "rollbackDeleted": rollback_deleted,
+            },
         )
 
         # Try to record error on the job. If the main connection is dead
@@ -734,6 +791,15 @@ def _process_repo_commits(
         chunk_started = time.time()
         chunk_sha = chunk_commits[0]["sha"] if len(chunk_commits) == 1 else None
 
+        _touch_chunk_heartbeat(
+            conn=conn,
+            job_id=job_id,
+            repo_name=repo_full_name,
+            chunk_index=chunk_index,
+            chunk_total=total_chunks,
+            stage="before_chunk",
+        )
+
         if total_chunks > 1:
             append_job_event(
                 conn,
@@ -755,6 +821,15 @@ def _process_repo_commits(
 
         chunk_results = evaluate_chunk(
             chunk_commits, repo_path, language, llm_config, rate_limiter,
+        )
+
+        _touch_chunk_heartbeat(
+            conn=conn,
+            job_id=job_id,
+            repo_name=repo_full_name,
+            chunk_index=chunk_index,
+            chunk_total=total_chunks,
+            stage="after_chunk",
         )
 
         for result in chunk_results:
@@ -841,7 +916,7 @@ def _process_repo_commits(
         },
     )
 
-    # Update progress (heartbeat is handled by background thread)
+    # Update progress (heartbeat is handled by background thread + chunk touches)
     progress_pct = int((repo_idx + 1) / total_repos * 90)
     update_progress(conn, job_id, progress=progress_pct, processed=total_analyzed)
     append_job_event(
@@ -859,6 +934,38 @@ def _process_repo_commits(
     )
 
     return total_analyzed, total_cache_hits
+
+
+def _touch_chunk_heartbeat(
+    conn,
+    job_id: str,
+    repo_name: str,
+    chunk_index: int,
+    chunk_total: int,
+    stage: str,
+) -> None:
+    """Best-effort explicit lease refresh around chunk boundaries."""
+    try:
+        update_heartbeat(conn, job_id)
+    except Exception as err:
+        try:
+            append_job_event(
+                conn,
+                job_id,
+                "Chunk-boundary heartbeat refresh failed",
+                level="warn",
+                phase="heartbeat",
+                code="HEARTBEAT_TOUCH_FAILED",
+                repo_name=repo_name,
+                payload={
+                    "stage": stage,
+                    "chunkIndex": chunk_index,
+                    "chunkTotal": chunk_total,
+                    "error": str(err)[:300],
+                },
+            )
+        except Exception:
+            pass
 
 
 def _to_float_or_none(value):
@@ -1030,8 +1137,34 @@ def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter):
         for c in commits
     ]
 
-    result = process_commits(repo_path, language, commit_dicts)
-    return result.get("commits", [])
+    # Strict mode: abort the entire job on first commit-level LLM failure.
+    prev_fail_fast = os.environ.get("FAIL_FAST")
+    os.environ["FAIL_FAST"] = "1"
+    try:
+        result = process_commits(repo_path, language, commit_dicts)
+    finally:
+        if prev_fail_fast is None:
+            os.environ.pop("FAIL_FAST", None)
+        else:
+            os.environ["FAIL_FAST"] = prev_fail_fast
+
+    chunk_results = result.get("commits", [])
+    if result.get("status") != "ok":
+        first_error = next((str(e) for e in (result.get("errors") or []) if e), None)
+        if not first_error:
+            for r in chunk_results:
+                if r.get("method") == "error" or r.get("error"):
+                    first_error = str(r.get("error") or f"commit {r.get('sha')} returned method=error")
+                    break
+        raise RuntimeError(f"FATAL_LLM: {first_error or 'chunk failed with unknown LLM error'}")
+
+    for r in chunk_results:
+        if r.get("method") == "error" or r.get("error"):
+            commit_sha = str(r.get("sha") or "unknown")
+            commit_error = str(r.get("error") or "commit returned method=error")
+            raise RuntimeError(f"FATAL_LLM: commit {commit_sha} failed: {commit_error[:500]}")
+
+    return chunk_results
 
 
 _rl_installed = False  # Module-level guard to prevent monkey-patch stacking
@@ -1069,6 +1202,27 @@ def load_llm_config_snapshot(job: dict) -> dict:
     return snapshot
 
 
+def validate_llm_config_snapshot(llm_config: dict) -> str | None:
+    """Return validation error for LLM snapshot, or None when valid."""
+    if not isinstance(llm_config, dict) or not llm_config:
+        return "Missing llmConfigSnapshot on AnalysisJob: refusing to run with implicit defaults"
+
+    provider = llm_config.get("provider")
+    if provider not in ("openrouter", "ollama"):
+        return f"Invalid llmConfigSnapshot.provider={provider!r}; expected 'openrouter' or 'ollama'"
+
+    if provider == "openrouter":
+        model = (llm_config.get("openrouter") or {}).get("model")
+        if not model:
+            return "Invalid llmConfigSnapshot: openrouter.model is required"
+    else:
+        model = (llm_config.get("ollama") or {}).get("model")
+        if not model:
+            return "Invalid llmConfigSnapshot: ollama.model is required"
+
+    return None
+
+
 def setup_llm_env(llm_config):
     """Set environment variables from llm_config snapshot for the Python pipeline.
 
@@ -1086,12 +1240,12 @@ def setup_llm_env(llm_config):
     os.environ["OPENROUTER_MODEL"] = openrouter.get("model", "qwen/qwen-2.5-coder-32b-instruct")
 
     # providerOrder/providerIgnore may be list (from TS LlmConfig) or string — normalize to CSV
-    provider_order = openrouter.get("providerOrder", "Chutes")
+    provider_order = openrouter.get("providerOrder", "")
     if isinstance(provider_order, list):
         provider_order = ",".join(provider_order)
     os.environ["OPENROUTER_PROVIDER_ORDER"] = provider_order
 
-    provider_ignore = openrouter.get("providerIgnore", "Cloudflare")
+    provider_ignore = openrouter.get("providerIgnore", "")
     if isinstance(provider_ignore, list):
         provider_ignore = ",".join(provider_ignore)
     os.environ["OPENROUTER_PROVIDER_IGNORE"] = provider_ignore

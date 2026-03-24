@@ -32,7 +32,7 @@ def _env_bool(name: str, default: bool) -> bool:
 GIT_SHALLOW_BUFFER_DAYS = _env_positive_int("GIT_SHALLOW_BUFFER_DAYS", 14)
 GIT_FETCH_TIMEOUT_SEC = _env_positive_int("GIT_FETCH_TIMEOUT_SEC", 600)
 GIT_CLONE_TIMEOUT_SEC = _env_positive_int("GIT_CLONE_TIMEOUT_SEC", 1800)
-GIT_LOG_TIMEOUT_SEC = _env_positive_int("GIT_LOG_TIMEOUT_SEC", 300)
+GIT_LOG_TIMEOUT_SEC = _env_positive_int("GIT_LOG_TIMEOUT_SEC", 900)
 GIT_PARTIAL_CLONE = _env_bool("GIT_PARTIAL_CLONE", True)
 
 

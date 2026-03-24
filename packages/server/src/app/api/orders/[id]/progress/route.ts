@@ -36,10 +36,14 @@ export async function GET(
   if (isErrorResponse(session)) return session;
 
   const jobIdParam = request.nextUrl.searchParams.get('jobId');
+  const orderWhere: Prisma.OrderWhereInput =
+    session.user.role === 'ADMIN'
+      ? { id }
+      : { id, userId: session.user.id };
 
   const job = jobIdParam
     ? await prisma.analysisJob.findFirst({
-        where: { id: jobIdParam, order: { id, userId: session.user.id } },
+        where: { id: jobIdParam, order: orderWhere },
         include: {
           order: {
             select: {
@@ -50,7 +54,7 @@ export async function GET(
         },
       })
     : await prisma.analysisJob.findFirst({
-        where: { order: { id, userId: session.user.id } },
+        where: { order: orderWhere },
         orderBy: { createdAt: 'desc' },
         include: {
           order: {

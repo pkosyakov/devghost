@@ -45,7 +45,8 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
     repo_slug = os.path.basename(repo_dir).replace('/', '_')
     total = len(commits)
     concurrency = _get_concurrency()
-    fail_fast = os.environ.get('FAIL_FAST', '').lower() in ('1', 'true', 'yes')
+    # Strict-by-default: on any commit-level LLM failure we abort the chunk/job.
+    fail_fast = os.environ.get('FAIL_FAST', '1').lower() in ('1', 'true', 'yes')
     fail_event = threading.Event()  # signals all workers to stop
 
     llm_provider = os.environ.get('LLM_PROVIDER', 'ollama')
@@ -128,13 +129,6 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
 
     def on_complete(idx, result, err_msg):
         with lock:
-            results[idx] = result
-            if err_msg:
-                errors.append(err_msg)
-            # Fail-fast: stop on first LLM/processing error
-            if fail_fast and (err_msg or result.get('method') == 'error'):
-                fail_event.set()
-            completed_count[0] += 1
             # Per-commit result for real-time UI log
             # Extract LLM error from llm_calls if no outer exception
             llm_calls = result.get('llm_calls', [])
@@ -144,6 +138,17 @@ def process_commits(repo_dir: str, language: str, commits: list) -> dict:
                     if c.get('error'):
                         llm_error = c['error']
                         break
+            if llm_error:
+                result['error'] = llm_error
+
+            results[idx] = result
+            if err_msg:
+                errors.append(err_msg)
+            # Fail-fast: stop on first LLM/processing error
+            if fail_fast and (err_msg or result.get('method') == 'error'):
+                fail_event.set()
+            completed_count[0] += 1
+
             log_entry = {
                 'sha': result['sha'][:8],
                 'status': 'error' if result.get('method') == 'error' else ('skip' if result.get('method') == 'root_commit_skip' else 'ok'),

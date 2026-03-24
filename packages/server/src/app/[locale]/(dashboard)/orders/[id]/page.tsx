@@ -440,7 +440,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const analyzeMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch(`/api/orders/${id}/analyze`, { method: 'POST' });
+      const endpoint = isAdmin
+        ? `/api/admin/orders/${id}/rerun`
+        : `/api/orders/${id}/analyze`;
+      const res = await fetch(endpoint, { method: 'POST' });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
         throw new Error(json.error || 'Analysis failed');

@@ -306,6 +306,23 @@ def delete_existing_analyses(conn, order_id: str):
     conn.commit()
 
 
+def delete_analyses_since(conn, order_id: str, started_at) -> int:
+    """Delete CommitAnalysis rows inserted since job start for rollback on strict failures."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM "CommitAnalysis"
+            WHERE "orderId" = %s
+              AND "jobId" IS NULL
+              AND "analyzedAt" >= %s
+            """,
+            (order_id, started_at),
+        )
+        deleted = cur.rowcount or 0
+    conn.commit()
+    return deleted
+
+
 def save_commit_analyses(conn, analyses: list[dict]):
     """Batch insert CommitAnalysis rows."""
     with conn.cursor() as cur:
@@ -495,4 +512,15 @@ def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False):
             SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW()
             WHERE id = %s
         """, (status, error_msg[:2000], job_id))  # Truncate error to avoid DB overflow
+        if fatal:
+            cur.execute(
+                """
+                UPDATE "Order"
+                SET status = 'FAILED',
+                    "errorMessage" = %s,
+                    "updatedAt" = NOW()
+                WHERE id = (SELECT "orderId" FROM "AnalysisJob" WHERE id = %s)
+                """,
+                (error_msg[:1000], job_id),
+            )
     conn.commit()

@@ -107,6 +107,7 @@ interface AnalysisJobOptions {
   promptRepeat?: boolean;
   cacheMode?: 'any' | 'model' | 'off';  // cross-order commit cache behavior
   forceRecalculate?: boolean;  // delete in-scope commits and re-analyze from scratch
+  skipBillingOverride?: boolean; // force billing on/off for admin/manual reruns
 }
 
 export async function processAnalysisJob(
@@ -129,7 +130,8 @@ export async function processAnalysisJob(
   const order = job.order;
   const userId = order.userId;
   const githubToken = job.order.user.githubAccessToken ?? undefined;
-  const skipBilling = !!options.isBenchmark || !isBillingEnabled() || order.user.role === 'ADMIN';
+  const skipBilling = options.skipBillingOverride
+    ?? (!!options.isBenchmark || !isBillingEnabled() || order.user.role === 'ADMIN');
 
   log.info({ orderId: order.id, orderName: order.name, hasToken: !!githubToken, skipBilling }, 'Order loaded');
 

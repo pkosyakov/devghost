@@ -92,6 +92,24 @@ describe('GET /api/orders/[id]/progress', () => {
     expect(res.status).toBe(404);
   });
 
+  it('allows admin to read progress for another user order', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'admin-1', role: 'ADMIN' },
+    } as never);
+    mockJobFindFirst.mockResolvedValue(makeJob());
+
+    const res = await GET(makeRequest(), { params: Promise.resolve({ id: 'order-1' }) });
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(mockJobFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { order: { id: 'order-1' } },
+      }),
+    );
+    expect(json.data.jobId).toBe('job-1');
+  });
+
   it('returns incremental diagnostics events and cursor when sinceEventId is provided', async () => {
     mockJobFindFirst.mockResolvedValue(makeJob());
     mockEventFindMany.mockResolvedValue([
