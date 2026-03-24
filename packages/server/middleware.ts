@@ -102,5 +102,11 @@ export default async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!api|_next|_vercel|monitoring|.*\\..*).*)'],
+  matcher: [
+    '/((?!api|_next|_vercel|monitoring|.*\\..*).*)',
+    // Email in path can contain dots. Keep middleware active for this route,
+    // otherwise default-locale URLs may bypass intl rewrite and return 404.
+    '/orders/:id/developers/:email*',
+    '/:locale/orders/:id/developers/:email*',
+  ],
 };
