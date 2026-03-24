@@ -1,4 +1,5 @@
 import { NextRequest } from 'next/server';
+import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/db';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { MIN_WORK_DAYS_FOR_GHOST } from '@devghost/shared';
@@ -19,12 +20,14 @@ export async function GET(
     return apiError('Invalid period', 400);
   }
 
+  const metricsWhere: Prisma.OrderMetricWhereInput = {
+    orderId: id,
+    periodType: period as any,
+    ...(session.user.role === 'ADMIN' ? {} : { order: { userId: session.user.id } }),
+  };
+
   const orderMetrics = await prisma.orderMetric.findMany({
-    where: {
-      orderId: id,
-      periodType: period as any,
-      order: { userId: session.user.id },
-    },
+    where: metricsWhere,
   });
 
   if (orderMetrics.length === 0) return apiResponse([]);
