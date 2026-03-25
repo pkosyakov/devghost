@@ -77,6 +77,18 @@ interface CommitAnalysisTableProps {
   highlightedCommit?: string | null;
 }
 
+type CommitSortField =
+  | 'authorDate'
+  | 'commitHash'
+  | 'authorName'
+  | 'category'
+  | 'complexity'
+  | 'additions'
+  | 'effortHours'
+  | 'confidence';
+
+type CommitSortOrder = 'asc' | 'desc';
+
 const categoryColors: Record<string, string> = {
   feature: 'bg-green-500',
   bugfix: 'bg-red-500',
@@ -156,8 +168,38 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
   // Filters
   const [filterCategory, setFilterCategory] = useState<string>('all');
   const [filterComplexity, setFilterComplexity] = useState<string>('all');
-  const [sortBy, setSortBy] = useState<string>('authorDate');
-  const [sortOrder, setSortOrder] = useState<string>('desc');
+  const [sortBy, setSortBy] = useState<CommitSortField>('authorDate');
+  const [sortOrder, setSortOrder] = useState<CommitSortOrder>('desc');
+
+  const handleFilterCategoryChange = useCallback((value: string) => {
+    setPage(1);
+    setFilterCategory(value);
+  }, []);
+
+  const handleFilterComplexityChange = useCallback((value: string) => {
+    setPage(1);
+    setFilterComplexity(value);
+  }, []);
+
+  const handleSortByChange = useCallback((value: string) => {
+    setPage(1);
+    setSortBy(value as CommitSortField);
+  }, []);
+
+  const handleSortOrderChange = useCallback((value: string) => {
+    setPage(1);
+    setSortOrder(value as CommitSortOrder);
+  }, []);
+
+  const handleSortByColumn = useCallback((column: CommitSortField) => {
+    setPage(1);
+    if (sortBy === column) {
+      setSortOrder((prev) => (prev === 'desc' ? 'asc' : 'desc'));
+      return;
+    }
+    setSortBy(column);
+    setSortOrder('desc');
+  }, [sortBy]);
 
   // Build distribution map from prop
   const distributionByCommit = useMemo(() => {
@@ -225,6 +267,25 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
       return `${Math.round(hours * 60)}m`;
     }
     return `${hours.toFixed(1)}h`;
+  };
+
+  const sortIcon = (column: CommitSortField) => {
+    if (sortBy !== column) {
+      return <ArrowUpDown className="h-3.5 w-3.5 opacity-60 group-hover:opacity-100" />;
+    }
+    return sortOrder === 'asc'
+      ? <ChevronUp className="h-3.5 w-3.5" />
+      : <ChevronDown className="h-3.5 w-3.5" />;
+  };
+
+  const sortHeaderButtonClass = (align: 'left' | 'center' | 'right' = 'left') => {
+    const justifyClass =
+      align === 'right'
+        ? 'justify-end'
+        : align === 'center'
+          ? 'justify-center'
+          : 'justify-start';
+    return `group inline-flex w-full items-center ${justifyClass} gap-1 transition-colors hover:text-foreground`;
   };
 
   if (error) {
@@ -312,7 +373,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
               <span className="text-sm font-medium text-muted-foreground">{t('filters')}:</span>
             </div>
 
-            <Select value={filterCategory} onValueChange={setFilterCategory}>
+            <Select value={filterCategory} onValueChange={handleFilterCategoryChange}>
               <SelectTrigger className="w-[160px] h-9">
                 <SelectValue placeholder={t('allCategories')} />
               </SelectTrigger>
@@ -326,7 +387,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
               </SelectContent>
             </Select>
 
-            <Select value={filterComplexity} onValueChange={setFilterComplexity}>
+            <Select value={filterComplexity} onValueChange={handleFilterComplexityChange}>
               <SelectTrigger className="w-[140px] h-9">
                 <SelectValue placeholder={t('allComplexity')} />
               </SelectTrigger>
@@ -347,19 +408,23 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
               <span className="text-sm font-medium text-muted-foreground">{t('sort')}:</span>
             </div>
 
-            <Select value={sortBy} onValueChange={setSortBy}>
+            <Select value={sortBy} onValueChange={handleSortByChange}>
               <SelectTrigger className="w-[120px] h-9">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                <SelectItem value="commitHash">{t('commit')}</SelectItem>
+                <SelectItem value="authorName">{t('author')}</SelectItem>
+                <SelectItem value="category">{t('category')}</SelectItem>
+                <SelectItem value="complexity">{t('complexity')}</SelectItem>
                 <SelectItem value="authorDate">{t('date')}</SelectItem>
+                <SelectItem value="additions">{t('changes')}</SelectItem>
                 <SelectItem value="effortHours">{t('effortCol')}</SelectItem>
                 <SelectItem value="confidence">{t('confidenceCol')}</SelectItem>
-                <SelectItem value="additions">{t('additions')}</SelectItem>
               </SelectContent>
             </Select>
 
-            <Select value={sortOrder} onValueChange={setSortOrder}>
+            <Select value={sortOrder} onValueChange={handleSortOrderChange}>
               <SelectTrigger className="w-[130px] h-9">
                 <SelectValue />
               </SelectTrigger>
@@ -392,28 +457,92 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                     <tr>
                       <th className="w-8 px-2"></th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('commit')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('left')}
+                          onClick={() => handleSortByColumn('commitHash')}
+                          aria-label={`${t('sort')}: ${t('commit')}`}
+                        >
+                          {t('commit')}
+                          {sortIcon('commitHash')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('author')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('left')}
+                          onClick={() => handleSortByColumn('authorName')}
+                          aria-label={`${t('sort')}: ${t('author')}`}
+                        >
+                          {t('author')}
+                          {sortIcon('authorName')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('category')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('left')}
+                          onClick={() => handleSortByColumn('category')}
+                          aria-label={`${t('sort')}: ${t('category')}`}
+                        >
+                          {t('category')}
+                          {sortIcon('category')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-center text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('complexity')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('center')}
+                          onClick={() => handleSortByColumn('complexity')}
+                          aria-label={`${t('sort')}: ${t('complexity')}`}
+                        >
+                          {t('complexity')}
+                          {sortIcon('complexity')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('changes')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('right')}
+                          onClick={() => handleSortByColumn('additions')}
+                          aria-label={`${t('sort')}: ${t('changes')}`}
+                        >
+                          {t('changes')}
+                          {sortIcon('additions')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('effortCol')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('right')}
+                          onClick={() => handleSortByColumn('effortHours')}
+                          aria-label={`${t('sort')}: ${t('effortCol')}`}
+                        >
+                          {t('effortCol')}
+                          {sortIcon('effortHours')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('confidenceCol')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('right')}
+                          onClick={() => handleSortByColumn('confidence')}
+                          aria-label={`${t('sort')}: ${t('confidenceCol')}`}
+                        >
+                          {t('confidenceCol')}
+                          {sortIcon('confidence')}
+                        </button>
                       </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                        {t('dateCol')}
+                        <button
+                          type="button"
+                          className={sortHeaderButtonClass('right')}
+                          onClick={() => handleSortByColumn('authorDate')}
+                          aria-label={`${t('sort')}: ${t('dateCol')}`}
+                        >
+                          {t('dateCol')}
+                          {sortIcon('authorDate')}
+                        </button>
                       </th>
                     </tr>
                   </thead>

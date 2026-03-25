@@ -316,7 +316,7 @@ export function Sidebar() {
       <div className="p-4 space-y-2">
         <Separator />
         <div className="px-3 py-1">
-          <LanguageSwitcher />
+          <LanguageSwitcher className="w-full" />
         </div>
         <Link
           href="/billing"
