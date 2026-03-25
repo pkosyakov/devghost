@@ -65,6 +65,53 @@ OPENROUTER_READ_TIMEOUT_SEC = _env_positive_float('OPENROUTER_READ_TIMEOUT_SEC',
 OPENROUTER_RETRY_BACKOFF_BASE_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_BASE_SEC', 1.0)
 OPENROUTER_RETRY_BACKOFF_MAX_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_MAX_SEC', 20.0)
 
+
+def reload_config():
+    """Re-read all LLM config globals from os.environ.
+
+    Module-level globals are set once at import time. On Modal warm containers
+    the module stays cached across invocations, so setup_llm_env() updates
+    os.environ but the globals remain stale. Call this before each job to sync.
+    """
+    global LLM_PROVIDER, OLLAMA_URL, OPENROUTER_API_KEY, OPENROUTER_MODEL
+    global OPENROUTER_PROVIDER_ORDER, OPENROUTER_PROVIDER_IGNORE
+    global OPENROUTER_ALLOW_FALLBACKS, OPENROUTER_REQUIRE_PARAMETERS
+    global OPENROUTER_MAX_RETRIES
+    global OPENROUTER_CONNECT_TIMEOUT_SEC, OPENROUTER_READ_TIMEOUT_SEC
+    global OPENROUTER_RETRY_BACKOFF_BASE_SEC, OPENROUTER_RETRY_BACKOFF_MAX_SEC
+    global PIPELINE_CACHE_DIR, PIPELINE_CACHE_NAMESPACE, NO_CACHE, NO_LLM_CACHE
+    global PROMPT_REPEAT
+    global MODEL_CTX, FD_THRESHOLD
+
+    LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'ollama')
+    OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434').rstrip('/') + '/api/generate'
+    OPENROUTER_API_KEY = os.environ.get('OPENROUTER_API_KEY', '')
+    OPENROUTER_MODEL = os.environ.get('OPENROUTER_MODEL', 'qwen/qwen-2.5-coder-32b-instruct')
+
+    OPENROUTER_PROVIDER_ORDER = _env_csv('OPENROUTER_PROVIDER_ORDER', 'Chutes')
+    OPENROUTER_PROVIDER_IGNORE = _env_csv('OPENROUTER_PROVIDER_IGNORE', 'Cloudflare')
+    OPENROUTER_ALLOW_FALLBACKS = _env_bool('OPENROUTER_ALLOW_FALLBACKS', True)
+    OPENROUTER_REQUIRE_PARAMETERS = _env_bool('OPENROUTER_REQUIRE_PARAMETERS', True)
+    OPENROUTER_MAX_RETRIES = _env_positive_int('OPENROUTER_MAX_RETRIES', 4)
+    OPENROUTER_CONNECT_TIMEOUT_SEC = _env_positive_float('OPENROUTER_CONNECT_TIMEOUT_SEC', 20.0)
+    OPENROUTER_READ_TIMEOUT_SEC = _env_positive_float('OPENROUTER_READ_TIMEOUT_SEC', 120.0)
+    OPENROUTER_RETRY_BACKOFF_BASE_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_BASE_SEC', 1.0)
+    OPENROUTER_RETRY_BACKOFF_MAX_SEC = _env_positive_float('OPENROUTER_RETRY_BACKOFF_MAX_SEC', 20.0)
+
+    PIPELINE_CACHE_DIR = os.environ.get('PIPELINE_CACHE_DIR', os.path.join(os.path.dirname(__file__), '..', '.cache'))
+    PIPELINE_CACHE_NAMESPACE = os.environ.get('PIPELINE_CACHE_NAMESPACE', '').strip()
+    NO_CACHE = os.environ.get('NO_CACHE', '').lower() in ('1', 'true', 'yes')
+    NO_LLM_CACHE = os.environ.get('NO_LLM_CACHE', '').lower() in ('1', 'true', 'yes')
+    PROMPT_REPEAT = os.environ.get('PROMPT_REPEAT', '').lower() in ('1', 'true', 'yes')
+
+    try:
+        _raw_ctx = int(os.environ.get('MODEL_CONTEXT_LENGTH', '32768'))
+    except (ValueError, TypeError):
+        _raw_ctx = 32768
+    MODEL_CTX = max(_MIN_CONTEXT, min(_MAX_CONTEXT, _raw_ctx))
+    _available_tokens = MODEL_CTX - _SYSTEM_PROMPT_RESERVE - _MAX_OUTPUT_TOKENS
+    FD_THRESHOLD = max(_MIN_FD_THRESHOLD, min(_MAX_FD_THRESHOLD, int(_available_tokens * _CHARS_PER_TOKEN)))
+
 # --- Cache config ---
 CACHE_VERSION = 1
 PIPELINE_CACHE_DIR = os.environ.get('PIPELINE_CACHE_DIR', os.path.join(os.path.dirname(__file__), '..', '.cache'))
@@ -137,19 +184,15 @@ def _llm_cache_dir():
     """Build LLM cache directory path including version and runtime fingerprint."""
     model_slug = f'{LLM_PROVIDER}_{OPENROUTER_MODEL if LLM_PROVIDER == "openrouter" else os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:32b")}'
     model_slug = re.sub(r'[^\w\-.]', '_', model_slug)
-    # Runtime fingerprint: params that affect LLM output beyond model identity
+    # Runtime fingerprint: only params that affect LLM OUTPUT (not routing).
+    # Provider order/ignore/fallbacks are routing concerns — they control which
+    # infra provider serves the request, not the model's response. Changing them
+    # should not invalidate the cache.
     fp_parts = [
         f'seed=42',
         f'temp=0',
     ]
-    if LLM_PROVIDER == 'openrouter':
-        fp_parts += [
-            f'order={",".join(OPENROUTER_PROVIDER_ORDER)}',
-            f'ignore={",".join(OPENROUTER_PROVIDER_IGNORE)}',
-            f'fallbacks={OPENROUTER_ALLOW_FALLBACKS}',
-            f'require_params={OPENROUTER_REQUIRE_PARAMETERS}',
-        ]
-    else:
+    if LLM_PROVIDER != 'openrouter':
         fp_parts.append(f'num_ctx={MODEL_CTX}')
     runtime_fp = hashlib.sha256('|'.join(fp_parts).encode()).hexdigest()[:12]
     return os.path.join(_cache_root(), 'llm', f'v{CACHE_VERSION}', model_slug, runtime_fp)

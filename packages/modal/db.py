@@ -249,7 +249,9 @@ def lookup_cached_commits(
     params = [shas, repository, current_order_id, user_id]
 
     if cache_mode == "model":
-        query += ' AND ca."llmModel" = %s'
+        # Match model for LLM-analyzed commits; always allow NULL llmModel
+        # (FD heuristic, root_commit_skip — these are model-independent)
+        query += ' AND (ca."llmModel" = %s OR ca."llmModel" IS NULL)'
         params.append(current_llm_model)
 
     query += ' ORDER BY ca."analyzedAt" DESC'

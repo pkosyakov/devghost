@@ -841,6 +841,12 @@ def _process_repo_commits(
                     "sha": result.get("sha"),
                     "error": str(result.get("error") or result.get("type") or "unknown")[:200],
                 })
+            # Track file-level LLM cache hits for diagnostics
+            for lc in (result.get("llm_calls") or []):
+                if lc.get("cache_hit"):
+                    method_counts["_file_cache_hit"] = method_counts.get("_file_cache_hit", 0) + 1
+                else:
+                    method_counts["_file_cache_miss"] = method_counts.get("_file_cache_miss", 0) + 1
 
         analyses = [
             map_to_commit_analysis(r, chunk_commits, order["id"], repo_full_name, current_llm_model)
@@ -1203,6 +1209,10 @@ def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter):
     import sys
     sys.path.insert(0, "/app/pipeline")
     from run_devghost_pipeline import process_commits
+    from run_v16_pipeline import reload_config
+
+    # Sync pipeline globals with os.environ (warm container may have stale values)
+    reload_config()
 
     # Inject rate limiter into the pipeline's LLM call path.
     if rate_limiter and os.environ.get("LLM_PROVIDER") == "openrouter":
@@ -1483,11 +1493,19 @@ def _commit_repos_volume_checkpoint(
     ]
 
     for volume_name, volume in volumes:
-        try:
-            volume.commit()
-            committed_volumes.append(volume_name)
-        except Exception as err:
-            failed_volumes[volume_name] = str(err)[:300]
+        last_err = None
+        for attempt in range(3):
+            try:
+                volume.commit()
+                committed_volumes.append(volume_name)
+                last_err = None
+                break
+            except Exception as err:
+                last_err = err
+                if attempt < 2:
+                    time.sleep(1 * (attempt + 1))  # 1s, 2s backoff
+        if last_err is not None:
+            failed_volumes[volume_name] = str(last_err)[:300]
 
     if committed_volumes:
         try:

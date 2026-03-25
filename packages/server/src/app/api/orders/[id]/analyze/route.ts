@@ -107,7 +107,7 @@ async function estimateReusableCachedCommits(params: {
   const crossOrderModelFilter = cacheMode === 'model'
     ? (
         llmModel
-          ? Prisma.sql`AND (ca."orderId" = ${currentOrderId} OR ca."llmModel" = ${llmModel})`
+          ? Prisma.sql`AND (ca."orderId" = ${currentOrderId} OR ca."llmModel" = ${llmModel} OR ca."llmModel" IS NULL)`
           : Prisma.sql`AND ca."orderId" = ${currentOrderId}`
       )
     : Prisma.empty;
