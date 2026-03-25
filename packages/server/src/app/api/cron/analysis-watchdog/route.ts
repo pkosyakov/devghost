@@ -249,7 +249,7 @@ export async function GET(request: NextRequest) {
           WHEN "currentStep" LIKE 'post_processing:active:%'
             THEN "currentStep"
           ELSE ${POST_PROCESSING_ACTIVE_PREFIX}
-            || SUBSTRING("currentStep" FROM ${POST_PROCESSING_STEP_PREFIX.length + 1})
+            || REGEXP_REPLACE("currentStep", '^post_processing:', '')
         END,
         "updatedAt" = NOW()
       WHERE id = (
