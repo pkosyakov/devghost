@@ -2034,7 +2034,8 @@ def estimate_holistic(message, language, clusters, filter_stats,
         f"Pre-filtered: {filter_stats.get('skip', 0)} auto-generated, "
         f"{filter_stats.get('heuristic', 0)} trivial ({heuristic_total:.1f}h)\n\n"
         f"Substantive files by cluster:\n{cluster_text}\n\n"
-        f"Estimate total development hours for this entire commit."
+        f"Estimate development hours for the SUBSTANTIVE files only "
+        f"(pre-filtered trivial files are estimated separately, do NOT include them)."
     )
 
     result = call_ollama_fn(_HOLISTIC_SYSTEM, prompt, schema=EVAL_SCHEMA, max_tokens=512)
