@@ -1483,6 +1483,13 @@ def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn):
             'rule_applied': 'bulk_scaffold_detector',
         }
 
+    # --- FD V2 GATE: route large commits to cluster-based estimation ---
+    _v2_cfg = _fd_v2_config()
+    if fc >= _v2_cfg["min_files"]:
+        print(f" [->v2:{fc}files]", end='', flush=True)
+        return _run_fd_v2(diff, message, language, fc, la, ld,
+                          file_info, new_file_ratio, call_ollama_fn)
+
     # --- Step 2: Metadata-only v15 classification (1 LLM call, small prompt) ---
     metadata_prompt = _build_metadata_prompt(message, fc, la, ld, file_info, language)
 
@@ -2080,3 +2087,128 @@ def estimate_branch_a(message, language, llm_diff, filter_stats,
     if isinstance(result, dict) and "estimated_hours" in result:
         return float(result["estimated_hours"])
     return 0.0
+
+
+def _run_fd_v2(diff, message, language, fc, la, ld,
+               file_info, new_file_ratio, call_ollama_fn):
+    """FD v2 orchestrator: filter -> branch -> holistic -> combine.
+
+    Returns: dict compatible with run_commit() expectations
+    """
+    # --- Step 2: Adaptive filter ---
+    filt = adaptive_filter(file_info)
+    heuristic_total = filt["heuristic_total"]
+    llm_files = filt["llm_files"]
+    filter_stats = filt["filter_stats"]
+
+    print(f" [v2:skip={filter_stats['skip']},heur={filter_stats['heuristic']},llm={filter_stats['llm']}]",
+          end='', flush=True)
+
+    # Edge case: all files filtered
+    if not llm_files:
+        print(f" [v2:heuristic_only={heuristic_total:.1f}h]", end='', flush=True)
+        return {
+            'estimated_hours': heuristic_total,
+            'raw_estimate': heuristic_total,
+            'method': 'FD_v2_heuristic_only',
+            'routed_to': 'v2_heuristic',
+            'analysis': {
+                'change_type': 'automated/trivial',
+                'new_logic_percent': 0,
+                'summary': f'All {fc} files filtered: {filter_stats["skip"]} skip, {filter_stats["heuristic"]} heuristic',
+            },
+            'rule_applied': None,
+            'fd_details': {
+                'branch': None,
+                'branch_estimate': 0.0,
+                'holistic_estimate': 0.0,
+                'heuristic_total': heuristic_total,
+                'filter_stats': filter_stats,
+                'clusters': [],
+            },
+        }
+
+    # --- Step 3.5: Build clusters ---
+    clusters = build_clusters(llm_files)
+    print(f" [v2:clusters={len(clusters)}]", end='', flush=True)
+
+    # --- Step 3: Branch routing ---
+    v2_cfg = _fd_v2_config()
+    branch_name = v2_cfg["branch"]
+    llm_token_estimate = filt["llm_token_estimate"] + _PROMPT_OVERHEAD_TOKENS
+    branch_a_possible = (branch_name == "A" and llm_token_estimate <= _BRANCH_A_TOKEN_LIMIT)
+
+    if branch_a_possible:
+        print(f" [v2:branch-A,{llm_token_estimate:.0f}tok]", end='', flush=True)
+        branch_est = estimate_branch_a(
+            message, language, filt["llm_diff"], filter_stats,
+            fc, la, ld, call_ollama_fn
+        )
+        branch_label = "A"
+        if branch_est <= 0:
+            print(f" [v2:A-fail->B]", end='', flush=True)
+            branch_est = estimate_branch_b(clusters, message, language, fc, call_ollama_fn)
+            branch_label = "B_fallback"
+    else:
+        if branch_name == "A":
+            print(f" [v2:A-overflow({llm_token_estimate:.0f}tok)->B]", end='', flush=True)
+        else:
+            print(f" [v2:branch-B]", end='', flush=True)
+        branch_est = estimate_branch_b(clusters, message, language, fc, call_ollama_fn)
+        branch_label = "B"
+
+    # --- Step 4: Independent holistic estimate ---
+    holistic_est = 0.0
+    if v2_cfg["holistic"]:
+        holistic_est = estimate_holistic(
+            message, language, clusters, filter_stats,
+            fc, la, ld, new_file_ratio, call_ollama_fn,
+            heuristic_total=heuristic_total
+        )
+        print(f" [v2:holistic={holistic_est:.1f}h]", end='', flush=True)
+
+    # --- Step 5: Combine ---
+    if v2_cfg["holistic"] and holistic_est > 0 and branch_est > 0:
+        final = combine_estimates(branch_est, holistic_est, heuristic_total)
+        method_suffix = "holistic"
+    else:
+        final = branch_est + heuristic_total
+        method_suffix = ""
+
+    # Method name
+    if branch_label.startswith("A"):
+        method = "FD_v2_single_holistic" if method_suffix == "holistic" else "FD_v2_single_call"
+    else:
+        method = "FD_v2_cluster_holistic" if method_suffix == "holistic" else "FD_v2_cluster"
+
+    routed_to = f"v2_{branch_label.lower()}"
+
+    print(f" [v2:branch={branch_est:.1f}h,final={final:.1f}h]", end='', flush=True)
+
+    cluster_info = [
+        {"name": c["name"], "files": len(c["files"]), "total_added": c["total_added"]}
+        for c in clusters
+    ]
+
+    return {
+        'estimated_hours': final,
+        'raw_estimate': branch_est,
+        'method': method,
+        'routed_to': routed_to,
+        'analysis': {
+            'change_type': 'feature' if new_file_ratio > 0.5 else 'refactor',
+            'new_logic_percent': int(new_file_ratio * 100),
+            'summary': f'FD v2 {branch_label}: {len(clusters)} clusters, '
+                       f'{filter_stats["llm"]} LLM files, '
+                       f'{filter_stats["skip"]+filter_stats["heuristic"]} filtered',
+        },
+        'rule_applied': None,
+        'fd_details': {
+            'branch': branch_label,
+            'branch_estimate': branch_est,
+            'holistic_estimate': holistic_est,
+            'heuristic_total': heuristic_total,
+            'filter_stats': filter_stats,
+            'clusters': cluster_info,
+        },
+    }

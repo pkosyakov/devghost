@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b, estimate_holistic, estimate_branch_a
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b, estimate_holistic, estimate_branch_a, _run_fd_v2
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -381,6 +381,57 @@ class TestBranchA(unittest.TestCase):
         result = estimate_branch_a("x", "ts", "diff", {"skip": 0, "heuristic": 0, "llm": 1},
                                    1, 100, 0, mock_llm)
         self.assertEqual(result, 0.0)
+
+
+class TestFdV2Orchestrator(unittest.TestCase):
+    """Test the full v2 pipeline orchestration."""
+
+    def _make_file_info(self, name, tags, added=100, diff="diff content"):
+        return {"filename": name, "diff": diff, "added": added, "deleted": 0, "tags": tags}
+
+    def test_all_generated_returns_heuristic_only(self):
+        file_info = [
+            self._make_file_info("lock.json", ["generated"], added=5000),
+            self._make_file_info("types.d.ts", ["generated"], added=1000),
+        ]
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            self.fail("LLM should not be called for all-generated files")
+        result = _run_fd_v2("diff", "feat: gen", "ts", 2, 6000, 0,
+                            file_info, 1.0, mock_llm)
+        self.assertEqual(result["method"], "FD_v2_heuristic_only")
+        self.assertAlmostEqual(result["estimated_hours"], 0.0)
+
+    def test_mixed_files_calls_llm_for_clusters(self):
+        file_info = [
+            self._make_file_info("lock.json", ["generated"], added=5000),
+            self._make_file_info("auth.ts", [], added=500),
+            self._make_file_info("billing.ts", [], added=300),
+            self._make_file_info("auth.test.ts", ["test"], added=200),
+        ]
+        llm_calls = []
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            llm_calls.append(prompt[:50])
+            return {"estimated_hours": 10.0, "reasoning": "mock"}
+        result = _run_fd_v2("diff", "feat: auth+billing", "typescript", 4, 6000, 0,
+                            file_info, 0.75, mock_llm)
+        self.assertIn("FD_v2", result["method"])
+        self.assertGreater(result["estimated_hours"], 0)
+        self.assertIn("fd_details", result)
+        self.assertIn("filter_stats", result["fd_details"])
+
+    def test_return_format_compatible_with_v1(self):
+        file_info = [self._make_file_info("code.ts", [], added=200)]
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return {"estimated_hours": 15.0, "reasoning": "mock"}
+        result = _run_fd_v2("diff", "feat: x", "ts", 1, 200, 0,
+                            file_info, 0.5, mock_llm)
+        # Must have all keys expected by run_commit()
+        self.assertIn("estimated_hours", result)
+        self.assertIn("raw_estimate", result)
+        self.assertIn("method", result)
+        self.assertIn("routed_to", result)
+        self.assertIn("analysis", result)
+        self.assertIn("rule_applied", result)
 
 
 if __name__ == "__main__":
