@@ -932,7 +932,15 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
             call_llm_fd_large = None
             if FD_LARGE_LLM_MODEL:
                 def call_llm_fd_large(system, prompt, schema=None, max_tokens=1024):
+                    cached = _read_llm_cache(system, prompt, schema, max_tokens)
+                    if cached is not None:
+                        cached_parsed, cached_meta = cached
+                        cached_meta['cache_hit'] = True
+                        fd_llm_calls.append({**cached_meta, 'step': 'fd_v2_large'})
+                        return cached_parsed
                     parsed, meta = call_openrouter_large(system, prompt, schema, max_tokens)
+                    if parsed is not None:
+                        _write_llm_cache(system, prompt, schema, max_tokens, parsed, meta)
                     fd_llm_calls.append({**meta, 'step': 'fd_v2_large'})
                     return parsed
 

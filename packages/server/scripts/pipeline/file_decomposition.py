@@ -1679,7 +1679,7 @@ def classify_file_tier(filename, tags, lines_added, lines_deleted, file_diff="")
     ext = os.path.splitext(filename)[1].lower()
 
     # --- SKIP tier: zero effort ---
-    if "generated" in tags or "locale" in tags:
+    if "generated" in tags or "locale" in tags or "svg_icon_component" in tags:
         return "SKIP", 0.0
     if ext in _SKIP_EXTENSIONS or (lines_added == 0 and lines_deleted == 0):
         return "SKIP", 0.0
@@ -2144,7 +2144,8 @@ def _run_fd_v2(diff, message, language, fc, la, ld,
         branch_call = call_large_fn if call_large_fn else call_ollama_fn
         branch_est = estimate_branch_a(
             message, language, filt["llm_diff"], filter_stats,
-            fc, la, ld, branch_call
+            fc, la, ld, branch_call,
+            heuristic_total=heuristic_total
         )
         branch_label = "A"
         if branch_est <= 0:
