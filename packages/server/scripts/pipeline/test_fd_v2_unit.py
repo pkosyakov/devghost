@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b, estimate_holistic
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -299,6 +299,54 @@ class TestBranchB(unittest.TestCase):
         clusters = [self._make_cluster("auth", [self._make_file("auth.ts")])]
         estimate_branch_b(clusters, "feat: add OAuth flow", "typescript", 100, mock_llm)
         self.assertIn("OAuth flow", captured[0])
+
+
+class TestHolistic(unittest.TestCase):
+    """Test independent holistic estimation."""
+
+    def test_returns_estimate(self):
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return {"estimated_hours": 35.0, "reasoning": "mock holistic"}
+        clusters = [{"name": "auth", "files": [{"filename": "auth.ts", "added": 500}], "total_added": 500}]
+        result = estimate_holistic("feat: auth", "typescript", clusters,
+                                   {"skip": 5, "heuristic": 3, "llm": 10},
+                                   100, 5000, 200, 0.6, mock_llm)
+        self.assertAlmostEqual(result, 35.0)
+
+    def test_prompt_has_no_estimate_anchor(self):
+        captured = []
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            captured.append({"system": system, "prompt": prompt})
+            return {"estimated_hours": 25.0, "reasoning": "mock"}
+        clusters = [{"name": "auth", "files": [{"filename": "auth.ts", "added": 500}], "total_added": 500}]
+        estimate_holistic("feat: auth", "typescript", clusters,
+                          {"skip": 0, "heuristic": 0, "llm": 5},
+                          5, 1000, 0, 0.8, mock_llm)
+        full_text = captured[0]["system"] + captured[0]["prompt"]
+        # Must NOT contain any numeric hour estimate
+        self.assertNotIn("branch", full_text.lower())
+        self.assertNotIn("cluster estimate", full_text.lower())
+
+    def test_prompt_includes_cluster_structure(self):
+        captured = []
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            captured.append(prompt)
+            return {"estimated_hours": 10.0, "reasoning": "mock"}
+        clusters = [
+            {"name": "auth", "files": [{"filename": "auth.ts", "added": 500}], "total_added": 500},
+            {"name": "billing", "files": [{"filename": "billing.ts", "added": 300}], "total_added": 300},
+        ]
+        estimate_holistic("feat: add auth", "typescript", clusters,
+                          {"skip": 0, "heuristic": 0, "llm": 2}, 2, 800, 0, 0.5, mock_llm)
+        self.assertIn("auth", captured[0])
+        self.assertIn("billing", captured[0])
+
+    def test_llm_failure_returns_zero(self):
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return None
+        result = estimate_holistic("feat: x", "ts", [], {"skip": 0, "heuristic": 0, "llm": 0},
+                                   0, 0, 0, 0, mock_llm)
+        self.assertEqual(result, 0.0)
 
 
 if __name__ == "__main__":

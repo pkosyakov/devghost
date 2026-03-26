@@ -1973,3 +1973,60 @@ def estimate_branch_b(clusters, message, language, total_fc, call_ollama_fn):
         total += est
 
     return total
+
+
+# ===== FD V2: HOLISTIC ESTIMATION =====
+
+_HOLISTIC_SYSTEM = """Estimate total development effort for this commit \
+based on its structure and metadata. You do NOT see the full diff — \
+estimate from the commit profile only.
+Estimate hours for a mid-level developer without AI assistance.
+Include: writing code, manual testing, code review fixes.
+Exclude: meetings, planning, waiting for review.
+
+IMPORTANT: Consider the NATURE of the work:
+- Scaffold/copy commits have low effort despite high line count
+- Generated/lock files require zero development effort
+- Tests and configs are faster to write than core logic
+- Large feature commits benefit from shared context between related files"""
+
+
+def estimate_holistic(message, language, clusters, filter_stats,
+                      fc, la, ld, new_file_ratio, call_ollama_fn,
+                      heuristic_total=0.0):
+    """Independent holistic estimate from metadata + cluster structure.
+
+    Does NOT see branch estimate — prevents anchoring bias.
+
+    Returns: float (0.0 on failure)
+    """
+    cluster_lines = []
+    for c in clusters:
+        top3 = sorted(c["files"], key=lambda f: f.get("added", 0), reverse=True)[:3]
+        top3_str = ", ".join(
+            f"{os.path.basename(f['filename'])} (+{f.get('added', 0)})"
+            for f in top3
+        )
+        cluster_lines.append(
+            f"  {c['name']}: {len(c['files'])} files, {c['total_added']} lines — {top3_str}"
+        )
+    cluster_text = "\n".join(cluster_lines) if cluster_lines else "  (no clusters)"
+
+    new_count = int(fc * new_file_ratio) if fc else 0
+    prompt = (
+        f"Commit: {message}\n"
+        f"Language: {language}\n"
+        f"Files changed: {fc}\n"
+        f"Lines: +{la} / -{ld}\n"
+        f"New files (add-only): {new_count} ({new_file_ratio:.0%})\n"
+        f"Pre-filtered: {filter_stats.get('skip', 0)} auto-generated, "
+        f"{filter_stats.get('heuristic', 0)} trivial ({heuristic_total:.1f}h)\n\n"
+        f"Substantive files by cluster:\n{cluster_text}\n\n"
+        f"Estimate total development hours for this entire commit."
+    )
+
+    result = call_ollama_fn(_HOLISTIC_SYSTEM, prompt, schema=None, max_tokens=512)
+
+    if isinstance(result, dict) and "estimated_hours" in result:
+        return float(result["estimated_hours"])
+    return 0.0
