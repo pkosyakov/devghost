@@ -1703,3 +1703,52 @@ def classify_file_tier(filename, tags, lines_added, lines_deleted, file_diff="")
 
     # --- LLM_REQUIRED: everything else ---
     return "LLM_REQUIRED", 0.0
+
+
+def adaptive_filter(file_info):
+    """Apply adaptive filter to classify files into SKIP/HEURISTIC/LLM tiers.
+
+    Args:
+        file_info: List of dicts from run_fd_hybrid Step 1, each with keys:
+            filename, diff, added, deleted, tags
+
+    Returns:
+        dict with keys: skip_files, heuristic_files, heuristic_total,
+                        llm_files, llm_diff, llm_token_estimate, filter_stats
+    """
+    skip_files = []
+    heuristic_files = []
+    llm_files = []
+    heuristic_total = 0.0
+
+    for f in file_info:
+        tier, est = classify_file_tier(
+            f["filename"], f.get("tags", []),
+            f.get("added", 0), f.get("deleted", 0),
+            f.get("diff", ""),
+        )
+        if tier == "SKIP":
+            skip_files.append(f)
+        elif tier == "HEURISTIC":
+            heuristic_files.append({**f, "heuristic_estimate": est})
+            heuristic_total += est
+        else:
+            llm_files.append(f)
+
+    # Assemble diff for LLM files only
+    llm_diff = "\n".join(f.get("diff", "") for f in llm_files)
+    llm_token_estimate = len(llm_diff) / 2.0  # _CHARS_PER_TOKEN = 2.0
+
+    return {
+        "skip_files": skip_files,
+        "heuristic_files": heuristic_files,
+        "heuristic_total": round(heuristic_total, 2),
+        "llm_files": llm_files,
+        "llm_diff": llm_diff,
+        "llm_token_estimate": llm_token_estimate,
+        "filter_stats": {
+            "skip": len(skip_files),
+            "heuristic": len(heuristic_files),
+            "llm": len(llm_files),
+        },
+    }
