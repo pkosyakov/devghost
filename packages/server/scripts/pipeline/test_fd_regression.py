@@ -173,6 +173,37 @@ FORCE_COMPLEX_GUARD_CASES = [
     },
 ]
 
+# --- FD V2 test cases ---
+# These commits have 50+ files and should enter the v2 path.
+# Mock LLM is used to verify routing, not estimate accuracy.
+
+V2_ROUTING_CASES = [
+    {
+        "sha": "188c43e",
+        "label": "monorepo migration (870 files, scaffold -> should still scaffold-exit before v2)",
+        "expect_method": "FD_bulk_scaffold",
+        "min_files": 50,
+    },
+    {
+        "sha": "1d02576",
+        "label": "Feat/dialer v1 (272 files, feature -> should enter v2)",
+        "expect_v2": True,
+        "min_files": 50,
+    },
+    {
+        "sha": "16dc74e",
+        "label": "pnpm vitest migration (1036 files -> should enter v2)",
+        "expect_v2": True,
+        "min_files": 50,
+    },
+    {
+        "sha": "9c2a0ed",
+        "label": "Web visitors rehaul (159 files -> should enter v2)",
+        "expect_v2": True,
+        "min_files": 50,
+    },
+]
+
 
 # ---------------------------------------------------------------------------
 # Test runner
@@ -304,6 +335,77 @@ def run_tests(repo):
             errors.append(f"FEATURE {sha}: unexpected exception {e}")
 
     os.environ.pop("FD_V2_MIN_FILES", None)
+
+    # --- V2 routing tests ---
+    print("\n=== FD V2 ROUTING (50+ files -> v2 path, mock LLM) ===\n")
+
+    # Save original env
+    original_min_files = os.environ.get("FD_V2_MIN_FILES", "")
+    original_v2_holistic = os.environ.get("FD_V2_HOLISTIC", "")
+
+    for case in V2_ROUTING_CASES:
+        sha = case["sha"]
+        os.environ["FD_V2_MIN_FILES"] = str(case.get("min_files", 50))
+        os.environ["FD_V2_HOLISTIC"] = "true"  # test with holistic enabled
+
+        try:
+            diff, fc, la, ld = get_diff_and_stats(repo, sha)
+            msg = get_message(repo, sha)
+            mock_llm, calls = make_mock_llm(new_logic_pct=45)
+
+            sys.stdout = open(os.devnull, "w", encoding="utf-8")
+            try:
+                result = run_fd_hybrid(diff, msg, "typescript", fc, la, ld, mock_llm)
+            finally:
+                sys.stdout.close()
+                sys.stdout = original_stdout
+
+            method = result.get("method", "")
+            fd_details = result.get("fd_details")
+
+            if case.get("expect_method"):
+                # Scaffold commits should still be caught before v2
+                ok = method == case["expect_method"]
+                status = "PASS" if ok else "FAIL"
+                print(f"  [{status}] {sha:.7s} {case['label']}")
+                print(f"         method={method} (expected {case['expect_method']})")
+            elif case.get("expect_v2"):
+                ok = "v2" in method.lower()
+                status = "PASS" if ok else "FAIL"
+                details = []
+                if fd_details:
+                    fs = fd_details.get("filter_stats", {})
+                    details.append(f"skip={fs.get('skip', '?')}")
+                    details.append(f"heur={fs.get('heuristic', '?')}")
+                    details.append(f"llm={fs.get('llm', '?')}")
+                    details.append(f"clusters={len(fd_details.get('clusters', []))}")
+                detail_str = ", ".join(details) if details else ""
+                print(f"  [{status}] {sha:.7s} {case['label']}")
+                print(f"         method={method}, fc={fc}, {detail_str}")
+                if not ok:
+                    print(f"         EXPECTED v2 method, got {method}")
+
+            if ok:
+                passed += 1
+            else:
+                failed += 1
+                errors.append(f"V2 {sha}: method={method}")
+
+        except Exception as e:
+            sys.stdout = original_stdout
+            print(f"  [FAIL] {sha:.7s} {case['label']}: {e}")
+            failed += 1
+            errors.append(f"V2 {sha}: exception {e}")
+
+    # Restore env
+    if original_min_files:
+        os.environ["FD_V2_MIN_FILES"] = original_min_files
+    else:
+        os.environ.pop("FD_V2_MIN_FILES", None)
+    if original_v2_holistic:
+        os.environ["FD_V2_HOLISTIC"] = original_v2_holistic
+    else:
+        os.environ.pop("FD_V2_HOLISTIC", None)
 
     # --- Summary ---
     print(f"\n{'=' * 60}")
