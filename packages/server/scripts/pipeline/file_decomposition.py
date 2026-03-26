@@ -2030,3 +2030,53 @@ def estimate_holistic(message, language, clusters, filter_stats,
     if isinstance(result, dict) and "estimated_hours" in result:
         return float(result["estimated_hours"])
     return 0.0
+
+
+# ===== FD V2: BRANCH A — SINGLE-CALL ESTIMATION =====
+
+_BRANCH_A_SYSTEM = """You are a senior software engineer estimating development \
+effort for a commit. You see the FULL diff of all substantive files \
+(trivial files like configs, docs, generated code are pre-filtered \
+and estimated separately).
+
+Estimate total hours for a mid-level developer WITHOUT AI assistance.
+Include: writing code, manual testing, code review fixes.
+Exclude: meetings, planning, waiting for review.
+
+IMPORTANT: Consider the NATURE of the work:
+- Scaffold/copy commits have low effort despite high line count
+- Generated/lock files require zero development effort (already filtered out)
+- Large feature commits benefit from shared context — the developer builds understanding progressively
+- Tests and configs are part of the work but faster than core logic"""
+
+_BRANCH_A_TOKEN_LIMIT = 30000  # tokens — optimal zone, no context rot
+_PROMPT_OVERHEAD_TOKENS = 2000  # system prompt + user prompt metadata + schema
+
+
+def estimate_branch_a(message, language, llm_diff, filter_stats,
+                      total_fc, la, ld, call_ollama_fn,
+                      heuristic_total=0.0):
+    """Branch A: single-call estimation with full filtered diff.
+
+    Returns: float (0.0 on failure)
+    """
+    llm_fc = filter_stats.get("llm", 0)
+    skip_count = filter_stats.get("skip", 0)
+    heur_count = filter_stats.get("heuristic", 0)
+
+    prompt = (
+        f"Commit: {message}\n"
+        f"Language: {language}\n"
+        f"Total files in commit: {total_fc} (showing {llm_fc} substantive files)\n"
+        f"Pre-filtered: {skip_count} auto-generated (0h), {heur_count} trivial ({heuristic_total:.1f}h)\n\n"
+        f"--- FULL DIFF OF SUBSTANTIVE FILES ---\n"
+        f"{llm_diff}\n"
+        f"---\n\n"
+        f"Estimate development effort for the substantive code above."
+    )
+
+    result = call_ollama_fn(_BRANCH_A_SYSTEM, prompt, schema=None, max_tokens=1024)
+
+    if isinstance(result, dict) and "estimated_hours" in result:
+        return float(result["estimated_hours"])
+    return 0.0

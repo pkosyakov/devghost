@@ -82,6 +82,7 @@ def reload_config():
     global PIPELINE_CACHE_DIR, PIPELINE_CACHE_NAMESPACE, NO_CACHE, NO_LLM_CACHE
     global PROMPT_REPEAT
     global MODEL_CTX, FD_THRESHOLD
+    global FD_LARGE_LLM_PROVIDER, FD_LARGE_LLM_MODEL
 
     LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'ollama')
     OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434').rstrip('/') + '/api/generate'
@@ -112,6 +113,9 @@ def reload_config():
     _available_tokens = MODEL_CTX - _SYSTEM_PROMPT_RESERVE - _MAX_OUTPUT_TOKENS
     FD_THRESHOLD = max(_MIN_FD_THRESHOLD, min(_MAX_FD_THRESHOLD, int(_available_tokens * _CHARS_PER_TOKEN)))
 
+    FD_LARGE_LLM_PROVIDER = os.environ.get('FD_LARGE_LLM_PROVIDER', '').strip().lower()
+    FD_LARGE_LLM_MODEL = os.environ.get('FD_LARGE_LLM_MODEL', '').strip()
+
 # --- Cache config ---
 CACHE_VERSION = 1
 PIPELINE_CACHE_DIR = os.environ.get('PIPELINE_CACHE_DIR', os.path.join(os.path.dirname(__file__), '..', '.cache'))
@@ -136,6 +140,16 @@ except (ValueError, TypeError):
 MODEL_CTX = max(_MIN_CONTEXT, min(_MAX_CONTEXT, _raw_ctx))
 _available_tokens = MODEL_CTX - _SYSTEM_PROMPT_RESERVE - _MAX_OUTPUT_TOKENS
 FD_THRESHOLD = max(_MIN_FD_THRESHOLD, min(_MAX_FD_THRESHOLD, int(_available_tokens * _CHARS_PER_TOKEN)))
+
+# Safety cap: no single commit should exceed 2 work-weeks (~80h).
+# Applied only to the FD path (large diffs >FD_THRESHOLD) because the cascading v15 pipeline
+# (smaller diffs) sees the full diff in context and has correction_rules + complexity_guard,
+# making extreme overestimates unlikely there.
+MAX_FD_HOURS = 80.0
+
+# --- FD v2: Large model for Branch A ---
+FD_LARGE_LLM_PROVIDER = os.environ.get('FD_LARGE_LLM_PROVIDER', '').strip().lower()
+FD_LARGE_LLM_MODEL = os.environ.get('FD_LARGE_LLM_MODEL', '').strip()
 
 sys.stderr.write(f"[pipeline] context={MODEL_CTX} fd_threshold={FD_THRESHOLD} chars_per_tok={_CHARS_PER_TOKEN} prompt_repeat={PROMPT_REPEAT}\n")
 sys.stderr.flush()
@@ -605,6 +619,85 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                   'total_duration_ms': total_elapsed, 'error': last_error}
 
 
+def call_openrouter_large(system, prompt, schema=None, max_tokens=1024):
+    """Call the powerful LLM (Branch A) via OpenRouter.
+
+    Uses FD_LARGE_LLM_MODEL instead of the default model.
+    Does NOT mutate any global state — builds its own API request payload
+    with the large model name. Thread-safe and cache-correct.
+
+    Returns (parsed_result, meta_dict) — same as call_openrouter().
+    Returns (None, meta) if FD_LARGE_LLM_MODEL is not configured.
+    """
+    if not FD_LARGE_LLM_MODEL:
+        return None, {"error": "FD_LARGE_LLM_MODEL not configured"}
+
+    api_key = os.environ.get('OPENROUTER_API_KEY', '')
+    if not api_key:
+        return None, {"error": "OPENROUTER_API_KEY not set"}
+
+    payload = {
+        "model": FD_LARGE_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens,
+        "seed": 42,
+    }
+    if schema:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "strict": True, "schema": schema},
+        }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    connect_timeout = int(os.environ.get('OPENROUTER_CONNECT_TIMEOUT_SEC', '20'))
+    read_timeout = int(os.environ.get('OPENROUTER_READ_TIMEOUT_SEC', '120'))
+
+    start = time.time()
+    try:
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=payload, headers=headers,
+            timeout=(connect_timeout, read_timeout),
+        )
+        elapsed_ms = (time.time() - start) * 1000
+
+        if resp.status_code != 200:
+            return None, {"error": f"HTTP {resp.status_code}", "elapsed_ms": elapsed_ms}
+
+        rdata = resp.json()
+        if "error" in rdata:
+            return None, {"error": str(rdata["error"])[:300], "elapsed_ms": elapsed_ms}
+
+        usage = rdata.get("usage", {})
+        content = rdata["choices"][0]["message"]["content"]
+
+        # Strip <think>...</think> blocks (reasoning models)
+        text = content.strip()
+        if "<think>" in text:
+            text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
+
+        parsed = json.loads(text)
+        meta = {
+            "model": FD_LARGE_LLM_MODEL,
+            "prompt_tokens": usage.get("prompt_tokens", 0),
+            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_duration_ms": elapsed_ms,
+        }
+        return parsed, meta
+
+    except Exception as e:
+        elapsed_ms = (time.time() - start) * 1000
+        return None, {"error": str(e)[:300], "elapsed_ms": elapsed_ms}
+
+
 def call_llm(system, prompt, schema=None, max_tokens=1024):
     """Dispatch to Ollama or OpenRouter based on LLM_PROVIDER. Uses LLM cache if available."""
     # Check cache first
@@ -854,14 +947,22 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
             if cg_rule:
                 final = cg_result
 
+            # Hard cap: no single commit exceeds MAX_FD_HOURS
+            cap_applied = None
+            if final > MAX_FD_HOURS:
+                cap_applied = f'hard_cap_{MAX_FD_HOURS:.0f}h'
+                print(f" [CAPPED:{final:.1f}h->{MAX_FD_HOURS:.0f}h]", end='', flush=True)
+                final = MAX_FD_HOURS
+
             return {
                 'estimated_hours': final, 'raw_estimate': raw_estimate,
                 'post_rules': corrected, 'module_corrected': module_corrected,
                 'method': fd_result.get('method', 'FD'), 'routed_to': scope,
-                'analysis': analysis, 'rule_applied': rule or fd_result.get('rule_applied'),
+                'analysis': analysis, 'rule_applied': rule or fd_result.get('rule_applied') or cap_applied,
                 'fd_details': fd_result.get('fd_details'),
                 'complexity_score': complexity_score,
                 'complexity_guard': cg_rule,
+                'hard_cap': cap_applied,
                 'llm_calls': fd_llm_calls,
             }
         except Exception as e:

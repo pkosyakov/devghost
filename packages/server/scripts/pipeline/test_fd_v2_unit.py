@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b, estimate_holistic
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b, estimate_holistic, estimate_branch_a
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -346,6 +346,40 @@ class TestHolistic(unittest.TestCase):
             return None
         result = estimate_holistic("feat: x", "ts", [], {"skip": 0, "heuristic": 0, "llm": 0},
                                    0, 0, 0, 0, mock_llm)
+        self.assertEqual(result, 0.0)
+
+
+class TestBranchA(unittest.TestCase):
+    """Test single-call estimation (Branch A)."""
+
+    def test_returns_estimate_from_llm(self):
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return {"estimated_hours": 45.0, "reasoning": "single-call estimate"}
+        result = estimate_branch_a(
+            "feat: dialer v1", "typescript",
+            "diff content here" * 100,
+            {"skip": 5, "heuristic": 3, "llm": 50},
+            58, 5000, 200, mock_llm
+        )
+        self.assertAlmostEqual(result, 45.0)
+
+    def test_prompt_mentions_prefiltered(self):
+        captured = []
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            captured.append(prompt)
+            return {"estimated_hours": 20.0, "reasoning": "mock"}
+        estimate_branch_a(
+            "feat: x", "ts", "diff", {"skip": 10, "heuristic": 5, "llm": 20},
+            35, 3000, 100, mock_llm
+        )
+        self.assertIn("10", captured[0])  # skip count mentioned
+        self.assertIn("5", captured[0])   # heuristic count mentioned
+
+    def test_llm_failure_returns_zero(self):
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return None
+        result = estimate_branch_a("x", "ts", "diff", {"skip": 0, "heuristic": 0, "llm": 1},
+                                   1, 100, 0, mock_llm)
         self.assertEqual(result, 0.0)
 
 
