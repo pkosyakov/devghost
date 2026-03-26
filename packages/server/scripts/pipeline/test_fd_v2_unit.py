@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates, estimate_branch_b
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -255,6 +255,50 @@ class TestCombineEstimates(unittest.TestCase):
         # Same estimate from both → average = same
         result = combine_estimates(30.0, 30.0, 0.0)
         self.assertAlmostEqual(result, 30.0)
+
+
+class TestBranchB(unittest.TestCase):
+    """Test cluster-based estimation (Branch B)."""
+
+    def _make_cluster(self, name, files, total_added=500):
+        return {"name": name, "files": files, "total_added": total_added, "total_deleted": 0}
+
+    def _make_file(self, name, added=100, diff="diff content"):
+        return {"filename": name, "added": added, "deleted": 0, "diff": diff, "tags": []}
+
+    def test_sums_cluster_estimates(self):
+        """Mock LLM returns 10h per cluster -> 2 clusters = 20h."""
+        clusters = [
+            self._make_cluster("auth", [self._make_file("auth.ts")]),
+            self._make_cluster("billing", [self._make_file("billing.ts")]),
+        ]
+        call_count = [0]
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            call_count[0] += 1
+            return {"estimated_hours": 10.0, "reasoning": "mock"}
+        result = estimate_branch_b(clusters, "feat: add auth+billing", "typescript", 100, mock_llm)
+        self.assertAlmostEqual(result, 20.0)
+        self.assertEqual(call_count[0], 2)
+
+    def test_llm_failure_uses_fallback(self):
+        """If LLM returns None for a cluster, use heuristic fallback."""
+        clusters = [
+            self._make_cluster("auth", [self._make_file("auth.ts", added=300)], total_added=300),
+        ]
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            return None  # LLM failed
+        result = estimate_branch_b(clusters, "feat: auth", "typescript", 100, mock_llm)
+        self.assertGreater(result, 0)  # should use heuristic fallback
+
+    def test_prompt_includes_commit_message(self):
+        """Verify prompt contains commit context."""
+        captured = []
+        def mock_llm(system, prompt, schema=None, max_tokens=1024):
+            captured.append(prompt)
+            return {"estimated_hours": 5.0, "reasoning": "mock"}
+        clusters = [self._make_cluster("auth", [self._make_file("auth.ts")])]
+        estimate_branch_b(clusters, "feat: add OAuth flow", "typescript", 100, mock_llm)
+        self.assertIn("OAuth flow", captured[0])
 
 
 if __name__ == "__main__":

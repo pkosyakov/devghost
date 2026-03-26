@@ -1893,3 +1893,83 @@ def combine_estimates(branch_est, holistic_est, heuristic_total):
         combined = (branch_est + holistic_est) / 2.0
 
     return combined + heuristic_total
+
+
+_CLUSTER_SYSTEM_PROMPT = """Estimate development effort for this CODE CLUSTER \
+(part of a larger commit with {total_fc} files).
+Cluster: {cluster_name} ({n_files} files, {total_lines} lines).
+Estimate hours for THIS CLUSTER ONLY, as a mid-level developer without AI assistance.
+Include: writing code, manual testing, code review fixes.
+Exclude: meetings, planning, waiting for review."""
+
+_CLUSTER_TOKEN_LIMIT = 40000  # chars (~20K tokens at 2.0 chars/tok)
+
+
+def _build_cluster_prompt(cluster, message, total_fc):
+    """Build estimation prompt for a single cluster."""
+    files = cluster["files"]
+    file_list = "\n".join(
+        f"  {f['filename']} (+{f.get('added', 0)}/-{f.get('deleted', 0)})"
+        for f in files
+    )
+
+    # Include diffs if they fit
+    total_diff_chars = sum(len(f.get("diff", "")) for f in files)
+    if total_diff_chars <= _CLUSTER_TOKEN_LIMIT:
+        diffs = "\n".join(f.get("diff", "") for f in files)
+        diff_section = f"\n--- DIFFS ---\n{diffs}\n---"
+    else:
+        # Top 3 files by lines_added + metadata for rest
+        sorted_files = sorted(files, key=lambda f: f.get("added", 0), reverse=True)
+        top3 = sorted_files[:3]
+        diffs = "\n".join(f.get("diff", "") for f in top3)
+        rest_count = len(files) - 3
+        rest_lines = sum(f.get("added", 0) for f in sorted_files[3:])
+        diff_section = (
+            f"\n--- DIFFS (top 3 of {len(files)} files) ---\n{diffs}\n---\n"
+            f"[{rest_count} more files, +{rest_lines} lines — estimate from names and stats above]"
+        )
+
+    return (
+        f"Commit: {message}\n\n"
+        f"Files in this cluster:\n{file_list}\n"
+        f"{diff_section}\n\n"
+        f"Estimate hours for this cluster."
+    )
+
+
+def estimate_branch_b(clusters, message, language, total_fc, call_ollama_fn):
+    """Branch B: estimate effort per-cluster, sum results.
+
+    Args:
+        clusters: list from build_clusters()
+        message: commit message
+        language: primary language
+        total_fc: total file count in commit
+        call_ollama_fn: LLM call function
+
+    Returns: float — sum of per-cluster estimates
+    """
+    total = 0.0
+
+    for cluster in clusters:
+        system = _CLUSTER_SYSTEM_PROMPT.format(
+            total_fc=total_fc,
+            cluster_name=cluster["name"],
+            n_files=len(cluster["files"]),
+            total_lines=cluster["total_added"],
+        )
+        prompt = _build_cluster_prompt(cluster, message, total_fc)
+
+        result = call_ollama_fn(system, prompt, schema=None, max_tokens=512)
+
+        if isinstance(result, dict) and "estimated_hours" in result:
+            est = float(result["estimated_hours"])
+        else:
+            # Fallback: rough heuristic per cluster
+            est = max(1.0, cluster["total_added"] * 0.003)
+            print(f" [cluster-fallback:{cluster['name']}={est:.1f}h]", end='', flush=True)
+
+        total += est
+
+    return total
