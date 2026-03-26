@@ -1752,3 +1752,123 @@ def adaptive_filter(file_info):
             "llm": len(llm_files),
         },
     }
+
+
+_SUFFIX_ROLES = {
+    '.service': 'services', '.repository': 'repositories', '.controller': 'controllers',
+    '.resolver': 'resolvers', '.guard': 'guards', '.middleware': 'middleware',
+    '.module': 'modules', '.dto': 'dtos', '.entity': 'entities', '.model': 'models',
+    '.hook': 'hooks', '.util': 'utils', '.helper': 'helpers',
+}
+
+_MAX_CLUSTERS = 15
+_MIN_CLUSTER_SIZE = 3
+_MAX_CLUSTER_SIZE = 30
+
+
+def _get_dir_key(filename):
+    """Extract directory grouping key from filename."""
+    parts = filename.replace('\\', '/').split('/')
+    if len(parts) <= 1:
+        return ""
+    # Skip first segment if it's a common root (src, app, apps, lib, packages)
+    start = 1 if parts[0] in ('src', 'app', 'apps', 'lib', 'packages') else 0
+    dir_parts = parts[start:-1]  # exclude filename
+    return '/'.join(dir_parts) if dir_parts else ""
+
+
+def _get_suffix_role(filename):
+    """Detect dotted suffix pattern like .service.ts, .repository.ts."""
+    lower = filename.lower()
+    for suffix, role in _SUFFIX_ROLES.items():
+        if suffix in lower:
+            return role
+    return None
+
+
+def build_clusters(llm_files):
+    """Group files into semantic clusters by directory + suffix pattern.
+
+    Algorithm:
+    1. Group by directory depth-1 within package
+    2. Within each dir-group: split by suffix role (.service, .repository, etc.)
+    3. Small clusters (<3 files) merge with nearest neighbor by directory path
+    4. If >15 clusters: force-merge smallest until count <= 15
+
+    Returns: list of cluster dicts, each with keys:
+        name, files, total_added, total_deleted
+    """
+    if not llm_files:
+        return []
+
+    # Step 1+2: Group by dir_key, then by suffix_role
+    dir_groups = defaultdict(lambda: defaultdict(list))
+    for f in llm_files:
+        dk = _get_dir_key(f["filename"])
+        sr = _get_suffix_role(f["filename"])
+        subkey = sr if sr else "_general"
+        dir_groups[dk][subkey].append(f)
+
+    # Flatten to cluster list
+    clusters = []
+    for dk, subgroups in dir_groups.items():
+        for subkey, files in subgroups.items():
+            name = f"{dk}/{subkey}" if dk and subkey != "_general" else dk or subkey
+            clusters.append({
+                "name": name.strip("/"),
+                "files": files,
+                "total_added": sum(f.get("added", 0) for f in files),
+                "total_deleted": sum(f.get("deleted", 0) for f in files),
+                "_dir_key": dk,
+            })
+
+    # Step 3: Merge small clusters (<3 files) with nearest by dir_key
+    # Only merge when there is real directory overlap (overlap > 0).
+    # Suffix-split subclusters within the same directory are intentional
+    # and should not be re-merged.
+    changed = True
+    while changed:
+        changed = False
+        small = [c for c in clusters if len(c["files"]) < _MIN_CLUSTER_SIZE]
+        if not small:
+            break
+        for s in small:
+            best = None
+            best_overlap = -1
+            s_parts = s["_dir_key"].split('/')
+            for c in clusters:
+                if c is s:
+                    continue
+                # Don't re-merge suffix subclusters within the same directory
+                if c["_dir_key"] == s["_dir_key"]:
+                    continue
+                if len(c["files"]) + len(s["files"]) > _MAX_CLUSTER_SIZE:
+                    continue
+                c_parts = c["_dir_key"].split('/')
+                overlap = sum(1 for a, b in zip(s_parts, c_parts) if a == b)
+                if overlap > best_overlap and overlap > 0:
+                    best_overlap = overlap
+                    best = c
+            if best is not None:
+                best["files"].extend(s["files"])
+                best["total_added"] += s["total_added"]
+                best["total_deleted"] += s["total_deleted"]
+                best["name"] = best["name"]  # keep target name
+                clusters.remove(s)
+                changed = True
+                break  # restart loop after mutation
+
+    # Step 4: Force-merge smallest until <= MAX_CLUSTERS
+    while len(clusters) > _MAX_CLUSTERS:
+        clusters.sort(key=lambda c: len(c["files"]))
+        smallest = clusters.pop(0)
+        target = clusters[0]
+        target["files"].extend(smallest["files"])
+        target["total_added"] += smallest["total_added"]
+        target["total_deleted"] += smallest["total_deleted"]
+
+    # Clean up internal keys
+    for c in clusters:
+        c.pop("_dir_key", None)
+
+    return clusters

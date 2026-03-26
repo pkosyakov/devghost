@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -137,6 +137,85 @@ class TestAdaptiveFilter(unittest.TestCase):
         self.assertEqual(result["filter_stats"]["skip"], 1)
         self.assertEqual(result["filter_stats"]["heuristic"], 1)
         self.assertEqual(result["filter_stats"]["llm"], 1)
+
+
+class TestBuildClusters(unittest.TestCase):
+    """Test directory+suffix clustering."""
+
+    def _make_file(self, name, added=100):
+        return {"filename": name, "added": added, "deleted": 0, "diff": f"diff {name}", "tags": []}
+
+    def test_single_directory_one_cluster(self):
+        files = [
+            self._make_file("src/components/Button.tsx"),
+            self._make_file("src/components/Input.tsx"),
+            self._make_file("src/components/Modal.tsx"),
+        ]
+        clusters = build_clusters(files)
+        self.assertEqual(len(clusters), 1)
+        self.assertEqual(len(clusters[0]["files"]), 3)
+
+    def test_different_directories_separate_clusters(self):
+        files = [
+            self._make_file("src/components/Button.tsx"),
+            self._make_file("src/lib/services/auth.ts"),
+            self._make_file("src/lib/services/credit.ts"),
+        ]
+        clusters = build_clusters(files)
+        self.assertEqual(len(clusters), 2)
+
+    def test_suffix_split_within_directory(self):
+        files = [
+            self._make_file("src/dialer/call-task.service.ts"),
+            self._make_file("src/dialer/compliance.service.ts"),
+            self._make_file("src/dialer/call-task.repository.ts"),
+            self._make_file("src/dialer/compliance.repository.ts"),
+            self._make_file("src/dialer/DialerModal.tsx"),
+            self._make_file("src/dialer/DialerSettings.tsx"),
+        ]
+        clusters = build_clusters(files)
+        # Should produce subclusters: services, repositories, general
+        self.assertGreaterEqual(len(clusters), 2)
+        self.assertLessEqual(len(clusters), 4)
+
+    def test_small_clusters_merged(self):
+        files = [
+            self._make_file("src/a/file1.ts"),
+            self._make_file("src/a/file2.ts"),
+            self._make_file("src/b/lonely.ts"),  # only 1 file — should merge
+        ]
+        clusters = build_clusters(files)
+        # src/b has <3 files, should merge with nearest (src/a)
+        total_files = sum(len(c["files"]) for c in clusters)
+        self.assertEqual(total_files, 3)
+
+    def test_max_15_clusters(self):
+        # 20 different directories with 3 files each = 20 initial clusters
+        files = []
+        for i in range(20):
+            for j in range(3):
+                files.append(self._make_file(f"src/mod{i}/file{j}.ts"))
+        clusters = build_clusters(files)
+        self.assertLessEqual(len(clusters), 15)
+        # All files preserved
+        total_files = sum(len(c["files"]) for c in clusters)
+        self.assertEqual(total_files, 60)
+
+    def test_cluster_has_name_and_stats(self):
+        files = [
+            self._make_file("src/auth/login.ts", added=200),
+            self._make_file("src/auth/register.ts", added=150),
+        ]
+        clusters = build_clusters(files)
+        c = clusters[0]
+        self.assertIn("name", c)
+        self.assertIn("files", c)
+        self.assertIn("total_added", c)
+        self.assertEqual(c["total_added"], 350)
+
+    def test_empty_input(self):
+        clusters = build_clusters([])
+        self.assertEqual(clusters, [])
 
 
 if __name__ == "__main__":
