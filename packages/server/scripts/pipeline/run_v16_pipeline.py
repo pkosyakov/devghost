@@ -928,7 +928,16 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
                 fd_llm_calls.append({**meta, 'step': 'fd'})
                 return parsed
 
-            fd_result = run_fd_hybrid(diff, msg, lang, fc, la, ld, call_llm_fd)
+            # FD v2 Branch A: provide large-model wrapper if configured
+            call_llm_fd_large = None
+            if FD_LARGE_LLM_MODEL:
+                def call_llm_fd_large(system, prompt, schema=None, max_tokens=1024):
+                    parsed, meta = call_openrouter_large(system, prompt, schema, max_tokens)
+                    fd_llm_calls.append({**meta, 'step': 'fd_v2_large'})
+                    return parsed
+
+            fd_result = run_fd_hybrid(diff, msg, lang, fc, la, ld, call_llm_fd,
+                                      call_large_fn=call_llm_fd_large)
             raw_estimate = fd_result['estimated_hours']
             analysis = fd_result.get('analysis')
 

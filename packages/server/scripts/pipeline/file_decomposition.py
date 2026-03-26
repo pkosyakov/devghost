@@ -1358,7 +1358,7 @@ def _build_metadata_prompt(message, fc, la, ld, file_info, language):
     return "\n".join(lines)
 
 
-def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn):
+def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn, call_large_fn=None):
     """Hybrid FD: classify first, then route.
 
     For diffs >60K chars:
@@ -1488,7 +1488,8 @@ def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn):
     if fc >= _v2_cfg["min_files"]:
         print(f" [->v2:{fc}files]", end='', flush=True)
         return _run_fd_v2(diff, message, language, fc, la, ld,
-                          file_info, new_file_ratio, call_ollama_fn)
+                          file_info, new_file_ratio, call_ollama_fn,
+                          call_large_fn=call_large_fn)
 
     # --- Step 2: Metadata-only v15 classification (1 LLM call, small prompt) ---
     metadata_prompt = _build_metadata_prompt(message, fc, la, ld, file_info, language)
@@ -2090,7 +2091,7 @@ def estimate_branch_a(message, language, llm_diff, filter_stats,
 
 
 def _run_fd_v2(diff, message, language, fc, la, ld,
-               file_info, new_file_ratio, call_ollama_fn):
+               file_info, new_file_ratio, call_ollama_fn, call_large_fn=None):
     """FD v2 orchestrator: filter -> branch -> holistic -> combine.
 
     Returns: dict compatible with run_commit() expectations
@@ -2140,9 +2141,10 @@ def _run_fd_v2(diff, message, language, fc, la, ld,
 
     if branch_a_possible:
         print(f" [v2:branch-A,{llm_token_estimate:.0f}tok]", end='', flush=True)
+        branch_call = call_large_fn if call_large_fn else call_ollama_fn
         branch_est = estimate_branch_a(
             message, language, filt["llm_diff"], filter_stats,
-            fc, la, ld, call_ollama_fn
+            fc, la, ld, branch_call
         )
         branch_label = "A"
         if branch_est <= 0:
