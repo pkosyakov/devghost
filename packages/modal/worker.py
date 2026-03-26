@@ -56,7 +56,7 @@ from db import (
     get_existing_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
     set_job_status, set_job_error, increment_total_commits,
-    update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
+    update_llm_usage, account_cached_batch, delete_existing_analyses, delete_existing_analyses_by_shas, delete_analyses_since,
     append_job_event,
 )
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
@@ -92,6 +92,47 @@ PIPELINE_CACHE_NAMESPACE = (os.environ.get("PIPELINE_CACHE_NAMESPACE") or "prod"
 WATCHDOG_TRIGGER_URL = (os.environ.get("WATCHDOG_TRIGGER_URL") or "").strip()
 WATCHDOG_TRIGGER_TOKEN = (os.environ.get("WATCHDOG_TRIGGER_TOKEN") or "").strip()
 WATCHDOG_TRIGGER_TIMEOUT_SEC = _env_positive_int("WATCHDOG_TRIGGER_TIMEOUT_SEC", 8)
+
+
+def _normalize_selected_commit_hashes(raw) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    unique: list[str] = []
+    seen = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        sha = item.strip()
+        if not sha or sha in seen:
+            continue
+        seen.add(sha)
+        unique.append(sha)
+    return unique
+
+
+def _extract_selected_commit_hashes(job: dict) -> list[str]:
+    raw = job.get("lastAnalyzedShas")
+    if raw is None:
+        raw = job.get("last_analyzed_shas")
+
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            return []
+
+    if isinstance(raw, list):
+        return _normalize_selected_commit_hashes(raw)
+
+    if isinstance(raw, dict):
+        return _normalize_selected_commit_hashes(
+            raw.get("selectedCommitHashes")
+            or raw.get("selected_commit_hashes")
+            or raw.get("shas")
+            or [],
+        )
+
+    return []
 
 
 class HeartbeatThread(threading.Thread):
@@ -223,6 +264,8 @@ def run_analysis(job_id: str):
         excluded_emails = order.get("excluded_developers") or []
         skip_billing = job.get("skipBilling", False)
         force_recalculate = job.get("forceRecalculate", False)
+        selected_commit_hashes = _extract_selected_commit_hashes(job)
+        selected_commit_sha_set = set(selected_commit_hashes)
         demo_live_mode, demo_live_chunk_size = load_demo_live_settings(conn)
         demo_live_chunk_size = max(1, min(200, int(demo_live_chunk_size)))
 
@@ -248,6 +291,7 @@ def run_analysis(job_id: str):
                 "cacheMode": cache_mode,
                 "skipBilling": skip_billing,
                 "forceRecalculate": force_recalculate,
+                "selectedCommitCount": len(selected_commit_hashes),
                 "llmProvider": llm_config.get("provider"),
                 "llmModel": current_llm_model,
                 "demoLiveMode": demo_live_mode,
@@ -269,16 +313,27 @@ def run_analysis(job_id: str):
                 "Force recalculate requested; clearing existing analyses",
                 phase="worker",
                 code="FORCE_RECALCULATE_START",
-                payload={"orderId": order["id"]},
+                payload={
+                    "orderId": order["id"],
+                    "selectedCommitCount": len(selected_commit_hashes),
+                },
             )
-            delete_existing_analyses(conn, order["id"])
+            if selected_commit_hashes:
+                deleted_count = delete_existing_analyses_by_shas(conn, order["id"], selected_commit_hashes)
+            else:
+                delete_existing_analyses(conn, order["id"])
+                deleted_count = None
             append_job_event(
                 conn,
                 job_id,
                 "Existing analyses removed for force recalculate",
                 phase="worker",
                 code="FORCE_RECALCULATE_DONE",
-                payload={"orderId": order["id"]},
+                payload={
+                    "orderId": order["id"],
+                    "deletedCount": deleted_count,
+                    "selectedCommitCount": len(selected_commit_hashes),
+                },
             )
 
         rate_limiter = RateLimiter(max_qps=float(os.environ.get("LLM_MAX_QPS", "5")))
@@ -423,6 +478,24 @@ def run_analysis(job_id: str):
                         **({"selectedYears": years} if years else {}),
                     },
                 )
+
+            if selected_commit_sha_set:
+                before_selected_filter = len(commits)
+                commits = [c for c in commits if c.get("sha") in selected_commit_sha_set]
+                if before_selected_filter != len(commits):
+                    append_job_event(
+                        conn,
+                        job_id,
+                        "Applied selected commit filter to extracted commits",
+                        phase="scope",
+                        code="SELECTED_COMMITS_FILTER_APPLIED",
+                        repo_name=repo_full_name,
+                        payload={
+                            "selectedCommitCount": len(selected_commit_sha_set),
+                            "before": before_selected_filter,
+                            "after": len(commits),
+                        },
+                    )
 
             _commit_repos_volume_checkpoint(
                 conn=conn,
@@ -1347,6 +1420,20 @@ def setup_llm_env(llm_config):
     os.environ["PIPELINE_CACHE_DIR"] = PIPELINE_CACHE_DIR
     os.environ["PIPELINE_CACHE_NAMESPACE"] = PIPELINE_CACHE_NAMESPACE
     os.makedirs(PIPELINE_CACHE_DIR, exist_ok=True)
+
+    # FD v2 configuration — read from Modal env vars (not from llm_config snapshot,
+    # because server-side SystemSettings schema doesn't include fdV2 fields yet).
+    # Set these via Modal Secret 'devghost-llm' or Modal environment variables.
+    # If not set, defaults apply: Branch B, 50 files, holistic enabled, no large model.
+    for env_key, default in [
+        ("FD_V2_BRANCH", "B"),
+        ("FD_V2_MIN_FILES", "50"),
+        ("FD_V2_HOLISTIC", "true"),
+        ("FD_LARGE_LLM_PROVIDER", ""),
+        ("FD_LARGE_LLM_MODEL", ""),
+    ]:
+        if env_key not in os.environ:
+            os.environ[env_key] = default
 
 
 def _utc_iso_days_ago(days: int) -> str:
