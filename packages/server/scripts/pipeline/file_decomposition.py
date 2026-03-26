@@ -1872,3 +1872,24 @@ def build_clusters(llm_files):
         c.pop("_dir_key", None)
 
     return clusters
+
+
+def combine_estimates(branch_est, holistic_est, heuristic_total):
+    """Combine branch + holistic estimates with heuristic files.
+
+    Normal divergence (<=2x): simple average.
+    Strong divergence (>2x): conservative min.
+    Heuristic total always added after combining (not averaged).
+
+    Returns: final estimate (float)
+    """
+    min_est = min(branch_est, holistic_est)
+    max_est = max(branch_est, holistic_est)
+    divergence = max_est / max(min_est, 0.1)
+
+    if divergence > 2.0:
+        combined = min_est
+    else:
+        combined = (branch_est + holistic_est) / 2.0
+
+    return combined + heuristic_total

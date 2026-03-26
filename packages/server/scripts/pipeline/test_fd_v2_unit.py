@@ -7,7 +7,7 @@ import unittest
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SCRIPT_DIR)
 
-from file_decomposition import classify_file_tier, adaptive_filter, build_clusters
+from file_decomposition import classify_file_tier, adaptive_filter, build_clusters, combine_estimates
 
 
 class TestClassifyFileTier(unittest.TestCase):
@@ -216,6 +216,45 @@ class TestBuildClusters(unittest.TestCase):
     def test_empty_input(self):
         clusters = build_clusters([])
         self.assertEqual(clusters, [])
+
+
+class TestCombineEstimates(unittest.TestCase):
+    """Test branch+holistic combining logic."""
+
+    def test_normal_divergence_averages(self):
+        # branch=40, holistic=50, heuristic=5 → (40+50)/2 + 5 = 50
+        result = combine_estimates(40.0, 50.0, 5.0)
+        self.assertAlmostEqual(result, 50.0)
+
+    def test_strong_divergence_takes_min(self):
+        # branch=20, holistic=50, divergence=2.5 → min(20,50) + 5 = 25
+        result = combine_estimates(20.0, 50.0, 5.0)
+        self.assertAlmostEqual(result, 25.0)
+
+    def test_exactly_2x_divergence_averages(self):
+        # branch=20, holistic=40, ratio=2.0 → average: (20+40)/2 + 3 = 33
+        result = combine_estimates(20.0, 40.0, 3.0)
+        self.assertAlmostEqual(result, 33.0)
+
+    def test_zero_holistic_extreme_divergence(self):
+        # holistic=0 → divergence extreme → min(30, 0) + 2 = 2
+        result = combine_estimates(30.0, 0.0, 2.0)
+        self.assertAlmostEqual(result, 2.0)
+
+    def test_zero_branch_extreme_divergence(self):
+        # branch=0 → divergence extreme → min(0, 40) + 5 = 5
+        result = combine_estimates(0.0, 40.0, 5.0)
+        self.assertAlmostEqual(result, 5.0)
+
+    def test_heuristic_only(self):
+        # Both zero → just heuristic
+        result = combine_estimates(0.0, 0.0, 10.0)
+        self.assertAlmostEqual(result, 10.0)
+
+    def test_symmetric(self):
+        # Same estimate from both → average = same
+        result = combine_estimates(30.0, 30.0, 0.0)
+        self.assertAlmostEqual(result, 30.0)
 
 
 if __name__ == "__main__":
