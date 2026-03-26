@@ -194,9 +194,21 @@ def _write_diff_cache(repo_slug, sha, data):
         pass
 
 
-def _llm_cache_dir():
-    """Build LLM cache directory path including version and runtime fingerprint."""
-    model_slug = f'{LLM_PROVIDER}_{OPENROUTER_MODEL if LLM_PROVIDER == "openrouter" else os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:32b")}'
+def _llm_cache_dir(provider_override=None, model_override=None):
+    """Build LLM cache directory path including version and runtime fingerprint.
+
+    Args:
+        provider_override: Use this provider instead of global LLM_PROVIDER.
+        model_override: Use this model instead of global OPENROUTER_MODEL/OLLAMA_MODEL.
+    """
+    prov = provider_override or LLM_PROVIDER
+    if model_override:
+        model = model_override
+    elif prov == 'openrouter':
+        model = OPENROUTER_MODEL
+    else:
+        model = os.environ.get("OLLAMA_MODEL", "qwen2.5-coder:32b")
+    model_slug = f'{prov}_{model}'
     model_slug = re.sub(r'[^\w\-.]', '_', model_slug)
     # Runtime fingerprint: only params that affect LLM OUTPUT (not routing).
     # Provider order/ignore/fallbacks are routing concerns — they control which
@@ -206,7 +218,7 @@ def _llm_cache_dir():
         f'seed=42',
         f'temp=0',
     ]
-    if LLM_PROVIDER != 'openrouter':
+    if prov != 'openrouter':
         fp_parts.append(f'num_ctx={MODEL_CTX}')
     runtime_fp = hashlib.sha256('|'.join(fp_parts).encode()).hexdigest()[:12]
     return os.path.join(_cache_root(), 'llm', f'v{CACHE_VERSION}', model_slug, runtime_fp)
@@ -218,12 +230,12 @@ def _llm_cache_key(system, prompt, schema, max_tokens):
     return hashlib.sha256(key_str.encode()).hexdigest()
 
 
-def _read_llm_cache(system, prompt, schema, max_tokens):
+def _read_llm_cache(system, prompt, schema, max_tokens, provider_override=None, model_override=None):
     """Read cached LLM response. Returns (parsed, meta) or None."""
     if NO_CACHE or NO_LLM_CACHE:
         return None
     key = _llm_cache_key(system, prompt, schema, max_tokens)
-    path = os.path.join(_llm_cache_dir(), f'{key}.json')
+    path = os.path.join(_llm_cache_dir(provider_override, model_override), f'{key}.json')
     if not os.path.exists(path):
         return None
     try:
@@ -238,18 +250,20 @@ def _read_llm_cache(system, prompt, schema, max_tokens):
         return None
 
 
-def _write_llm_cache(system, prompt, schema, max_tokens, response, meta):
+def _write_llm_cache(system, prompt, schema, max_tokens, response, meta, provider_override=None, model_override=None):
     """Write LLM response to cache."""
     if NO_CACHE or NO_LLM_CACHE:
         return
     key = _llm_cache_key(system, prompt, schema, max_tokens)
-    cache_dir = _llm_cache_dir()
+    cache_dir = _llm_cache_dir(provider_override, model_override)
     path = os.path.join(cache_dir, f'{key}.json')
+    prov = provider_override or LLM_PROVIDER
+    model = model_override or (OPENROUTER_MODEL if prov == 'openrouter' else os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b'))
     try:
         _write_json_atomic(path, {
             'cache_version': CACHE_VERSION,
-            'model': OPENROUTER_MODEL if LLM_PROVIDER == 'openrouter' else os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b'),
-            'provider': LLM_PROVIDER,
+            'model': model,
+            'provider': prov,
             'response': response,
             'meta': meta,
             'cached_at': datetime.now().isoformat(),
@@ -931,8 +945,11 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
             # FD v2 Branch A: provide large-model wrapper if configured
             call_llm_fd_large = None
             if FD_LARGE_LLM_MODEL:
+                _large_prov = FD_LARGE_LLM_PROVIDER or 'openrouter'
+                _large_model = FD_LARGE_LLM_MODEL
                 def call_llm_fd_large(system, prompt, schema=None, max_tokens=1024):
-                    cached = _read_llm_cache(system, prompt, schema, max_tokens)
+                    cached = _read_llm_cache(system, prompt, schema, max_tokens,
+                                             provider_override=_large_prov, model_override=_large_model)
                     if cached is not None:
                         cached_parsed, cached_meta = cached
                         cached_meta['cache_hit'] = True
@@ -940,7 +957,8 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
                         return cached_parsed
                     parsed, meta = call_openrouter_large(system, prompt, schema, max_tokens)
                     if parsed is not None:
-                        _write_llm_cache(system, prompt, schema, max_tokens, parsed, meta)
+                        _write_llm_cache(system, prompt, schema, max_tokens, parsed, meta,
+                                         provider_override=_large_prov, model_override=_large_model)
                     fd_llm_calls.append({**meta, 'step': 'fd_v2_large'})
                     return parsed
 

@@ -1650,9 +1650,13 @@ def _estimate_mechanical(message, metadata_prompt, analysis, language, fc, la, l
 # --- V2 env config (read lazily to support Modal warm containers) ---
 def _fd_v2_config():
     """Read FD v2 config from env on each call (not cached at import time)."""
+    try:
+        min_files = int(os.environ.get("FD_V2_MIN_FILES", "50"))
+    except (ValueError, TypeError):
+        min_files = 50
     return {
         "branch": os.environ.get("FD_V2_BRANCH", "B").upper(),
-        "min_files": int(os.environ.get("FD_V2_MIN_FILES", "50")),
+        "min_files": min_files,
         "holistic": os.environ.get("FD_V2_HOLISTIC", "true").lower() in ("1", "true", "yes"),
     }
 
@@ -1969,10 +1973,10 @@ def estimate_branch_b(clusters, message, language, total_fc, call_ollama_fn):
         )
         prompt = _build_cluster_prompt(cluster, message, total_fc)
 
-        result = call_ollama_fn(system, prompt, schema=None, max_tokens=512)
+        result = call_ollama_fn(system, prompt, schema=EVAL_SCHEMA, max_tokens=512)
 
         if isinstance(result, dict) and "estimated_hours" in result:
-            est = float(result["estimated_hours"])
+            est = max(0.0, float(result["estimated_hours"]))
         else:
             # Fallback: rough heuristic per cluster
             est = max(1.0, cluster["total_added"] * 0.003)
@@ -2033,10 +2037,10 @@ def estimate_holistic(message, language, clusters, filter_stats,
         f"Estimate total development hours for this entire commit."
     )
 
-    result = call_ollama_fn(_HOLISTIC_SYSTEM, prompt, schema=None, max_tokens=512)
+    result = call_ollama_fn(_HOLISTIC_SYSTEM, prompt, schema=EVAL_SCHEMA, max_tokens=512)
 
     if isinstance(result, dict) and "estimated_hours" in result:
-        return float(result["estimated_hours"])
+        return max(0.0, float(result["estimated_hours"]))
     return 0.0
 
 
@@ -2083,10 +2087,10 @@ def estimate_branch_a(message, language, llm_diff, filter_stats,
         f"Estimate development effort for the substantive code above."
     )
 
-    result = call_ollama_fn(_BRANCH_A_SYSTEM, prompt, schema=None, max_tokens=1024)
+    result = call_ollama_fn(_BRANCH_A_SYSTEM, prompt, schema=EVAL_SCHEMA, max_tokens=1024)
 
     if isinstance(result, dict) and "estimated_hours" in result:
-        return float(result["estimated_hours"])
+        return max(0.0, float(result["estimated_hours"]))
     return 0.0
 
 
