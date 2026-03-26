@@ -204,6 +204,11 @@ GENERATED_PATTERNS = [
     r'package-lock\.json$', r'pnpm-lock\.yaml$', r'yarn\.lock$',
     r'\.generated\.\w+$', r'\.min\.\w+$', r'\.map$',
     r'dist/', r'build/', r'\.d\.ts$',
+    # Protobuf generated
+    r'_pb\.ts$', r'_pb\.js$', r'_pb2\.py$', r'\.pb\.go$',
+    r'_grpc_pb\.ts$', r'_grpc\.pb\.go$',
+    # Test snapshots
+    r'\.snap$', r'__snapshots__/',
     # Rust
     r'Cargo\.lock$',
     # Go
@@ -219,10 +224,11 @@ GENERATED_PATTERNS = [
 
 DATA_PATTERNS = [
     r'__fixtures__/', r'testdata/', r'test[_-]?data/', r'fixtures/',
-    r'__snapshots__/', r'META-INF/',
+    r'META-INF/',
+    # Note: __snapshots__/ moved to GENERATED_PATTERNS (auto-generated test output)
 ]
 
-LOCALE_PATTERNS = [r'locale[s]?/', r'i18n/', r'l10n/', r'lang/', r'translations?/']
+LOCALE_PATTERNS = [r'locale[s]?/', r'i18n/', r'l10n/', r'lang/', r'translations?/', r'messages/']
 
 CONFIG_PATTERNS = [
     # JS/TS
@@ -271,7 +277,7 @@ BUILD_ARTIFACT_PATTERNS = [
 # ===== MOVE/RENAME DETECTION PATTERNS =====
 
 MOVE_KEYWORDS = re.compile(
-    r'\b(move|rename|extract|split|reorganize|relocate|migrate|refactor.*module)\b', re.IGNORECASE
+    r'\b(move|rename|extract|split|reorganize|relocate|migrate|monorepo|workspace|refactor.*module)\b', re.IGNORECASE
 )
 ARCHITECTURAL_KEYWORDS = re.compile(
     r'\b(extract\s+(crate|package|library|workspace)|create\s+(new\s+)?(crate|package|module)|split\s+into)\b', re.IGNORECASE
@@ -384,6 +390,20 @@ def classify_file_regex(filename, file_diff, lines_added, lines_deleted):
 
     if basename.endswith('.json') and lines_added > 500:
         tags.append("large_data_file")
+
+    # Documentation files — low effort per file
+    if basename.endswith('.md') or basename.endswith('.mdx') or basename.endswith('.rst'):
+        tags.append("docs")
+
+    # SVG icon files — generated/designer output, not developer effort
+    if basename.endswith('.svg'):
+        tags.append("generated")
+
+    # Large TSX/JSX files that are mostly SVG paths (icon components)
+    if basename.endswith(('.tsx', '.jsx')) and lines_added > 100:
+        svg_lines = len(re.findall(r'^\+.*(?:<path\s|<svg\s|<circle\s|<rect\s|\bd="[A-Z])', file_diff, re.MULTILINE))
+        if svg_lines > lines_added * 0.3:
+            tags.append("svg_icon_component")
 
     return tags
 
@@ -870,7 +890,7 @@ def summarize_file_full(filename, file_diff, tags, commit_message, commit_stats,
         })
 
     # For skipped categories, return hardcoded summary
-    skip_tags = {"generated", "imported_data", "large_data_file", "formatting_only", "locale"}
+    skip_tags = {"generated", "imported_data", "large_data_file", "formatting_only", "locale", "svg_icon_component"}
     if skip_tags & set(tags):
         added, deleted = parse_file_stat(file_diff)
         tag_str = ", ".join(tags)
@@ -881,6 +901,20 @@ def summarize_file_full(filename, file_diff, tags, commit_message, commit_stats,
             "complexity": "trivial",
             "estimated_hours": 0.05,
             "tags": tags,
+        })
+
+    # Documentation files — cap at 1h per file (writing docs ≠ writing code)
+    if "docs" in tags:
+        added, deleted = parse_file_stat(file_diff)
+        doc_est = min(1.0, max(0.1, added * 0.003))  # ~3min per 1000 lines of docs
+        return with_timing({
+            "file": filename,
+            "summary": f"[docs: +{added}/-{deleted}, documentation file]",
+            "change_type": "docs",
+            "complexity": "low",
+            "estimated_hours": doc_est,
+            "tags": tags,
+            "lines_added": added, "lines_deleted": deleted,
         })
 
     added, deleted = parse_file_stat(file_diff)
@@ -1058,7 +1092,7 @@ def run_file_decomposition(diff, message, language, fc, la, ld, call_ollama_fn):
                     f["tags"].append("config")
 
     # Check if commit is test-only
-    skip_tags_set = {"generated", "imported_data", "large_data_file", "formatting_only", "locale", "config"}
+    skip_tags_set = {"generated", "imported_data", "large_data_file", "formatting_only", "locale", "config", "docs", "svg_icon_component"}
     non_test_code = [f for f in file_info if "test" not in f["tags"] and not (skip_tags_set & set(f["tags"]))]
     commit_stats["test_only"] = len(non_test_code) == 0
 
@@ -1382,8 +1416,90 @@ def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn):
     move_info = classify_move_commit(message, file_info)
     bulk_info = detect_bulk_refactoring(file_info)
 
+    # --- Step 1b: Compute new-file ratio (used in Step 2b force_complex guard) ---
+    new_files = [f for f in file_info if f["added"] > 0 and f["deleted"] == 0]
+    new_file_ratio = len(new_files) / len(file_info) if file_info else 0
+
+    # --- Step 1c: Bulk scaffold/copy detector (no LLM) ---
+    # Early exit ONLY for explicit copy/scaffold commits — not for feature work
+    # that happens to be mostly new files.
+    #
+    # Requires BOTH:
+    #   1. File composition: >80% new files, >10K lines, 50+ files
+    #   2. Scaffold signal: keyword in commit message OR extremely high new_file_ratio (>95%)
+    #
+    # Without scaffold signal, bulk-new context is passed to LLM classify (Step 2)
+    # instead of bypassing it — this prevents false negatives on feature commits
+    # like "Feat/dialer v1" (90% new, but 40-60h real work).
+    _SCAFFOLD_KEYWORDS = re.compile(
+        r'\b(monorepo|mono[- ]?repo|scaffold|boilerplate|template|seed|'
+        r'vendor|copy\s+(from|into|over)|bootstrap|initial\s+(commit|import|setup))\b', re.IGNORECASE
+    )
+    _SCAFFOLD_SETUP = re.compile(
+        r'\b(wip|init)\b.*\b(setup|library|scaffold|skeleton)\b', re.IGNORECASE
+    )
+
+    is_bulk_new = new_file_ratio > 0.8 and la > 10000 and fc >= 50
+    has_scaffold_signal = bool(
+        _SCAFFOLD_KEYWORDS.search(message) or
+        _SCAFFOLD_SETUP.search(message)
+    )
+    # >95% new files is such an extreme ratio that it's scaffold even without keyword
+    is_near_total_add = new_file_ratio > 0.95
+
+    if is_bulk_new and (has_scaffold_signal or is_near_total_add):
+        # Count how many new files are generated/config/test (low-effort)
+        low_effort_new = sum(
+            1 for f in new_files
+            if any(t in f["tags"] for t in ("generated", "config", "test", "test_data", "locale", "imported_data"))
+        )
+        low_effort_pct = low_effort_new / len(new_files) if new_files else 0
+
+        # Base: 16h for project setup + 0.02h per substantive new file (capped at 40h)
+        substantive_new = len(new_files) - low_effort_new
+        bulk_est = min(40.0, 16.0 + substantive_new * 0.02)
+
+        # If most new files are generated/config, even less effort
+        if low_effort_pct > 0.5:
+            bulk_est = min(bulk_est, 8.0 + substantive_new * 0.02)
+
+        signal = 'keyword' if has_scaffold_signal else '>95%'
+        print(f" [scaffold:{signal},{len(new_files)}/{len(file_info)},est={bulk_est:.1f}h]", end='', flush=True)
+        return {
+            'estimated_hours': bulk_est,
+            'raw_estimate': bulk_est,
+            'method': 'FD_bulk_scaffold',
+            'routed_to': 'bulk_scaffold_detector',
+            'analysis': {
+                'change_type': 'scaffolding',
+                'new_logic_percent': max(5, int((1 - low_effort_pct) * 20)),
+                'moved_or_copied_percent': 0,
+                'boilerplate_percent': int(low_effort_pct * 100),
+                'architectural_scope': 'multi_package' if fc > 200 else 'module',
+                'cognitive_complexity': 'low',
+                'summary': f'Scaffold/copy commit ({signal}): {len(new_files)}/{len(file_info)} files new, '
+                           f'{low_effort_new} generated/config/test',
+            },
+            'rule_applied': 'bulk_scaffold_detector',
+        }
+
     # --- Step 2: Metadata-only v15 classification (1 LLM call, small prompt) ---
     metadata_prompt = _build_metadata_prompt(message, fc, la, ld, file_info, language)
+
+    # Enrich metadata prompt with bulk-new context if applicable.
+    # This helps LLM classify understand that most files are new,
+    # without bypassing classification entirely.
+    if is_bulk_new:
+        low_effort_count = sum(
+            1 for f in new_files
+            if any(t in f["tags"] for t in ("generated", "config", "test", "test_data", "locale", "imported_data"))
+        )
+        metadata_prompt += (
+            f"\n\nNote: {len(new_files)}/{len(file_info)} files ({new_file_ratio:.0%}) are brand-new "
+            f"(add-only, zero deletions). {low_effort_count} of those are generated/config/test. "
+            f"This is a high-volume commit. Consider whether the new files represent "
+            f"original feature work or copied/scaffolded code."
+        )
     analysis = call_fn(
         PROMPT_CLASSIFY.format(lang=language),
         f"{metadata_prompt}\n\nClassify this commit:",
@@ -1425,8 +1541,12 @@ def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn):
         force_complex = True  # "v5 (#2138)", "v2.0", etc.
     elif 'breaking' in msg_lower and fc >= 10:
         force_complex = True  # "breaking(types): ..." with many files
-    # Also check for migration guides in file list — strong signal of deliberate breaking change
-    if not force_complex:
+    # Also check for migration guides in file list — strong signal of deliberate breaking change.
+    # BUT: skip this check when >50% files are new — a file named MIGRATION_PLAN.md in a
+    # bulk-add commit (monorepo setup, initial scaffold) is NOT a deliberate breaking change.
+    # Note: new_file_ratio is computed in Step 1b above. Moved/restructured files have
+    # deletions, so they are NOT counted as new — this guard is safe for restructuring commits.
+    if not force_complex and new_file_ratio <= 0.5:
         for f in file_info:
             if 'migrat' in f['filename'].lower():
                 force_complex = True
@@ -1515,3 +1635,71 @@ def _estimate_mechanical(message, metadata_prompt, analysis, language, fc, la, l
             'bulk_detected': bulk_info.get('is_bulk', False),
         },
     }
+
+
+# ===== FD V2: ADAPTIVE FILTER + CLUSTERING =====
+
+# --- V2 env config (read lazily to support Modal warm containers) ---
+def _fd_v2_config():
+    """Read FD v2 config from env on each call (not cached at import time)."""
+    return {
+        "branch": os.environ.get("FD_V2_BRANCH", "B").upper(),
+        "min_files": int(os.environ.get("FD_V2_MIN_FILES", "50")),
+        "holistic": os.environ.get("FD_V2_HOLISTIC", "true").lower() in ("1", "true", "yes"),
+    }
+
+_SKIP_EXTENSIONS = {'.svg', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp',
+                    '.woff', '.woff2', '.ttf', '.eot', '.mp3', '.mp4', '.wav'}
+_DDL_RE = re.compile(r'\b(CREATE|ALTER|DROP)\s+(TABLE|INDEX|VIEW|TYPE|SEQUENCE|FUNCTION|TRIGGER)\b', re.IGNORECASE)
+_DML_RE = re.compile(r'\b(SELECT|INSERT|UPDATE|DELETE)\b', re.IGNORECASE)
+
+
+def classify_file_tier(filename, tags, lines_added, lines_deleted, file_diff=""):
+    """Classify a file into SKIP / HEURISTIC / LLM_REQUIRED tier for FD v2.
+
+    Args:
+        filename: File path from diff
+        tags: Tags from classify_file_regex()
+        lines_added: Lines added in diff
+        lines_deleted: Lines deleted in diff
+        file_diff: Raw diff text (needed for migration DDL/DML detection)
+
+    Returns:
+        (tier, heuristic_estimate): tier is "SKIP"|"HEURISTIC"|"LLM_REQUIRED",
+        heuristic_estimate is float (0.0 for SKIP and LLM_REQUIRED)
+    """
+    ext = os.path.splitext(filename)[1].lower()
+
+    # --- SKIP tier: zero effort ---
+    if "generated" in tags or "locale" in tags:
+        return "SKIP", 0.0
+    if ext in _SKIP_EXTENSIONS or (lines_added == 0 and lines_deleted == 0):
+        return "SKIP", 0.0
+
+    # --- HEURISTIC tier: formula-based ---
+    if "docs" in tags:
+        return "HEURISTIC", min(0.5, lines_added * 0.003)
+    if "config" in tags:
+        return "HEURISTIC", lines_added * 0.01
+    if "test" in tags or "test_data" in tags:
+        return "HEURISTIC", lines_added * 0.002
+
+    # Migration: DDL-only -> heuristic, data migration -> LLM
+    # Note: classify_file_regex() does not produce "migration" tag -- detect by path
+    is_migration = "migration" in tags or bool(re.search(
+        r'migrations?/', filename, re.IGNORECASE
+    )) or filename.endswith('.sql')
+    if is_migration:
+        if file_diff:
+            added_lines = [l for l in file_diff.split('\n') if l.startswith('+') and not l.startswith('+++')]
+            added_text = '\n'.join(added_lines)
+            has_dml = bool(_DML_RE.search(added_text))
+            if has_dml:
+                return "LLM_REQUIRED", 0.0
+            ddl_count = len(_DDL_RE.findall(added_text))
+            if ddl_count > 0:
+                return "HEURISTIC", ddl_count * 0.1
+        return "HEURISTIC", 0.1  # migration file, no diff available
+
+    # --- LLM_REQUIRED: everything else ---
+    return "LLM_REQUIRED", 0.0
