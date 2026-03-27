@@ -287,8 +287,8 @@ def compute_v3_metadata(commit_data):
     file_sizes = sorted(f["added"] + f["deleted"] for f in llm_files)
     if file_sizes:
         n = len(file_sizes)
-        file_size_p50 = file_sizes[int(n * 0.5)]
-        file_size_p90 = file_sizes[int(n * 0.9)]
+        file_size_p50 = file_sizes[min(int(n * 0.5), n - 1)]
+        file_size_p90 = file_sizes[min(int(n * 0.9), n - 1)]
         file_size_max = file_sizes[-1]
     else:
         file_size_p50 = file_size_p90 = file_size_max = 0
@@ -300,6 +300,7 @@ def compute_v3_metadata(commit_data):
         if len(parts) > 1:
             top_dirs.add(parts[0])
     module_boundary_count = len(top_dirs)
+    modules = sorted(top_dirs)[:10]
 
     # --- Extension distribution (top 5) from llm_files ---
     ext_counter = Counter()
@@ -328,6 +329,7 @@ def compute_v3_metadata(commit_data):
         "file_size_p90": file_size_p90,
         "file_size_max": file_size_max,
         "module_boundary_count": module_boundary_count,
+        "modules": modules,
         "ext_distribution": ext_distribution,
         "languages": languages,
         "primary_language": primary_language,
@@ -423,13 +425,18 @@ def build_v3_prompt(commit_data, v3_meta):
     lines.append("## CHANGE VOLUME")
     lines.append(f"Total files: {total_files}  (+{total_la} / -{total_ld} lines)")
     lines.append(f"New-file ratio: {new_file_ratio:.0%} of files are add-only")
-    lines.append(f"Module boundaries touched: {v3_meta['module_boundary_count']} top-level directories")
+    module_list = ", ".join(v3_meta["modules"][:8])
+    if v3_meta["module_boundary_count"] > 8:
+        module_list += f" (+{v3_meta['module_boundary_count'] - 8} more)"
+    lines.append(f"Module boundaries touched: {v3_meta['module_boundary_count']} ({module_list})")
     lines.append("")
 
     # --- FILE TYPE BREAKDOWN section ---
+    heur_total = commit_data["filter_result"]["heuristic_total"]
+
     lines.append("## FILE TYPE BREAKDOWN")
     lines.append(f"SKIP (generated/lock/locale): {skip_count} files — 0h")
-    lines.append(f"HEURISTIC (docs/config/tests): {heuristic_count} files — formula-estimated")
+    lines.append(f"HEURISTIC (docs/config/tests): {heuristic_count} files — ~{heur_total:.1f}h by formula")
     lines.append(f"LLM-required (substantive code): {llm_count} files — needs judgment")
     lines.append(
         f"Effective churn (LLM files only): +{v3_meta['effective_la']} / -{v3_meta['effective_ld']} lines"
