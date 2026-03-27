@@ -16,6 +16,7 @@ packages/mobile/android/.gradle/
 *.pkl
 __pycache__/
 packages/server/scripts/.cache/
+packages/server/scripts/pipeline/experiment_v3_results/
 packages/server/tmp/
 
 # IDE

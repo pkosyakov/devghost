@@ -9,8 +9,8 @@ Usage:
     python experiment_v3.py --repo /path/to/repo --models opus sonnet --commit 188c43e
     python experiment_v3.py --repo /path/to/repo --no-cache
 
-Tasks implemented here: 1-5 (skeleton, git extraction, v3 metadata, prompt formatting, API call).
-Tasks 6-7 (main loop, reports) will be added separately.
+Tasks implemented here: 1-7 (skeleton, git extraction, v3 metadata, prompt formatting, API call,
+experiment runner, report generation).
 """
 
 import re
@@ -24,6 +24,7 @@ import hashlib
 import argparse
 import subprocess
 from collections import Counter
+import statistics
 from datetime import datetime
 
 import requests
@@ -706,11 +707,261 @@ def call_openrouter(system, prompt, model, api_key, schema=None, no_cache=False)
     return None, {"error": last_error, "elapsed_ms": 0}
 
 
+# ===== TASK 6: EXPERIMENT RUNNER =====
+
+def run_experiment(repo, model_aliases, api_key, no_cache=False, single_commit=None,
+                   dry_run=False, calibration=None):
+    """Run v3 experiment across GT cases x models. Returns (results, executed_cases)."""
+    cases = GT_CASES
+    if single_commit:
+        cases = [c for c in GT_CASES if c["sha"].startswith(single_commit)]
+        if not cases:
+            print(f"ERROR: commit {single_commit} not found in GT_CASES")
+            sys.exit(1)
+
+    models = {alias: MODELS[alias] for alias in model_aliases}
+    system_prompt = build_system_prompt(calibration)
+
+    print(f"\n{'='*70}")
+    print(f"FD V3 HOLISTIC ESTIMATION EXPERIMENT")
+    print(f"Models: {', '.join(f'{a} ({m})' for a, m in models.items())}")
+    print(f"Commits: {len(cases)}")
+    print(f"Cache: {'disabled' if no_cache else 'enabled'}")
+    print(f"{'='*70}\n")
+
+    results = []
+
+    for case in cases:
+        sha = case["sha"]
+        print(f"\n--- {sha[:7]} {case['label']} ---")
+        print(f"    GT: {case['gt_low']}-{case['gt_high']}h")
+
+        try:
+            commit_data = extract_commit_data(repo, sha)
+            v3_meta = compute_v3_metadata(commit_data)
+            prompt = build_v3_prompt(commit_data, v3_meta)
+        except Exception as e:
+            print(f"    ERROR extracting data: {e}")
+            for alias in models:
+                results.append({"sha": sha, "label": case["label"],
+                    "gt_low": case["gt_low"], "gt_high": case["gt_high"],
+                    "model_alias": alias, "model_id": models[alias], "error": str(e)})
+            continue
+
+        fs = commit_data["filter_result"]["filter_stats"]
+        heur_total = commit_data["filter_result"]["heuristic_total"]
+        print(f"    Files: {commit_data['total_files']}, Substantive: {v3_meta['effective_fc']}, "
+              f"Skip: {fs['skip']}, Heuristic: {fs['heuristic']} ({heur_total:.1f}h)")
+        print(f"    Entropy: {v3_meta['entropy']:.2f} ({v3_meta['entropy_label']})")
+        if commit_data["move_info"].get("is_move"):
+            print(f"    Move: {commit_data['move_info'].get('move_type', '?')}")
+        if commit_data["bulk_info"].get("is_bulk"):
+            print(f"    Bulk: {commit_data['bulk_info'].get('bulk_ratio', 0):.0%} repetition")
+
+        if dry_run:
+            print(f"\n--- PROMPT ({len(prompt)} chars) ---")
+            print(prompt)
+            print(f"--- END PROMPT ---\n")
+            continue
+
+        gt_mid = (case["gt_low"] + case["gt_high"]) / 2
+
+        for alias, model_id in models.items():
+            t0 = time.time()
+            parsed, meta = call_openrouter(
+                system_prompt, prompt, model_id, api_key,
+                schema=V3_SCHEMA, no_cache=no_cache,
+            )
+            wall_time = (time.time() - t0) * 1000
+
+            if parsed is None:
+                print(f"    [{alias}] ERROR: {meta.get('error', '?')}")
+                results.append({"sha": sha, "label": case["label"],
+                    "gt_low": case["gt_low"], "gt_high": case["gt_high"], "gt_mid": gt_mid,
+                    "model_alias": alias, "model_id": model_id,
+                    "error": meta.get("error", "unknown")})
+                continue
+
+            est_mid = parsed.get("mid", 0)
+            est_low = parsed.get("low", 0)
+            est_high = parsed.get("high", 0)
+            confidence = parsed.get("confidence", "?")
+            reasoning = parsed.get("reasoning", "")
+
+            ape = abs(est_mid - gt_mid) / gt_mid * 100 if gt_mid > 0 else 0
+            in_range = case["gt_low"] <= est_mid <= case["gt_high"]
+            within_2x = est_mid <= case["gt_high"] * 2 and est_mid >= case["gt_low"] * 0.5
+
+            cache_str = " [cached]" if meta.get("cache_hit") else ""
+            status = "OK" if in_range else ("~2x" if within_2x else "MISS")
+
+            print(f"    [{alias}] {est_low:.0f}-{est_mid:.0f}-{est_high:.0f}h "
+                  f"conf={confidence} APE={ape:.0f}% [{status}]{cache_str}")
+
+            results.append({
+                "sha": sha, "label": case["label"],
+                "gt_low": case["gt_low"], "gt_high": case["gt_high"], "gt_mid": gt_mid,
+                "model_alias": alias, "model_id": model_id,
+                "estimate_low": est_low, "estimate_mid": est_mid, "estimate_high": est_high,
+                "confidence": confidence, "reasoning": reasoning,
+                "ape": ape, "in_range": in_range, "within_2x": within_2x,
+                "prompt_tokens": meta.get("prompt_tokens", 0),
+                "completion_tokens": meta.get("completion_tokens", 0),
+                "elapsed_ms": meta.get("elapsed_ms", 0),
+                "wall_time_ms": wall_time,
+                "cache_hit": meta.get("cache_hit", False),
+                "provider": meta.get("provider", "?"),
+                "heuristic_hours": heur_total,
+            })
+
+    return results, cases
+
+
+# ===== TASK 7: REPORT GENERATION =====
+
+def compute_aggregate(results, model_alias):
+    """Compute aggregate metrics for one model."""
+    mr = [r for r in results if r.get("model_alias") == model_alias and "error" not in r]
+    if not mr:
+        return None
+    apes = [r["ape"] for r in mr]
+    n = len(mr)
+    signed = [r["estimate_mid"] - r["gt_mid"] for r in mr]
+    return {
+        "model_alias": model_alias,
+        "model_id": mr[0]["model_id"],
+        "n": n,
+        "mape": round(sum(apes) / n, 1),
+        "mdape": round(statistics.median(apes), 1),
+        "in_range": sum(1 for r in mr if r["in_range"]),
+        "within_2x": sum(1 for r in mr if r["within_2x"]),
+        "mean_signed_error": round(sum(signed) / n, 1),
+        "n_over": sum(1 for e in signed if e > 0),
+        "n_under": sum(1 for e in signed if e < 0),
+        "avg_tokens_in": int(sum(r["prompt_tokens"] for r in mr) / n),
+        "avg_tokens_out": int(sum(r["completion_tokens"] for r in mr) / n),
+        "avg_elapsed_ms": int(sum(r["elapsed_ms"] for r in mr) / n),
+    }
+
+
+def generate_reports(results, model_aliases, executed_cases):
+    """Generate JSON + Markdown reports. Only includes executed_cases."""
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+
+    aggregates = {}
+    for alias in model_aliases:
+        agg = compute_aggregate(results, alias)
+        if agg:
+            aggregates[alias] = agg
+
+    # --- JSON ---
+    json_path = os.path.join(RESULTS_DIR, f"experiment_v3_{timestamp}.json")
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump({"timestamp": timestamp,
+                    "models": {a: MODELS[a] for a in model_aliases},
+                    "gt_cases": len(executed_cases),
+                    "aggregates": aggregates, "results": results},
+                   f, ensure_ascii=False, indent=2)
+
+    # --- Markdown ---
+    md_path = os.path.join(RESULTS_DIR, f"experiment_v3_{timestamp}.md")
+    lines = [
+        f"# FD v3 Holistic Experiment Results",
+        f"",
+        f"**Date:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**Commits:** {len(executed_cases)}",
+        f"**Models:** {', '.join(model_aliases)}",
+        f"",
+        f"## Summary — Models x Metrics",
+        f"",
+        f"| Model | MAPE | MdAPE | In-Range | Within 2x | Bias (avg) | Over/Under | Avg Latency |",
+        f"|-------|------|-------|----------|-----------|-----------|------------|-------------|",
+    ]
+
+    # Heuristic baseline (from executed cases only)
+    heur_by_commit = {}
+    for r in results:
+        if "heuristic_hours" in r and r["sha"] not in heur_by_commit:
+            heur_by_commit[r["sha"]] = r["heuristic_hours"]
+    if heur_by_commit:
+        heur_apes, heur_in = [], 0
+        for case in executed_cases:
+            h = heur_by_commit.get(case["sha"])
+            if h is not None:
+                gt_mid = (case["gt_low"] + case["gt_high"]) / 2
+                heur_apes.append(abs(h - gt_mid) / gt_mid * 100)
+                if case["gt_low"] <= h <= case["gt_high"]:
+                    heur_in += 1
+        if heur_apes:
+            lines.append(f"| **baseline (heuristic)** | {sum(heur_apes)/len(heur_apes):.1f}% | — "
+                         f"| {heur_in}/{len(heur_apes)} | — | — | — | 0ms |")
+
+    for alias in model_aliases:
+        agg = aggregates.get(alias)
+        if agg:
+            bias = f"+{agg['mean_signed_error']}h" if agg['mean_signed_error'] >= 0 else f"{agg['mean_signed_error']}h"
+            lines.append(f"| {alias} | {agg['mape']}% | {agg['mdape']}% "
+                         f"| {agg['in_range']}/{agg['n']} | {agg['within_2x']}/{agg['n']} "
+                         f"| {bias} | {agg['n_over']}O/{agg['n_under']}U | {agg['avg_elapsed_ms']}ms |")
+        else:
+            lines.append(f"| {alias} | ERROR | — | — | — | — | — | — |")
+
+    # Per-commit table (only executed cases)
+    lines += ["", "## Per-Commit Results", ""]
+    header = "| Commit | GT Range |"
+    sep = "|--------|----------|"
+    for alias in model_aliases:
+        header += f" {alias} |"
+        sep += "------|"
+    lines += [header, sep]
+
+    by_commit = {}
+    for r in results:
+        by_commit.setdefault(r["sha"], {})[r.get("model_alias", "?")] = r
+
+    for case in executed_cases:
+        sha = case["sha"]
+        row = f"| {sha[:7]} | {case['gt_low']}-{case['gt_high']}h |"
+        cr = by_commit.get(sha, {})
+        for alias in model_aliases:
+            r = cr.get(alias)
+            if not r or "error" in r:
+                row += " ERR |"
+            else:
+                status = "**OK**" if r["in_range"] else ("~2x" if r["within_2x"] else "MISS")
+                row += f" {r['estimate_mid']:.0f}h ({status}) |"
+        lines.append(row)
+
+    # Reasoning details
+    lines += ["", "## Model Reasoning (per commit)", ""]
+    for case in executed_cases:
+        sha = case["sha"]
+        lines.append(f"### {sha[:7]} — {case['label']}")
+        lines.append(f"GT: {case['gt_low']}-{case['gt_high']}h")
+        lines.append("")
+        cr = by_commit.get(sha, {})
+        for alias in model_aliases:
+            r = cr.get(alias)
+            if not r or "error" in r:
+                lines.append(f"**{alias}:** ERROR")
+            else:
+                lines.append(f"**{alias}:** {r['estimate_low']:.0f}-{r['estimate_mid']:.0f}-"
+                             f"{r['estimate_high']:.0f}h (conf={r['confidence']}, APE={r['ape']:.0f}%)")
+                lines.append(f"> {r['reasoning']}")
+            lines.append("")
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+
+    return json_path, md_path
+
+
 # ===== CLI =====
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="FD v3 Holistic Estimation Experiment — Tasks 1-5"
+        description="FD v3 Holistic Estimation Experiment"
     )
     parser.add_argument(
         "--repo",
@@ -745,79 +996,60 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_calibration(path):
-    """Load custom calibration from a JSON file, merging over defaults."""
-    cal = dict(CALIBRATION)
-    if path:
-        with open(path, "r", encoding="utf-8") as f:
-            overrides = json.load(f)
-        cal.update(overrides)
-    return cal
-
-
-def run_dry_run(args, cal):
-    """Extract commit data and print formatted prompts for inspection."""
-    repo = args.repo
-
-    if args.commit:
-        cases = [{"sha": args.commit, "label": f"single commit {args.commit}",
-                  "gt_low": None, "gt_high": None}]
-    else:
-        cases = GT_CASES
-
-    print(f"=== FD v3 DRY RUN — {len(cases)} commit(s) ===")
-    print(f"Repo: {repo}")
-    print(f"Models: {', '.join(args.models)}")
-    print()
-
-    system_prompt = build_system_prompt(cal)
-    print("=== SYSTEM PROMPT ===")
-    print(system_prompt)
-    print()
-
-    for i, case in enumerate(cases, 1):
-        sha = case["sha"]
-        label = case["label"]
-        gt_low = case.get("gt_low")
-        gt_high = case.get("gt_high")
-
-        print(f"{'='*70}")
-        print(f"[{i}/{len(cases)}] {label}")
-        if gt_low is not None:
-            print(f"Ground truth: {gt_low}-{gt_high}h")
-        print(f"{'='*70}")
-
-        try:
-            print(f"Extracting commit data for {sha}...")
-            commit_data = extract_commit_data(repo, sha)
-            v3_meta = compute_v3_metadata(commit_data)
-
-            print(f"  Files: {commit_data['total_files']} total, "
-                  f"{commit_data['filter_result']['filter_stats']['llm']} LLM-required")
-            print(f"  Language: {v3_meta['primary_language']}")
-            print(f"  Entropy: {v3_meta['entropy']:.2f} ({v3_meta['entropy_label']})")
-            print()
-
-            user_prompt = build_v3_prompt(commit_data, v3_meta)
-            print("--- USER PROMPT ---")
-            print(user_prompt)
-            print()
-
-        except Exception as e:
-            print(f"  ERROR: {e}")
-            print()
-
-
 if __name__ == "__main__":
     args = parse_args()
 
-    cal = load_calibration(args.calibration) if args.calibration else CALIBRATION
+    if not os.path.isdir(args.repo):
+        print(f"ERROR: repo not found at {args.repo}")
+        sys.exit(1)
+
+    # Load API key
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".env")
+        if os.path.exists(env_path):
+            with open(env_path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("OPENROUTER_API_KEY=") and not line.startswith("#"):
+                        api_key = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+    if not api_key and not args.dry_run:
+        print("ERROR: OPENROUTER_API_KEY not set")
+        sys.exit(1)
+
+    model_aliases = args.models  # already a list from nargs="+"
+
+    # Load calibration overrides
+    calibration = dict(CALIBRATION)
+    if args.calibration:
+        with open(args.calibration, "r", encoding="utf-8") as f:
+            overrides = json.load(f)
+        calibration.update(overrides)
+        print(f"Calibration overrides loaded from {args.calibration}")
+
+    results, executed_cases = run_experiment(
+        args.repo, model_aliases, api_key,
+        no_cache=args.no_cache, single_commit=args.commit, dry_run=args.dry_run,
+        calibration=calibration,
+    )
 
     if args.dry_run:
-        run_dry_run(args, cal)
-    else:
-        print("Not yet implemented — use --dry-run to see prompts")
-        print(f"  Repo: {args.repo}")
-        print(f"  Models: {', '.join(args.models)}")
-        print(f"  Commits: {args.commit or f'all {len(GT_CASES)} GT cases'}")
+        print("Dry run complete — no API calls made.")
         sys.exit(0)
+
+    json_path, md_path = generate_reports(results, model_aliases, executed_cases)
+
+    print(f"\n{'='*70}")
+    print(f"SUMMARY")
+    print(f"{'='*70}")
+    for alias in model_aliases:
+        agg = compute_aggregate(results, alias)
+        if agg:
+            bias = f"+{agg['mean_signed_error']}" if agg['mean_signed_error'] >= 0 else f"{agg['mean_signed_error']}"
+            print(f"  {alias:8s} MAPE={agg['mape']:5.1f}%  MdAPE={agg['mdape']:5.1f}%  "
+                  f"InRange={agg['in_range']}/{agg['n']}  Within2x={agg['within_2x']}/{agg['n']}  "
+                  f"Bias={bias}h  Over/Under={agg['n_over']}/{agg['n_under']}")
+
+    print(f"\nJSON: {json_path}")
+    print(f"MD:   {md_path}")
