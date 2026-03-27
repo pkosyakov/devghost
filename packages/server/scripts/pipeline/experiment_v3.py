@@ -9,8 +9,8 @@ Usage:
     python experiment_v3.py --repo /path/to/repo --models opus sonnet --commit 188c43e
     python experiment_v3.py --repo /path/to/repo --no-cache
 
-Tasks implemented here: 1-4 (skeleton, git extraction, v3 metadata, prompt formatting).
-Tasks 5-7 (API call, main loop, reports) will be added separately.
+Tasks implemented here: 1-5 (skeleton, git extraction, v3 metadata, prompt formatting, API call).
+Tasks 6-7 (main loop, reports) will be added separately.
 """
 
 import re
@@ -18,9 +18,15 @@ import os
 import sys
 import math
 import json
+import time
+import random
+import hashlib
 import argparse
 import subprocess
 from collections import Counter
+from datetime import datetime
+
+import requests
 
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -83,6 +89,9 @@ CALIBRATION = {
 }
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "experiment_v3")
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "experiment_v3_results")
 
 # Extension to language mapping for language detection
 EXT_TO_LANG = {
@@ -541,11 +550,167 @@ def build_v3_prompt(commit_data, v3_meta):
     return "\n".join(lines)
 
 
+# ===== TASK 5: OPENROUTER API CALL WITH CACHING =====
+
+def _cache_key(system, prompt, model, schema=None):
+    """Deterministic cache key from prompt content + model + schema."""
+    schema_str = json.dumps(schema, sort_keys=True) if schema else ""
+    key_str = f"{model}\n---\n{system}\n---\n{prompt}\n---\n{schema_str}"
+    return hashlib.sha256(key_str.encode()).hexdigest()
+
+
+def _cache_path(model, key):
+    model_slug = re.sub(r'[^\w\-.]', '_', model)
+    return os.path.join(CACHE_DIR, model_slug, f"{key}.json")
+
+
+def read_cache(system, prompt, model, schema=None):
+    key = _cache_key(system, prompt, model, schema)
+    path = _cache_path(model, key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data["response"], data["meta"]
+    except (json.JSONDecodeError, OSError, KeyError):
+        return None
+
+
+def write_cache(system, prompt, model, response, meta, schema=None):
+    key = _cache_key(system, prompt, model, schema)
+    path = _cache_path(model, key)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"model": model, "response": response, "meta": meta,
+                        "cached_at": datetime.now().isoformat()}, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    finally:
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except OSError: pass
+
+
+def _extract_json(text):
+    """Extract JSON from text that may contain markdown or extra text."""
+    text = text.strip()
+    try: return json.loads(text)
+    except json.JSONDecodeError: pass
+    m = re.search(r'```(?:json)?\s*\n?([\s\S]*?)```', text)
+    if m:
+        try: return json.loads(m.group(1).strip())
+        except json.JSONDecodeError: pass
+    start = text.find('{')
+    if start >= 0:
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == '{': depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    try: return json.loads(text[start:i + 1])
+                    except json.JSONDecodeError: break
+    return None
+
+
+def call_openrouter(system, prompt, model, api_key, schema=None, no_cache=False):
+    """Call OpenRouter API with caching and retry. Returns (parsed, meta)."""
+    if not no_cache:
+        cached = read_cache(system, prompt, model, schema)
+        if cached:
+            resp, meta = cached
+            meta["cache_hit"] = True
+            return resp, meta
+
+    system_content = system
+    if schema:
+        system_content += f"\n\nYou MUST respond with ONLY valid JSON (no markdown, no extra text) matching this schema:\n{json.dumps(schema)}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 512,
+        "seed": 42,
+        "provider": {"allow_fallbacks": True, "require_parameters": False},
+    }
+    if schema:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {"name": "response", "strict": True, "schema": schema},
+        }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    max_retries = 3
+    last_error = None
+    for attempt in range(max_retries + 1):
+        start = time.time()
+        try:
+            resp = requests.post(OPENROUTER_BASE_URL, json=payload, headers=headers, timeout=(20, 120))
+            elapsed_ms = (time.time() - start) * 1000
+
+            if resp.status_code != 200:
+                last_error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+                if resp.status_code in {429, 500, 502, 503, 504} and attempt < max_retries:
+                    time.sleep(2 ** attempt + random.uniform(0, 1))
+                    continue
+                return None, {"error": last_error, "elapsed_ms": elapsed_ms}
+
+            data = resp.json()
+            if "error" in data:
+                err = data["error"]
+                last_error = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+                return None, {"error": last_error, "elapsed_ms": elapsed_ms}
+
+            content = data["choices"][0]["message"]["content"]
+            text = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
+            parsed = _extract_json(text) if schema else text
+
+            if schema and parsed is None:
+                last_error = f"Invalid JSON: {text[:200]}"
+                if attempt < max_retries:
+                    time.sleep(1)
+                    continue
+                return None, {"error": last_error, "elapsed_ms": elapsed_ms}
+
+            usage = data.get("usage", {})
+            meta = {
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "elapsed_ms": elapsed_ms,
+                "provider": data.get("provider", "?"),
+                "cache_hit": False,
+            }
+            if not no_cache:
+                write_cache(system, prompt, model, parsed, meta, schema)
+            return parsed, meta
+
+        except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
+            last_error = str(e)
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                continue
+
+    return None, {"error": last_error, "elapsed_ms": 0}
+
+
 # ===== CLI =====
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="FD v3 Holistic Estimation Experiment — Tasks 1-4"
+        description="FD v3 Holistic Estimation Experiment — Tasks 1-5"
     )
     parser.add_argument(
         "--repo",
