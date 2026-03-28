@@ -947,9 +947,11 @@ function mapToCommitAnalysis(
     complexity: result.analysis?.cognitive_complexity ?? null,
     confidence,
     method: result.method ?? null,
-    llmModel: result.method?.startsWith('FD') || result.method === 'root_commit_skip' || result.method === 'error'
+    llmModel: result.method === 'root_commit_skip' || result.method === 'error'
       ? null
-      : llmModel,
+      : result.method?.startsWith('FD')
+        ? (result.model || process.env.FD_LARGE_LLM_MODEL || null)
+        : llmModel,
   };
 }
 

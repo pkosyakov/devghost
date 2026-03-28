@@ -27,6 +27,7 @@ export interface PipelineCommitResult {
   complexity_score?: number;
   complexity_guard?: string | null;
   fd_details?: Record<string, unknown> | null;
+  model?: string | null;
   llm_calls?: Array<{
     prompt_tokens?: number;
     completion_tokens?: number;
