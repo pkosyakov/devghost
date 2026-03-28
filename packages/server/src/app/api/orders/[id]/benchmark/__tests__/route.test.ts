@@ -93,6 +93,56 @@ describe('POST /api/orders/[id]/benchmark', () => {
     expect(snapshot.fdLargeProvider).toBe('openrouter');
   });
 
+  it('dispatches to Modal when PIPELINE_MODE=modal', async () => {
+    process.env.PIPELINE_MODE = 'modal';
+    process.env.MODAL_ENDPOINT_URL = 'https://modal.test/trigger';
+    process.env.MODAL_WEBHOOK_SECRET = 'test-secret';
+
+    mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
+    mockJobFindFirst
+      .mockResolvedValueOnce(null)   // no running job
+      .mockResolvedValueOnce({ id: 'base-job' })  // base job
+      .mockResolvedValueOnce(null);  // no previous same model
+    mockJobCreate.mockResolvedValue({ id: 'modal-job' });
+
+    // Mock prisma.analysisJob.update for saving flags + modalCallId
+    const mockJobUpdate = vi.fn().mockResolvedValue({});
+    const db = (await import('@/lib/db')).default;
+    (db.analysisJob as any).update = mockJobUpdate;
+
+    // Mock fetch: OpenRouter catalog + preflight + Modal trigger
+    (global.fetch as any) = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 32768 }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ modal_call_id: 'mc-1' }) });
+
+    const req = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
+    const res = await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+    expect(res.status).toBe(200);
+
+    // Verify Modal was triggered (3rd fetch call)
+    const fetchCalls = (global.fetch as any).mock.calls;
+    const modalCall = fetchCalls[2];
+    expect(modalCall[0]).toBe('https://modal.test/trigger');
+    const modalBody = JSON.parse(modalCall[1].body);
+    expect(modalBody.job_id).toBe('modal-job');
+    expect(modalBody.auth_token).toBe('test-secret');
+
+    // Verify pipeline flags saved
+    const updateCall = mockJobUpdate.mock.calls[0];
+    expect(updateCall[0].data.executionMode).toBe('modal');
+    expect(updateCall[0].data.cacheMode).toBe('off');
+    expect(updateCall[0].data.skipBilling).toBe(true);
+
+    // processAnalysisJob should NOT be called
+    const { processAnalysisJob } = await import('@/lib/services/analysis-worker');
+    expect(processAnalysisJob).not.toHaveBeenCalled();
+
+    delete process.env.PIPELINE_MODE;
+    delete process.env.MODAL_ENDPOINT_URL;
+    delete process.env.MODAL_WEBHOOK_SECRET;
+  });
+
   it('FD v3 config affects fingerprint', async () => {
     mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
     mockJobFindFirst

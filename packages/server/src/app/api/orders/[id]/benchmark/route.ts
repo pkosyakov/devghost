@@ -246,17 +246,60 @@ export async function POST(
     },
   });
 
-  // Fire-and-forget — return immediately, client polls /progress
-  processAnalysisJob(job.id, {
-    isBenchmark: true,
-    llmConfigOverride: resolvedConfig,
-    noLlmCache: !!previousSameModelRun,
-    contextLength: effectiveContextLength,
-    failFast: true,
-    promptRepeat: !!body.promptRepeat,
-  }).catch((err) => {
-    analysisLogger.error({ err, jobId: job.id, orderId: id }, 'Benchmark failed');
-  });
+  const pipelineMode = process.env.PIPELINE_MODE || 'local';
+
+  if (pipelineMode === 'modal') {
+    // Save pipeline flags for Modal worker to read
+    await prisma.analysisJob.update({
+      where: { id: job.id },
+      data: {
+        executionMode: 'modal',
+        cacheMode: 'off',
+        skipBilling: true,
+      },
+    });
+
+    // Trigger Modal — if fails, job stays PENDING, watchdog retries
+    try {
+      const resp = await fetch(process.env.MODAL_ENDPOINT_URL!, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_id: job.id,
+          auth_token: process.env.MODAL_WEBHOOK_SECRET,
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        await prisma.analysisJob.update({
+          where: { id: job.id },
+          data: { modalCallId: data.modal_call_id },
+        });
+      } else {
+        analysisLogger.warn(
+          { status: resp.status, jobId: job.id },
+          'Modal benchmark trigger failed — job stays PENDING for watchdog retry',
+        );
+      }
+    } catch (err) {
+      analysisLogger.warn(
+        { err, jobId: job.id },
+        'Modal benchmark trigger network error — job stays PENDING for watchdog retry',
+      );
+    }
+  } else {
+    // Local mode — fire-and-forget, client polls /progress
+    processAnalysisJob(job.id, {
+      isBenchmark: true,
+      llmConfigOverride: resolvedConfig,
+      noLlmCache: !!previousSameModelRun,
+      contextLength: effectiveContextLength,
+      failFast: true,
+      promptRepeat: !!body.promptRepeat,
+    }).catch((err) => {
+      analysisLogger.error({ err, jobId: job.id, orderId: id }, 'Benchmark failed');
+    });
+  }
 
   return apiResponse({ jobId: job.id, status: 'PENDING' });
 }
