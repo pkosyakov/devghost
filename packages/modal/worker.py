@@ -217,7 +217,8 @@ def run_analysis(job_id: str):
                 code="LLM_SNAPSHOT_INVALID",
                 payload={"error": fatal_message},
             )
-            set_job_error(conn, job_id, fatal_message, fatal=True)
+            set_job_error(conn, job_id, fatal_message, fatal=True,
+                          skip_order_update=is_benchmark)
             return
 
         github_token = load_github_token(conn, order["user_id"])
