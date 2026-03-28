@@ -1369,6 +1369,16 @@ def setup_llm_env(llm_config):
         if env_key not in os.environ:
             os.environ[env_key] = default
 
+    # FD v3 config from snapshot (overrides Modal Secret values when present).
+    # Benchmarks snapshot FD config at launch time — this ensures the worker
+    # uses the same FD routing as intended, not whatever the Secret currently has.
+    if llm_config.get("fdV3Enabled") is not None:
+        os.environ["FD_V3_ENABLED"] = str(llm_config["fdV3Enabled"]).lower()
+    if llm_config.get("fdLargeModel"):
+        os.environ["FD_LARGE_LLM_MODEL"] = llm_config["fdLargeModel"]
+    if llm_config.get("fdLargeProvider"):
+        os.environ["FD_LARGE_LLM_PROVIDER"] = llm_config["fdLargeProvider"]
+
 
 def _utc_iso_days_ago(days: int) -> str:
     dt = datetime.now(timezone.utc) - timedelta(days=days)
