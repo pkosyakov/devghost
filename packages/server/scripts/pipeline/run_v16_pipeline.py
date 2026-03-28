@@ -1347,6 +1347,7 @@ def main():
                 'completion_tokens': commit_completion_tokens,
                 'duration_ms': round(commit_duration_ms, 1),
                 'openrouter_cost_usd': round(commit_cost, 6),
+                'model': FD_LARGE_LLM_MODEL if method.startswith('FD') else OPENROUTER_MODEL,
             }
 
             # J: ensemble fields
