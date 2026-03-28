@@ -24,8 +24,9 @@ export async function POST(
   const body = parsed.data;
   const { provider, model } = body;
 
+  const isAdmin = session.user.role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
+    where: { id, ...(isAdmin ? {} : { userId: session.user.id }) },
   });
   if (!order) return apiError('Order not found', 404);
 
@@ -270,8 +271,9 @@ export async function GET(
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
+  const isAdminGet = session.user.role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
+    where: { id, ...(isAdminGet ? {} : { userId: session.user.id }) },
     select: { id: true },
   });
   if (!order) return apiError('Order not found', 404);

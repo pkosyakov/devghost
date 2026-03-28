@@ -22,8 +22,9 @@ export async function GET(
   }
   const { id } = await params;
 
+  const isAdmin = (session.user as any).role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
+    where: { id, ...(isAdmin ? {} : { userId: session.user.id }) },
   });
   if (!order) {
     return NextResponse.json({ error: 'Order not found' }, { status: 404 });
