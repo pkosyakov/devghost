@@ -188,18 +188,28 @@ export async function POST(
   const effectiveContextLength = computeEffectiveContext(rawContextLength, provider as 'ollama' | 'openrouter');
 
   // Snapshot: full config minus secrets
+  const fdV3Enabled = process.env.FD_V3_ENABLED?.toLowerCase() === 'true' || process.env.FD_V3_ENABLED === '1';
+  const fdLargeModel = process.env.FD_LARGE_LLM_MODEL?.trim() || null;
+  const fdLargeProvider = process.env.FD_LARGE_LLM_PROVIDER?.trim().toLowerCase() || null;
+
   const snapshot = {
     ...resolvedConfig,
     openrouter: { ...resolvedConfig.openrouter, apiKey: '[REDACTED]' },
     contextLength: rawContextLength,           // raw value for audit trail
     effectiveContextLength,                     // what pipeline actually uses
     promptRepeat: !!body.promptRepeat,
+    fdV3Enabled,
+    fdLargeModel,
+    fdLargeProvider,
   };
 
   // Fingerprint: hash of config-relevant fields
   const fpData = JSON.stringify({
     provider, model,
     contextLength: effectiveContextLength,     // different context = different config
+    fdV3Enabled,
+    fdLargeModel,
+    fdLargeProvider,
     ...(provider === 'openrouter' ? {
       providerOrder: resolvedConfig.openrouter.providerOrder,
       providerIgnore: resolvedConfig.openrouter.providerIgnore,
