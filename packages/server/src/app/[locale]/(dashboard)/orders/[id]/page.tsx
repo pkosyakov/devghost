@@ -563,7 +563,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       }
       return data;
     },
-    enabled: !!benchmarkJobId,
+    enabled: isAdmin && !!benchmarkJobId,
     refetchInterval: benchmarkJobId ? livePollMs : false,
   });
 
@@ -577,7 +577,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       const json = await res.json();
       return json.data ?? [];
     },
-    enabled: order?.status === 'COMPLETED',
+    enabled: isAdmin && order?.status === 'COMPLETED',
   });
 
   // Clear analysisStarted flag once order transitions to PROCESSING
@@ -1737,7 +1737,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           )}
 
           {/* Benchmark */}
-          <BenchmarkLauncher
+          {isAdmin && <BenchmarkLauncher
             orderId={id}
             disabled={!!benchmarkJobId}
             commitCount={totalCommits || undefined}
@@ -1751,10 +1751,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               setBenchmarkLog([]);
               benchmarkLogSinceRef.current = 0;
             }}
-          />
+          />}
 
           {/* Inline benchmark progress */}
-          {benchmarkJobId && benchmarkProgress && (
+          {isAdmin && benchmarkJobId && benchmarkProgress && (
             <Card className="border-purple-200">
               <CardContent className="pt-4 space-y-2">
                 <div className="flex items-center justify-between">
@@ -1877,14 +1877,14 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             <TabsList>
               <TabsTrigger value="overview">{t('detail.overview')}</TabsTrigger>
               <TabsTrigger value="commits">{t('detail.commits')}</TabsTrigger>
-              <TabsTrigger value="benchmark">
+              {isAdmin && <TabsTrigger value="benchmark">
                 {t('detail.benchmark')}
                 {benchmarkRuns.filter(r => r.status === 'COMPLETED').length > 0 && (
                   <span className="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full">
                     {benchmarkRuns.filter(r => r.status === 'COMPLETED').length}
                   </span>
                 )}
-              </TabsTrigger>
+              </TabsTrigger>}
               <TabsTrigger value="calendar">{t('detail.effortTimeline')}</TabsTrigger>
             </TabsList>
 
@@ -1946,9 +1946,11 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               <CommitAnalysisTable orderId={id} />
             </TabsContent>
 
-            <TabsContent value="benchmark">
-              <BenchmarkMatrix orderId={id} />
-            </TabsContent>
+            {isAdmin && (
+              <TabsContent value="benchmark">
+                <BenchmarkMatrix orderId={id} />
+              </TabsContent>
+            )}
 
             <TabsContent value="calendar">
               <EffortTimeline orderId={id} />
