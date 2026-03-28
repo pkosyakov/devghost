@@ -1,0 +1,162 @@
+[
+  {
+    "sha": "f4805502",
+    "original_gt_low": 0.5,
+    "original_gt_high": 1.5,
+    "revised_gt_low": 2.5,
+    "revised_gt_high": 4.5,
+    "rationale": "Billing change mirrored in API estimator and temporal worker, plus six test updates. This is a small but real cross-module behavior change, not a 30-60 minute fix."
+  },
+  {
+    "sha": "cd320b77",
+    "original_gt_low": 0.3,
+    "original_gt_high": 1.0,
+    "revised_gt_low": 1.5,
+    "revised_gt_high": 3.0,
+    "rationale": "Timing-sensitive React state synchronization bug with cooldown logic, refs, and remount guard. Debugging and validating this kind of autosave race takes longer than the diff size suggests."
+  },
+  {
+    "sha": "cba942fb",
+    "original_gt_low": 0.3,
+    "original_gt_high": 0.8,
+    "revised_gt_low": 0.75,
+    "revised_gt_high": 1.5,
+    "rationale": "Still a genuinely small fix: dependency cleanup, ref-based equality guard, and one callback memoization. This is the only case in the set that still looks plausibly sub-2h."
+  },
+  {
+    "sha": "f63a460b",
+    "original_gt_low": 0.3,
+    "original_gt_high": 0.8,
+    "revised_gt_low": 1.5,
+    "revised_gt_high": 3.0,
+    "rationale": "Cross-cutting UI guard plus shared ts-api validation across multiple result tables. Mechanically small, but it touches several entry points and backend validation at once."
+  },
+  {
+    "sha": "082eaf12",
+    "original_gt_low": 0.5,
+    "original_gt_high": 1.5,
+    "revised_gt_low": 3.0,
+    "revised_gt_high": 5.0,
+    "rationale": "Database migration plus temporal activity contract change plus workflow quota logic. This is a small full-stack workflow fix, not a quick patch."
+  },
+  {
+    "sha": "026ac924",
+    "original_gt_low": 1.0,
+    "original_gt_high": 2.5,
+    "revised_gt_low": 3.0,
+    "revised_gt_high": 5.0,
+    "rationale": "New authenticated admin API route with validation and Metronome event emission, plus a new admin UI flow. Focused work, but clearly more than 1-2 hours."
+  },
+  {
+    "sha": "07809e14",
+    "original_gt_low": 0.5,
+    "original_gt_high": 1.5,
+    "revised_gt_low": 2.0,
+    "revised_gt_high": 4.0,
+    "rationale": "Adds a new LinkedIn blocker path in scheduler logic and nearly 100 lines of integration tests. The test coverage alone pushes this above the original GT."
+  },
+  {
+    "sha": "d674fef7",
+    "original_gt_low": 0.5,
+    "original_gt_high": 1.5,
+    "revised_gt_low": 1.5,
+    "revised_gt_high": 3.0,
+    "rationale": "Introduces a new reusable inbox rendering component and wires it into multiple views. Compact feature, but still new UI/component work rather than a tweak."
+  },
+  {
+    "sha": "57251337",
+    "original_gt_low": 2.0,
+    "original_gt_high": 5.0,
+    "revised_gt_low": 3.0,
+    "revised_gt_high": 5.0,
+    "rationale": "New billing metrics module plus client/service instrumentation and service-factory wiring. Mostly straightforward instrumentation, but broader than a 2h task."
+  },
+  {
+    "sha": "b6d87eae",
+    "original_gt_low": 2.0,
+    "original_gt_high": 4.0,
+    "revised_gt_low": 4.0,
+    "revised_gt_high": 6.5,
+    "rationale": "Search relevance tuning across multiple libraries, inner_hits handling, and substantial test additions. This is algorithm and ranking work, not a small feature."
+  },
+  {
+    "sha": "f82dd9d0",
+    "original_gt_low": 1.5,
+    "original_gt_high": 3.5,
+    "revised_gt_low": 3.5,
+    "revised_gt_high": 6.0,
+    "rationale": "Reply composer signature preview plus job-title editing spans API, service wiring, frontend modal state, invalidation logic, and tests."
+  },
+  {
+    "sha": "16b88e6a",
+    "original_gt_low": 2.0,
+    "original_gt_high": 5.0,
+    "revised_gt_low": 5.5,
+    "revised_gt_high": 8.5,
+    "rationale": "Real feature: repository extension, scheduler DNC logic, new web components, and a large dedicated test block. The original GT materially understated the scope."
+  },
+  {
+    "sha": "4544aacc",
+    "original_gt_low": 1.0,
+    "original_gt_high": 2.5,
+    "revised_gt_low": 3.0,
+    "revised_gt_high": 5.0,
+    "rationale": "New heartbeat webhook, script-generation changes, config/env plumbing, and verification-flow rewrite. Small in LOC, medium in moving parts."
+  },
+  {
+    "sha": "37ce974c",
+    "original_gt_low": 4.0,
+    "original_gt_high": 8.0,
+    "revised_gt_low": 8.0,
+    "revised_gt_high": 14.0,
+    "rationale": "Large mailbox reconnect feature with API endpoints, popup flow, provider client updates, service refactor, and extensive integration tests."
+  },
+  {
+    "sha": "679ac18e",
+    "original_gt_low": 2.0,
+    "original_gt_high": 5.0,
+    "revised_gt_low": 3.5,
+    "revised_gt_high": 6.0,
+    "rationale": "Primarily UI work, but spread across sidebar credits and campaign-builder surfaces with non-trivial component redesign."
+  },
+  {
+    "sha": "82e02c56",
+    "original_gt_low": 4.0,
+    "original_gt_high": 8.0,
+    "revised_gt_low": 8.0,
+    "revised_gt_high": 13.0,
+    "rationale": "Large frontend feature set for CRM property mapping with multiple new generic components, tables, hooks, constants, and type surfaces."
+  },
+  {
+    "sha": "a84b7843",
+    "original_gt_low": 4.0,
+    "original_gt_high": 9.0,
+    "revised_gt_low": 6.5,
+    "revised_gt_high": 10.5,
+    "rationale": "Full-stack billing UX improvement with backend estimation changes, runway logic, new hooks/components, and heavy test additions."
+  },
+  {
+    "sha": "ef323c98",
+    "original_gt_low": 3.0,
+    "original_gt_high": 7.0,
+    "revised_gt_low": 4.0,
+    "revised_gt_high": 7.0,
+    "rationale": "Perf-oriented architectural cleanup: async Inngest flows, model/config swaps, prompt tightening, and frontend polling updates."
+  },
+  {
+    "sha": "680dcb92",
+    "original_gt_low": 3.0,
+    "original_gt_high": 6.0,
+    "revised_gt_low": 5.0,
+    "revised_gt_high": 8.5,
+    "rationale": "Meaningful refactor with two migrations, repository rewrite from dedicated table to base tasks model, and related task-query updates."
+  },
+  {
+    "sha": "a579d648",
+    "original_gt_low": 2.0,
+    "original_gt_high": 5.0,
+    "revised_gt_low": 3.5,
+    "revised_gt_high": 6.0,
+    "rationale": "Deletion-heavy, but not free: removal of mock inbox path, switching profile/header to real data, and cleanup across API, web, tests, and logging."
+  }
+]

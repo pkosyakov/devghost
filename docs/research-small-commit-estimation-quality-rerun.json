@@ -1,0 +1,929 @@
+{
+  "timestamp": "2026-03-27T20:49:58.699243",
+  "gt_cases": [
+    {
+      "sha": "f4805502",
+      "original_gt_low": 0.5,
+      "original_gt_high": 1.5,
+      "revised_gt_low": 2.5,
+      "revised_gt_high": 4.5,
+      "rationale": "Billing change mirrored in API estimator and temporal worker, plus six test updates. This is a small but real cross-module behavior change, not a 30-60 minute fix."
+    },
+    {
+      "sha": "cd320b77",
+      "original_gt_low": 0.3,
+      "original_gt_high": 1.0,
+      "revised_gt_low": 1.5,
+      "revised_gt_high": 3.0,
+      "rationale": "Timing-sensitive React state synchronization bug with cooldown logic, refs, and remount guard. Debugging and validating this kind of autosave race takes longer than the diff size suggests."
+    },
+    {
+      "sha": "cba942fb",
+      "original_gt_low": 0.3,
+      "original_gt_high": 0.8,
+      "revised_gt_low": 0.75,
+      "revised_gt_high": 1.5,
+      "rationale": "Still a genuinely small fix: dependency cleanup, ref-based equality guard, and one callback memoization. This is the only case in the set that still looks plausibly sub-2h."
+    },
+    {
+      "sha": "f63a460b",
+      "original_gt_low": 0.3,
+      "original_gt_high": 0.8,
+      "revised_gt_low": 1.5,
+      "revised_gt_high": 3.0,
+      "rationale": "Cross-cutting UI guard plus shared ts-api validation across multiple result tables. Mechanically small, but it touches several entry points and backend validation at once."
+    },
+    {
+      "sha": "082eaf12",
+      "original_gt_low": 0.5,
+      "original_gt_high": 1.5,
+      "revised_gt_low": 3.0,
+      "revised_gt_high": 5.0,
+      "rationale": "Database migration plus temporal activity contract change plus workflow quota logic. This is a small full-stack workflow fix, not a quick patch."
+    },
+    {
+      "sha": "026ac924",
+      "original_gt_low": 1.0,
+      "original_gt_high": 2.5,
+      "revised_gt_low": 3.0,
+      "revised_gt_high": 5.0,
+      "rationale": "New authenticated admin API route with validation and Metronome event emission, plus a new admin UI flow. Focused work, but clearly more than 1-2 hours."
+    },
+    {
+      "sha": "07809e14",
+      "original_gt_low": 0.5,
+      "original_gt_high": 1.5,
+      "revised_gt_low": 2.0,
+      "revised_gt_high": 4.0,
+      "rationale": "Adds a new LinkedIn blocker path in scheduler logic and nearly 100 lines of integration tests. The test coverage alone pushes this above the original GT."
+    },
+    {
+      "sha": "d674fef7",
+      "original_gt_low": 0.5,
+      "original_gt_high": 1.5,
+      "revised_gt_low": 1.5,
+      "revised_gt_high": 3.0,
+      "rationale": "Introduces a new reusable inbox rendering component and wires it into multiple views. Compact feature, but still new UI/component work rather than a tweak."
+    },
+    {
+      "sha": "57251337",
+      "original_gt_low": 2.0,
+      "original_gt_high": 5.0,
+      "revised_gt_low": 3.0,
+      "revised_gt_high": 5.0,
+      "rationale": "New billing metrics module plus client/service instrumentation and service-factory wiring. Mostly straightforward instrumentation, but broader than a 2h task."
+    },
+    {
+      "sha": "b6d87eae",
+      "original_gt_low": 2.0,
+      "original_gt_high": 4.0,
+      "revised_gt_low": 4.0,
+      "revised_gt_high": 6.5,
+      "rationale": "Search relevance tuning across multiple libraries, inner_hits handling, and substantial test additions. This is algorithm and ranking work, not a small feature."
+    },
+    {
+      "sha": "f82dd9d0",
+      "original_gt_low": 1.5,
+      "original_gt_high": 3.5,
+      "revised_gt_low": 3.5,
+      "revised_gt_high": 6.0,
+      "rationale": "Reply composer signature preview plus job-title editing spans API, service wiring, frontend modal state, invalidation logic, and tests."
+    },
+    {
+      "sha": "16b88e6a",
+      "original_gt_low": 2.0,
+      "original_gt_high": 5.0,
+      "revised_gt_low": 5.5,
+      "revised_gt_high": 8.5,
+      "rationale": "Real feature: repository extension, scheduler DNC logic, new web components, and a large dedicated test block. The original GT materially understated the scope."
+    },
+    {
+      "sha": "4544aacc",
+      "original_gt_low": 1.0,
+      "original_gt_high": 2.5,
+      "revised_gt_low": 3.0,
+      "revised_gt_high": 5.0,
+      "rationale": "New heartbeat webhook, script-generation changes, config/env plumbing, and verification-flow rewrite. Small in LOC, medium in moving parts."
+    },
+    {
+      "sha": "37ce974c",
+      "original_gt_low": 4.0,
+      "original_gt_high": 8.0,
+      "revised_gt_low": 8.0,
+      "revised_gt_high": 14.0,
+      "rationale": "Large mailbox reconnect feature with API endpoints, popup flow, provider client updates, service refactor, and extensive integration tests."
+    },
+    {
+      "sha": "679ac18e",
+      "original_gt_low": 2.0,
+      "original_gt_high": 5.0,
+      "revised_gt_low": 3.5,
+      "revised_gt_high": 6.0,
+      "rationale": "Primarily UI work, but spread across sidebar credits and campaign-builder surfaces with non-trivial component redesign."
+    },
+    {
+      "sha": "82e02c56",
+      "original_gt_low": 4.0,
+      "original_gt_high": 8.0,
+      "revised_gt_low": 8.0,
+      "revised_gt_high": 13.0,
+      "rationale": "Large frontend feature set for CRM property mapping with multiple new generic components, tables, hooks, constants, and type surfaces."
+    },
+    {
+      "sha": "a84b7843",
+      "original_gt_low": 4.0,
+      "original_gt_high": 9.0,
+      "revised_gt_low": 6.5,
+      "revised_gt_high": 10.5,
+      "rationale": "Full-stack billing UX improvement with backend estimation changes, runway logic, new hooks/components, and heavy test additions."
+    },
+    {
+      "sha": "ef323c98",
+      "original_gt_low": 3.0,
+      "original_gt_high": 7.0,
+      "revised_gt_low": 4.0,
+      "revised_gt_high": 7.0,
+      "rationale": "Perf-oriented architectural cleanup: async Inngest flows, model/config swaps, prompt tightening, and frontend polling updates."
+    },
+    {
+      "sha": "680dcb92",
+      "original_gt_low": 3.0,
+      "original_gt_high": 6.0,
+      "revised_gt_low": 5.0,
+      "revised_gt_high": 8.5,
+      "rationale": "Meaningful refactor with two migrations, repository rewrite from dedicated table to base tasks model, and related task-query updates."
+    },
+    {
+      "sha": "a579d648",
+      "original_gt_low": 2.0,
+      "original_gt_high": 5.0,
+      "revised_gt_low": 3.5,
+      "revised_gt_high": 6.0,
+      "rationale": "Deletion-heavy, but not free: removal of mock inbox path, switching profile/header to real data, and cleanup across API, web, tests, and logging."
+    }
+  ],
+  "files_used": {
+    "gt_file": "C:\\Projects\\devghost\\docs\\revised-small-commit-ground-truth.json",
+    "enrichment_file": "C:\\Projects\\devghost\\packages\\server\\scripts\\pipeline\\experiment_v3_results\\experiment_enrichment_2026-03-27_191131.json",
+    "model_file": "C:\\Projects\\devghost\\packages\\server\\scripts\\pipeline\\experiment_v3_results\\model_comparison_small_2026-03-27_194358.json",
+    "production_file": "C:\\Projects\\devghost\\packages\\server\\scripts\\pipeline\\experiment_v3_results\\production_prompts_2026-03-27_202348.json"
+  },
+  "experiment_1": {
+    "variant_a": {
+      "count": 20,
+      "mape": 35.69483255822265,
+      "median_ape": 26.31578947368421,
+      "mae": 1.49375,
+      "in_range": 12,
+      "in_range_pct": 60.0,
+      "bias": 21.382804716783046
+    },
+    "variant_b": {
+      "count": 20,
+      "mape": 35.099594462984555,
+      "median_ape": 21.49122807017544,
+      "mae": 1.46875,
+      "in_range": 12,
+      "in_range_pct": 60.0,
+      "bias": 20.78756662154495
+    },
+    "a_wins": 4,
+    "b_wins": 4,
+    "ties": 12,
+    "size_breakdown": {
+      "A": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 50.74404761904761,
+          "median_ape": 44.44444444444444,
+          "mae": 1.078125,
+          "in_range": 4,
+          "in_range_pct": 50.0,
+          "bias": 50.74404761904761
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 23.477443609022554,
+          "median_ape": 14.285714285714285,
+          "mae": 1.1,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 17.763157894736842
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 27.222436023851326,
+          "median_ape": 26.31578947368421,
+          "mae": 2.25,
+          "in_range": 4,
+          "in_range_pct": 57.14285714285714,
+          "bias": -9.587439441486323
+        }
+      },
+      "B": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 50.44642857142857,
+          "median_ape": 22.619047619047617,
+          "mae": 1.078125,
+          "in_range": 5,
+          "in_range_pct": 62.5,
+          "bias": 50.44642857142857
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 19.467418546365913,
+          "median_ape": 14.285714285714285,
+          "mae": 0.9,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 13.753132832080201
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 28.726195422347566,
+          "median_ape": 29.411764705882355,
+          "mae": 2.3214285714285716,
+          "in_range": 3,
+          "in_range_pct": 42.857142857142854,
+          "bias": -8.083680042990082
+        }
+      }
+    }
+  },
+  "experiment_2": {
+    "aggregates": {
+      "est_ollama_baseline": {
+        "label": "Ollama (local)",
+        "count": 20,
+        "mape": 35.69483255822265,
+        "median_ape": 26.31578947368421,
+        "mae": 1.49375,
+        "in_range": 12,
+        "in_range_pct": 60.0,
+        "bias": 21.382804716783046
+      },
+      "est_openai_gpt_5_1_codex_mini": {
+        "label": "GPT-5.1 Codex Mini",
+        "count": 20,
+        "mape": 29.379093343876626,
+        "median_ape": 26.794258373205736,
+        "mae": 1.36875,
+        "in_range": 14,
+        "in_range_pct": 70.0,
+        "bias": 12.30276281166374
+      },
+      "est_qwen_qwen3_coder": {
+        "label": "Qwen3 Coder",
+        "count": 20,
+        "mape": 29.494410603156734,
+        "median_ape": 23.376623376623375,
+        "mae": 1.44375,
+        "in_range": 12,
+        "in_range_pct": 60.0,
+        "bias": 15.872856718444952
+      },
+      "est_qwen_qwen3_coder_flash": {
+        "label": "Qwen3 Flash",
+        "count": 20,
+        "mape": 27.827459133573683,
+        "median_ape": 14.285714285714285,
+        "mae": 1.16875,
+        "in_range": 15,
+        "in_range_pct": 75.0,
+        "bias": 21.00206230817686
+      },
+      "est_qwen_qwen3_coder_next": {
+        "label": "Qwen3 Next",
+        "count": 20,
+        "mape": 27.089946159218602,
+        "median_ape": 16.228070175438596,
+        "mae": 1.14375,
+        "in_range": 15,
+        "in_range_pct": 75.0,
+        "bias": 22.415760695559456
+      },
+      "est_qwen_qwen3_coder_plus": {
+        "label": "Qwen3 Coder+",
+        "count": 12,
+        "mape": 47.57519169283875,
+        "median_ape": 42.01680672268907,
+        "mae": 1.40625,
+        "in_range": 5,
+        "in_range_pct": 41.66666666666667,
+        "bias": 47.57519169283875
+      }
+    },
+    "ranked": [
+      [
+        "est_qwen_qwen3_coder_next",
+        {
+          "label": "Qwen3 Next",
+          "count": 20,
+          "mape": 27.089946159218602,
+          "median_ape": 16.228070175438596,
+          "mae": 1.14375,
+          "in_range": 15,
+          "in_range_pct": 75.0,
+          "bias": 22.415760695559456
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder_flash",
+        {
+          "label": "Qwen3 Flash",
+          "count": 20,
+          "mape": 27.827459133573683,
+          "median_ape": 14.285714285714285,
+          "mae": 1.16875,
+          "in_range": 15,
+          "in_range_pct": 75.0,
+          "bias": 21.00206230817686
+        }
+      ],
+      [
+        "est_openai_gpt_5_1_codex_mini",
+        {
+          "label": "GPT-5.1 Codex Mini",
+          "count": 20,
+          "mape": 29.379093343876626,
+          "median_ape": 26.794258373205736,
+          "mae": 1.36875,
+          "in_range": 14,
+          "in_range_pct": 70.0,
+          "bias": 12.30276281166374
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder",
+        {
+          "label": "Qwen3 Coder",
+          "count": 20,
+          "mape": 29.494410603156734,
+          "median_ape": 23.376623376623375,
+          "mae": 1.44375,
+          "in_range": 12,
+          "in_range_pct": 60.0,
+          "bias": 15.872856718444952
+        }
+      ],
+      [
+        "est_ollama_baseline",
+        {
+          "label": "Ollama (local)",
+          "count": 20,
+          "mape": 35.69483255822265,
+          "median_ape": 26.31578947368421,
+          "mae": 1.49375,
+          "in_range": 12,
+          "in_range_pct": 60.0,
+          "bias": 21.382804716783046
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder_plus",
+        {
+          "label": "Qwen3 Coder+",
+          "count": 12,
+          "mape": 47.57519169283875,
+          "median_ape": 42.01680672268907,
+          "mae": 1.40625,
+          "in_range": 5,
+          "in_range_pct": 41.66666666666667,
+          "bias": 47.57519169283875
+        }
+      ]
+    ],
+    "size_breakdown": {
+      "est_ollama_baseline": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 50.74404761904761,
+          "median_ape": 44.44444444444444,
+          "mae": 1.078125,
+          "in_range": 4,
+          "in_range_pct": 50.0,
+          "bias": 50.74404761904761
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 23.477443609022554,
+          "median_ape": 14.285714285714285,
+          "mae": 1.1,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 17.763157894736842
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 27.222436023851326,
+          "median_ape": 26.31578947368421,
+          "mae": 2.25,
+          "in_range": 4,
+          "in_range_pct": 57.14285714285714,
+          "bias": -9.587439441486323
+        }
+      },
+      "est_openai_gpt_5_1_codex_mini": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 27.752976190476193,
+          "median_ape": 33.33333333333333,
+          "mae": 0.703125,
+          "in_range": 6,
+          "in_range_pct": 75.0,
+          "bias": -8.705357142857142
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 25.18796992481203,
+          "median_ape": 14.285714285714285,
+          "mae": 1.2,
+          "in_range": 3,
+          "in_range_pct": 60.0,
+          "bias": 19.473684210526315
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 34.231172532808976,
+          "median_ape": 26.31578947368421,
+          "mae": 2.25,
+          "in_range": 5,
+          "in_range_pct": 71.42857142857143,
+          "bias": 31.18995604621434
+        }
+      },
+      "est_qwen_qwen3_coder": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 25.79365079365079,
+          "median_ape": 22.619047619047617,
+          "mae": 0.703125,
+          "in_range": 6,
+          "in_range_pct": 75.0,
+          "bias": 1.9841269841269844
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 23.55263157894737,
+          "median_ape": 14.285714285714285,
+          "mae": 1.2,
+          "in_range": 3,
+          "in_range_pct": 60.0,
+          "bias": 7.161654135338345
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 37.9679782598845,
+          "median_ape": 36.84210526315789,
+          "mae": 2.4642857142857144,
+          "in_range": 3,
+          "in_range_pct": 42.857142857142854,
+          "bias": 37.9679782598845
+        }
+      },
+      "est_qwen_qwen3_coder_flash": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 35.46626984126984,
+          "median_ape": 13.392857142857142,
+          "mae": 0.703125,
+          "in_range": 6,
+          "in_range_pct": 75.0,
+          "bias": 35.46626984126984
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 21.37218045112782,
+          "median_ape": 14.285714285714285,
+          "mae": 1.0,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 15.657894736842104
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 23.708303097953696,
+          "median_ape": 26.31578947368421,
+          "mae": 1.8214285714285714,
+          "in_range": 5,
+          "in_range_pct": 71.42857142857143,
+          "bias": 8.288801964166845
+        }
+      },
+      "est_qwen_qwen3_coder_next": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 27.653769841269842,
+          "median_ape": 13.392857142857142,
+          "mae": 0.515625,
+          "in_range": 7,
+          "in_range_pct": 87.5,
+          "bias": 19.915674603174605
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 27.88220551378446,
+          "median_ape": 23.809523809523807,
+          "mae": 1.3,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 27.88220551378446
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 25.879676697898724,
+          "median_ape": 18.51851851851852,
+          "mae": 1.75,
+          "in_range": 4,
+          "in_range_pct": 57.14285714285714,
+          "bias": 21.368398502410002
+        }
+      },
+      "est_qwen_qwen3_coder_plus": {
+        "Small (3-7 files)": {
+          "count": 7,
+          "mape": 64.68253968253968,
+          "median_ape": 55.55555555555556,
+          "mae": 1.375,
+          "in_range": 2,
+          "in_range_pct": 28.57142857142857,
+          "bias": 64.68253968253968
+        },
+        "Medium (8-15 files)": {
+          "count": 3,
+          "mape": 22.61904761904762,
+          "median_ape": 12.5,
+          "mae": 1.0833333333333333,
+          "in_range": 2,
+          "in_range_pct": 66.66666666666666,
+          "bias": 22.61904761904762
+        },
+        "Large (16-30 files)": {
+          "count": 2,
+          "mape": 25.13368983957219,
+          "median_ape": 25.13368983957219,
+          "mae": 2.0,
+          "in_range": 1,
+          "in_range_pct": 50.0,
+          "bias": 25.13368983957219
+        }
+      }
+    }
+  },
+  "experiment_3": {
+    "aggregates": {
+      "est_ollama": {
+        "label": "Ollama (local)",
+        "count": 20,
+        "mape": 35.69483255822265,
+        "median_ape": 26.31578947368421,
+        "mae": 1.49375,
+        "in_range": 12,
+        "in_range_pct": 60.0,
+        "bias": 21.382804716783046
+      },
+      "est_openai_gpt_5_1_codex_mini": {
+        "label": "GPT-5.1 Codex Mini",
+        "count": 13,
+        "mape": 142.19493956336063,
+        "median_ape": 152.63157894736844,
+        "mae": 7.009615384615385,
+        "in_range": 3,
+        "in_range_pct": 23.076923076923077,
+        "bias": 139.63083699925804
+      },
+      "est_prev_custom": {
+        "label": "Custom single-call baseline",
+        "count": 20,
+        "mape": 29.494410603156734,
+        "median_ape": 23.376623376623375,
+        "mae": 1.44375,
+        "in_range": 12,
+        "in_range_pct": 60.0,
+        "bias": 15.872856718444952
+      },
+      "est_qwen_qwen3_coder": {
+        "label": "Qwen3 Coder",
+        "count": 20,
+        "mape": 52.469889072056255,
+        "median_ape": 51.19047619047619,
+        "mae": 2.44375,
+        "in_range": 6,
+        "in_range_pct": 30.0,
+        "bias": 49.692111294278476
+      },
+      "est_qwen_qwen3_coder_flash": {
+        "label": "Qwen3 Flash",
+        "count": 20,
+        "mape": 121.18987307841797,
+        "median_ape": 109.09090909090908,
+        "mae": 6.61875,
+        "in_range": 0,
+        "in_range_pct": 0.0,
+        "bias": 121.18987307841797
+      },
+      "est_qwen_qwen3_coder_next": {
+        "label": "Qwen3 Next",
+        "count": 20,
+        "mape": 30.739679710267946,
+        "median_ape": 24.867724867724867,
+        "mae": 1.29375,
+        "in_range": 14,
+        "in_range_pct": 70.0,
+        "bias": 21.917624572423332
+      },
+      "est_qwen_qwen3_coder_plus": {
+        "label": "Qwen3 Coder+",
+        "count": 19,
+        "mape": 43.41655868256814,
+        "median_ape": 33.33333333333333,
+        "mae": 2.0065789473684212,
+        "in_range": 9,
+        "in_range_pct": 47.368421052631575,
+        "bias": 42.86254206206952
+      }
+    },
+    "ranked": [
+      [
+        "est_qwen_qwen3_coder_next",
+        {
+          "label": "Qwen3 Next",
+          "count": 20,
+          "mape": 30.739679710267946,
+          "median_ape": 24.867724867724867,
+          "mae": 1.29375,
+          "in_range": 14,
+          "in_range_pct": 70.0,
+          "bias": 21.917624572423332
+        }
+      ],
+      [
+        "est_ollama",
+        {
+          "label": "Ollama (local)",
+          "count": 20,
+          "mape": 35.69483255822265,
+          "median_ape": 26.31578947368421,
+          "mae": 1.49375,
+          "in_range": 12,
+          "in_range_pct": 60.0,
+          "bias": 21.382804716783046
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder_plus",
+        {
+          "label": "Qwen3 Coder+",
+          "count": 19,
+          "mape": 43.41655868256814,
+          "median_ape": 33.33333333333333,
+          "mae": 2.0065789473684212,
+          "in_range": 9,
+          "in_range_pct": 47.368421052631575,
+          "bias": 42.86254206206952
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder",
+        {
+          "label": "Qwen3 Coder",
+          "count": 20,
+          "mape": 52.469889072056255,
+          "median_ape": 51.19047619047619,
+          "mae": 2.44375,
+          "in_range": 6,
+          "in_range_pct": 30.0,
+          "bias": 49.692111294278476
+        }
+      ],
+      [
+        "est_qwen_qwen3_coder_flash",
+        {
+          "label": "Qwen3 Flash",
+          "count": 20,
+          "mape": 121.18987307841797,
+          "median_ape": 109.09090909090908,
+          "mae": 6.61875,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 121.18987307841797
+        }
+      ],
+      [
+        "est_openai_gpt_5_1_codex_mini",
+        {
+          "label": "GPT-5.1 Codex Mini",
+          "count": 13,
+          "mape": 142.19493956336063,
+          "median_ape": 152.63157894736844,
+          "mae": 7.009615384615385,
+          "in_range": 3,
+          "in_range_pct": 23.076923076923077,
+          "bias": 139.63083699925804
+        }
+      ]
+    ],
+    "qwen_prod_vs_custom": {
+      "production": {
+        "label": "Qwen3 Coder",
+        "count": 20,
+        "mape": 52.469889072056255,
+        "median_ape": 51.19047619047619,
+        "mae": 2.44375,
+        "in_range": 6,
+        "in_range_pct": 30.0,
+        "bias": 49.692111294278476
+      },
+      "custom": {
+        "label": "Custom single-call baseline",
+        "count": 20,
+        "mape": 29.494410603156734,
+        "median_ape": 23.376623376623375,
+        "mae": 1.44375,
+        "in_range": 12,
+        "in_range_pct": 60.0,
+        "bias": 15.872856718444952
+      },
+      "custom_wins": 11,
+      "prod_wins": 3,
+      "ties": 6
+    },
+    "size_breakdown": {
+      "est_ollama": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 50.74404761904761,
+          "median_ape": 44.44444444444444,
+          "mae": 1.078125,
+          "in_range": 4,
+          "in_range_pct": 50.0,
+          "bias": 50.74404761904761
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 23.477443609022554,
+          "median_ape": 14.285714285714285,
+          "mae": 1.1,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 17.763157894736842
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 27.222436023851326,
+          "median_ape": 26.31578947368421,
+          "mae": 2.25,
+          "in_range": 4,
+          "in_range_pct": 57.14285714285714,
+          "bias": -9.587439441486323
+        }
+      },
+      "est_openai_gpt_5_1_codex_mini": {
+        "Small (3-7 files)": {
+          "count": 6,
+          "mape": 82.01058201058201,
+          "median_ape": 41.666666666666664,
+          "mae": 1.6458333333333333,
+          "in_range": 3,
+          "in_range_pct": 50.0,
+          "bias": 76.45502645502646
+        },
+        "Medium (8-15 files)": {
+          "count": 4,
+          "mape": 142.32456140350877,
+          "median_ape": 151.3157894736842,
+          "mae": 6.5,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 142.32456140350877
+        },
+        "Large (16-30 files)": {
+          "count": 3,
+          "mape": 262.3908255487203,
+          "median_ape": 278.9473684210526,
+          "mae": 18.416666666666668,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 262.3908255487203
+        }
+      },
+      "est_qwen_qwen3_coder": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 40.67460317460318,
+          "median_ape": 33.33333333333333,
+          "mae": 0.953125,
+          "in_range": 4,
+          "in_range_pct": 50.0,
+          "bias": 33.730158730158735
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 72.25563909774436,
+          "median_ape": 68.42105263157895,
+          "mae": 3.4,
+          "in_range": 1,
+          "in_range_pct": 20.0,
+          "bias": 72.25563909774436
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 51.81753722222542,
+          "median_ape": 52.38095238095239,
+          "mae": 3.4642857142857144,
+          "in_range": 1,
+          "in_range_pct": 14.285714285714285,
+          "bias": 51.81753722222542
+        }
+      },
+      "est_qwen_qwen3_coder_flash": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 69.24603174603175,
+          "median_ape": 66.66666666666667,
+          "mae": 1.890625,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 69.24603174603175
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 130.5263157894737,
+          "median_ape": 128.57142857142858,
+          "mae": 6.2,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 130.5263157894737
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 173.88537552181958,
+          "median_ape": 152.63157894736844,
+          "mae": 12.321428571428571,
+          "in_range": 0,
+          "in_range_pct": 0.0,
+          "bias": 173.88537552181958
+        }
+      },
+      "est_qwen_qwen3_coder_next": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 41.4186507936508,
+          "median_ape": 30.952380952380953,
+          "mae": 1.015625,
+          "in_range": 5,
+          "in_range_pct": 62.5,
+          "bias": 25.94246031746032
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 21.416040100250626,
+          "median_ape": 21.428571428571427,
+          "mae": 1.1,
+          "in_range": 4,
+          "in_range_pct": 80.0,
+          "bias": 21.416040100250626
+        },
+        "Large (16-30 files)": {
+          "count": 7,
+          "mape": 25.194883907842776,
+          "median_ape": 25.925925925925924,
+          "mae": 1.75,
+          "in_range": 5,
+          "in_range_pct": 71.42857142857143,
+          "bias": 17.676086915361573
+        }
+      },
+      "est_qwen_qwen3_coder_plus": {
+        "Small (3-7 files)": {
+          "count": 8,
+          "mape": 51.83531746031746,
+          "median_ape": 39.285714285714285,
+          "mae": 1.140625,
+          "in_range": 4,
+          "in_range_pct": 50.0,
+          "bias": 51.83531746031746
+        },
+        "Medium (8-15 files)": {
+          "count": 5,
+          "mape": 27.286967418546364,
+          "median_ape": 26.31578947368421,
+          "mae": 1.3,
+          "in_range": 3,
+          "in_range_pct": 60.0,
+          "bias": 27.286967418546364
+        },
+        "Large (16-30 files)": {
+          "count": 6,
+          "mape": 45.63287303225383,
+          "median_ape": 50.0,
+          "mae": 3.75,
+          "in_range": 2,
+          "in_range_pct": 33.33333333333333,
+          "bias": 43.87848706734155
+        }
+      }
+    }
+  }
+}
