@@ -77,8 +77,8 @@ export default function AdminSettingsPage() {
     ollamaModel: 'qwen2.5-coder:32b',
     openrouterApiKey: '',
     openrouterModel: 'qwen/qwen3-coder-next',
-    openrouterProviderOrder: 'Chutes',
-    openrouterProviderIgnore: 'Cloudflare',
+    openrouterProviderOrder: '',
+    openrouterProviderIgnore: '',
     openrouterAllowFallbacks: true,
     openrouterRequireParameters: true,
     openrouterInputPrice: 0.12,
@@ -504,7 +504,7 @@ export default function AdminSettingsPage() {
                       <Label htmlFor="or-provider-order">{t('providerOrder')}</Label>
                       <Input
                         id="or-provider-order"
-                        placeholder="Chutes, DeepInfra"
+                        placeholder="e.g. Chutes, DeepInfra"
                         value={llmSettings.openrouterProviderOrder}
                         onChange={(e) =>
                           setLlmSettings((prev) => ({
@@ -521,7 +521,7 @@ export default function AdminSettingsPage() {
                       <Label htmlFor="or-provider-ignore">{t('ignoreProviders')}</Label>
                       <Input
                         id="or-provider-ignore"
-                        placeholder="Cloudflare"
+                        placeholder="e.g. Cloudflare"
                         value={llmSettings.openrouterProviderIgnore}
                         onChange={(e) =>
                           setLlmSettings((prev) => ({
