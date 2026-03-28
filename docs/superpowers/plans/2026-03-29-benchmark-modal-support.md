@@ -123,7 +123,7 @@ describe('Benchmark admin guard', () => {
 
   it('GET /benchmark/compare returns 403 for non-admin', async () => {
     mockRequireAdmin.mockResolvedValue(forbidden);
-    const { GET } = await import('../../compare/route');
+    const { GET } = await import('../compare/route');
     const req = new NextRequest('http://localhost/api/orders/o1/benchmark/compare');
     const res = await GET(req, { params: Promise.resolve({ id: 'o1' }) });
     expect(res.status).toBe(403);
@@ -131,7 +131,7 @@ describe('Benchmark admin guard', () => {
 
   it('GET /benchmark/[jobId] returns 403 for non-admin', async () => {
     mockRequireAdmin.mockResolvedValue(forbidden);
-    const { GET } = await import('../../[jobId]/route');
+    const { GET } = await import('../[jobId]/route');
     const req = new NextRequest('http://localhost/api/orders/o1/benchmark/j1');
     const res = await GET(req, { params: Promise.resolve({ id: 'o1', jobId: 'j1' }) });
     expect(res.status).toBe(403);
@@ -139,7 +139,7 @@ describe('Benchmark admin guard', () => {
 
   it('DELETE /benchmark/[jobId] returns 403 for non-admin', async () => {
     mockRequireAdmin.mockResolvedValue(forbidden);
-    const { DELETE } = await import('../../[jobId]/route');
+    const { DELETE } = await import('../[jobId]/route');
     const req = new NextRequest('http://localhost/api/orders/o1/benchmark/j1', { method: 'DELETE' });
     const res = await DELETE(req, { params: Promise.resolve({ id: 'o1', jobId: 'j1' }) });
     expect(res.status).toBe(403);
@@ -310,7 +310,7 @@ with:
   });
 ```
 
-- [ ] **Step 6: Fix existing test mock to use requireAdmin**
+- [ ] **Step 6: Fix existing benchmark route test mock to use requireAdmin**
 
 In `packages/server/src/app/api/orders/[id]/benchmark/__tests__/route.test.ts`, update the mock:
 
@@ -325,23 +325,42 @@ vi.mock('@/lib/api-utils', () => ({
   requireAdmin: vi.fn().mockResolvedValue({ user: { id: 'u1', email: 'test@test.com', role: 'ADMIN' } }),
 ```
 
-- [ ] **Step 7: Run all benchmark tests**
+- [ ] **Step 7: Fix existing compare route test mock to use requireAdmin**
+
+In `packages/server/src/app/api/orders/[id]/benchmark/compare/__tests__/route.test.ts`, update the mock:
+
+Replace:
+```typescript
+vi.mock('@/lib/auth', () => ({
+  auth: vi.fn().mockResolvedValue({ user: { id: 'u1' } }),
+}));
+```
+with:
+```typescript
+vi.mock('@/lib/api-utils', () => ({
+  requireAdmin: vi.fn().mockResolvedValue({ user: { id: 'u1', email: 'test@test.com', role: 'ADMIN' } }),
+  isErrorResponse: vi.fn((r: unknown) => r instanceof Response),
+}));
+```
+
+- [ ] **Step 8: Run all benchmark tests**
 
 Run: `cd packages/server && pnpm test -- src/app/api/orders/\\[id\\]/benchmark/`
 Expected: ALL PASS
 
-- [ ] **Step 8: Verify TypeScript compiles**
+- [ ] **Step 9: Verify TypeScript compiles**
 
 Run: `cd packages/server && npx tsc --noEmit 2>&1 | head -20`
 Expected: No errors
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add packages/server/src/app/api/orders/\[id\]/benchmark/route.ts \
        packages/server/src/app/api/orders/\[id\]/benchmark/\[jobId\]/route.ts \
        packages/server/src/app/api/orders/\[id\]/benchmark/compare/route.ts \
-       packages/server/src/app/api/orders/\[id\]/benchmark/__tests__/
+       packages/server/src/app/api/orders/\[id\]/benchmark/__tests__/ \
+       packages/server/src/app/api/orders/\[id\]/benchmark/compare/__tests__/
 git commit -m "feat(benchmark): restrict all benchmark routes to admin role"
 ```
 
@@ -931,7 +950,28 @@ def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False,
     conn.commit()
 ```
 
-- [ ] **Step 2: Add benchmark params to _process_repo_commits**
+- [ ] **Step 2: Extend set_job_status for COMPLETED finalization**
+
+In `packages/modal/db.py`, modify `set_job_status` to set `completedAt` and `currentStep` when status is `COMPLETED` (benchmarks finalize directly, unlike regular analysis which goes through `LLM_COMPLETE` → watchdog → `COMPLETED`):
+
+Replace:
+```python
+    if status == "LLM_COMPLETE":
+        updates.append('"currentStep" = %s')
+        params.append("llm_complete")
+```
+with:
+```python
+    if status == "LLM_COMPLETE":
+        updates.append('"currentStep" = %s')
+        params.append("llm_complete")
+    elif status == "COMPLETED":
+        updates.append('"completedAt" = NOW()')
+        updates.append('"currentStep" = %s')
+        params.append("completed")
+```
+
+- [ ] **Step 3: Add benchmark params to _process_repo_commits**
 
 In `packages/modal/worker.py`, modify the `_process_repo_commits` signature (line 634):
 
@@ -957,7 +997,7 @@ def _process_repo_commits(
 ):
 ```
 
-- [ ] **Step 3: Replace dedup with commit pinning for benchmarks**
+- [ ] **Step 4: Replace dedup with commit pinning for benchmarks**
 
 In `_process_repo_commits`, replace the intra-order dedup block (around lines 661-675):
 
@@ -1015,7 +1055,7 @@ with:
         )
 ```
 
-- [ ] **Step 4: Pass job_id to save_commit_analyses for benchmarks**
+- [ ] **Step 5: Pass job_id to save_commit_analyses for benchmarks**
 
 In `_process_repo_commits`, find the `save_commit_analyses` call (around line 856):
 
@@ -1030,7 +1070,7 @@ with:
             save_commit_analyses(conn, analyses, job_id=benchmark_job_id)
 ```
 
-- [ ] **Step 5: Add is_benchmark detection to run_analysis**
+- [ ] **Step 6: Add is_benchmark detection to run_analysis**
 
 In `run_analysis()`, after the `order_id` / `job_started_at` extraction (around line 173-174), add:
 
@@ -1038,7 +1078,7 @@ In `run_analysis()`, after the `order_id` / `job_started_at` extraction (around 
     is_benchmark = job.get("type") == "benchmark"
 ```
 
-- [ ] **Step 6: Skip force_recalculate and demo_live_mode for benchmarks**
+- [ ] **Step 7: Skip force_recalculate and demo_live_mode for benchmarks**
 
 In `run_analysis()`, after `setup_llm_env(llm_config)` (around line 230), modify the force_recalculate and demo_live reads:
 
@@ -1069,7 +1109,7 @@ with:
             demo_live_mode, demo_live_chunk_size = load_demo_live_settings(conn)
 ```
 
-- [ ] **Step 7: Skip order currentRepoName for benchmarks**
+- [ ] **Step 8: Skip order currentRepoName for benchmarks**
 
 In `run_analysis()`, find the `update_progress` call with `repo_name` (line 320):
 
@@ -1089,7 +1129,7 @@ Also replace the next `update_progress` call (line 330):
 ```
 (This one doesn't pass repo_name, so no change needed.)
 
-- [ ] **Step 8: Pass benchmark params to _process_repo_commits calls**
+- [ ] **Step 9: Pass benchmark params to _process_repo_commits calls**
 
 Find all calls to `_process_repo_commits` in `run_analysis()`. There are two:
 
@@ -1145,7 +1185,7 @@ with:
                 )
 ```
 
-- [ ] **Step 9: Set COMPLETED for benchmarks instead of LLM_COMPLETE**
+- [ ] **Step 10: Set COMPLETED for benchmarks instead of LLM_COMPLETE**
 
 Replace the completion block (around lines 532-542):
 
@@ -1191,7 +1231,7 @@ with:
             _try_trigger_watchdog_post_processing(conn, job_id)
 ```
 
-- [ ] **Step 10: Use benchmark rollback in exception handler**
+- [ ] **Step 11: Use benchmark rollback in exception handler**
 
 In the exception handler (around lines 564-590), replace the rollback block:
 
@@ -1260,7 +1300,7 @@ with:
                     pass
 ```
 
-- [ ] **Step 11: Pass skip_order_update for benchmarks in set_job_error call**
+- [ ] **Step 12: Pass skip_order_update for benchmarks in set_job_error call**
 
 In the exception handler, find the `set_job_error` call (around line 610):
 
@@ -1285,12 +1325,12 @@ with:
                               skip_order_update=is_benchmark)
 ```
 
-- [ ] **Step 12: Verify no syntax errors**
+- [ ] **Step 13: Verify no syntax errors**
 
 Run: `cd packages/modal && python -c "import ast; ast.parse(open('worker.py').read()); ast.parse(open('db.py').read()); print('OK')"`
 Expected: `OK`
 
-- [ ] **Step 13: Commit**
+- [ ] **Step 14: Commit**
 
 ```bash
 git add packages/modal/worker.py packages/modal/db.py
