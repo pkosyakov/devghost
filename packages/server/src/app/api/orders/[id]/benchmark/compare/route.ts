@@ -51,7 +51,7 @@ export async function GET(
     orderBy: { id: 'asc' },
     select: { commitHash: true, commitMessage: true, repository: true,
               additions: true, deletions: true, filesCount: true,
-              effortHours: true, jobId: true, method: true },
+              effortHours: true, jobId: true, method: true, llmModel: true },
   });
 
   // 3. Fetch ground truth
@@ -133,6 +133,9 @@ export async function GET(
       costUsd: job.totalCostUsd ? Number(job.totalCostUsd) : null,
       promptRepeat: !!snap?.promptRepeat,
       effectiveContextLength: snap?.effectiveContextLength as number | null ?? null,
+      fdV3Enabled: !!snap?.fdV3Enabled,
+      fdLargeModel: (snap?.fdLargeModel as string) || null,
+      fdLargeProvider: (snap?.fdLargeProvider as string) || null,
       status: job.status,
       totalHours: 0,
       mae: null as number | null,
@@ -149,6 +152,7 @@ export async function GET(
     filesChanged: number; linesAdded: number; linesDeleted: number;
     estimates: Record<string, number>;
     methods: Record<string, string>;
+    models: Record<string, string>;
   }>();
 
   for (const a of allAnalyses) {
@@ -162,12 +166,16 @@ export async function GET(
         linesDeleted: a.deletions,
         estimates: {},
         methods: {},
+        models: {},
       });
     }
     const key = a.jobId === null ? 'original' : a.jobId;
     commitMap.get(a.commitHash)!.estimates[key] = Number(a.effortHours);
     if (a.method) {
       commitMap.get(a.commitHash)!.methods[key] = a.method;
+    }
+    if (a.llmModel) {
+      commitMap.get(a.commitHash)!.models[key] = a.llmModel;
     }
   }
 
