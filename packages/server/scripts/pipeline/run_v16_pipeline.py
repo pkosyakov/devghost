@@ -83,6 +83,7 @@ def reload_config():
     global PROMPT_REPEAT
     global MODEL_CTX, FD_THRESHOLD
     global FD_LARGE_LLM_PROVIDER, FD_LARGE_LLM_MODEL
+    global FD_V3_ENABLED
 
     LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'ollama')
     OLLAMA_URL = os.environ.get('OLLAMA_URL', 'http://localhost:11434').rstrip('/') + '/api/generate'
@@ -115,6 +116,7 @@ def reload_config():
 
     FD_LARGE_LLM_PROVIDER = os.environ.get('FD_LARGE_LLM_PROVIDER', '').strip().lower()
     FD_LARGE_LLM_MODEL = os.environ.get('FD_LARGE_LLM_MODEL', '').strip()
+    FD_V3_ENABLED = os.environ.get('FD_V3_ENABLED', '').lower() in ('1', 'true', 'yes')
 
 # --- Cache config ---
 CACHE_VERSION = 1
@@ -147,11 +149,14 @@ FD_THRESHOLD = max(_MIN_FD_THRESHOLD, min(_MAX_FD_THRESHOLD, int(_available_toke
 # making extreme overestimates unlikely there.
 MAX_FD_HOURS = 80.0
 
-# --- FD v2: Large model for Branch A ---
+# --- FD v2: Large model for Branch A / FD v3: large-path model ---
 FD_LARGE_LLM_PROVIDER = os.environ.get('FD_LARGE_LLM_PROVIDER', '').strip().lower()
 FD_LARGE_LLM_MODEL = os.environ.get('FD_LARGE_LLM_MODEL', '').strip()
 
-sys.stderr.write(f"[pipeline] context={MODEL_CTX} fd_threshold={FD_THRESHOLD} chars_per_tok={_CHARS_PER_TOKEN} prompt_repeat={PROMPT_REPEAT}\n")
+# --- FD v3: metadata-only holistic estimator for fc >= 50 ---
+FD_V3_ENABLED = os.environ.get('FD_V3_ENABLED', '').lower() in ('1', 'true', 'yes')
+
+sys.stderr.write(f"[pipeline] context={MODEL_CTX} fd_threshold={FD_THRESHOLD} chars_per_tok={_CHARS_PER_TOKEN} prompt_repeat={PROMPT_REPEAT} fd_v3={FD_V3_ENABLED}\n")
 sys.stderr.flush()
 
 
@@ -989,10 +994,14 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
                 print(f" [CAPPED:{final:.1f}h->{MAX_FD_HOURS:.0f}h]", end='', flush=True)
                 final = MAX_FD_HOURS
 
+            # Prefer FD's own route label (v3_holistic, v2_b, bulk_scaffold_detector, etc.)
+            # over architectural_scope which is only meaningful for the non-FD v15 path.
+            fd_route = fd_result.get('routed_to') or scope
+
             return {
                 'estimated_hours': final, 'raw_estimate': raw_estimate,
                 'post_rules': corrected, 'module_corrected': module_corrected,
-                'method': fd_result.get('method', 'FD'), 'routed_to': scope,
+                'method': fd_result.get('method', 'FD'), 'routed_to': fd_route,
                 'analysis': analysis, 'rule_applied': rule or fd_result.get('rule_applied') or cap_applied,
                 'fd_details': fd_result.get('fd_details'),
                 'complexity_score': complexity_score,

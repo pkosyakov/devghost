@@ -6,6 +6,7 @@ import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getAvailableBalance, isBillingEnabled, runExpiryGuard } from '@/lib/services/credit-service';
 import { getLlmConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
+import { resolveEffectiveContext } from '@/lib/services/model-context';
 import { analysisLogger, billingLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { analyzeOrderSchema } from '@/lib/schemas';
@@ -365,6 +366,23 @@ export async function POST(
     throw err;
   }
 
+  // ── Resolve model context length ──
+  // Same logic as benchmark mode: real context from provider metadata, fallback to 32768.
+  let effectiveContextLength: number | undefined;
+  let rawContextLength: number | undefined;
+  try {
+    const llmConfig = await getLlmConfig();
+    const ctx = await resolveEffectiveContext(llmConfig);
+    rawContextLength = ctx.rawContextLength;
+    effectiveContextLength = ctx.effectiveContextLength;
+    analysisLogger.info(
+      { jobId: job.id, rawContextLength, effectiveContextLength, provider: llmConfig.provider },
+      'Resolved model context for analysis',
+    );
+  } catch (err) {
+    analysisLogger.warn({ err, jobId: job.id }, 'Failed to resolve model context, using pipeline default');
+  }
+
   // ── Trigger pipeline based on PIPELINE_MODE ──
 
   await appendJobEvent({
@@ -378,6 +396,8 @@ export async function POST(
       estimatedCredits,
       cacheMode,
       forceRecalculate: body.forceRecalculate === true,
+      rawContextLength,
+      effectiveContextLength,
     },
   });
 
@@ -413,6 +433,8 @@ export async function POST(
           ...llmConfig.openrouter,
           apiKey: undefined,  // Never persist API key in DB
         },
+        ...(rawContextLength != null && { contextLength: rawContextLength }),
+        ...(effectiveContextLength != null && { effectiveContextLength }),
       };
       await prisma.analysisJob.update({
         where: { id: job.id },
@@ -503,17 +525,34 @@ export async function POST(
       });
     }
   } else {
-    // Local mode — unchanged subprocess flow
+    // Local mode — save snapshot for rerun/update-analysis to inherit context
+    try {
+      const llmConfigLocal = await getLlmConfig();
+      const localSnapshot = {
+        ...llmConfigLocal,
+        openrouter: { ...llmConfigLocal.openrouter, apiKey: undefined },
+        ...(rawContextLength != null && { contextLength: rawContextLength }),
+        ...(effectiveContextLength != null && { effectiveContextLength }),
+      };
+      await prisma.analysisJob.update({
+        where: { id: job.id },
+        data: { llmConfigSnapshot: localSnapshot as unknown as Prisma.InputJsonValue },
+      });
+    } catch (err) {
+      analysisLogger.warn({ err, jobId: job.id }, 'Failed to save local snapshot');
+    }
+
     await appendJobEvent({
       jobId: job.id,
       phase: 'launch',
       code: 'LOCAL_WORKER_START',
       message: 'Starting local analysis worker',
-      payload: { cacheMode, forceRecalculate: body.forceRecalculate === true },
+      payload: { cacheMode, forceRecalculate: body.forceRecalculate === true, effectiveContextLength },
     });
     processAnalysisJob(job.id, {
       cacheMode,
       forceRecalculate: body.forceRecalculate === true,
+      ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
     }).catch((error) => {
       analysisLogger.error({ err: error, jobId: job.id, orderId: id }, 'Pipeline failed');
     });

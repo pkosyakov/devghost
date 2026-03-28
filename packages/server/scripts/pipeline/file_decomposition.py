@@ -14,6 +14,7 @@ import re
 import os
 import json
 import time
+import math
 from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1483,9 +1484,16 @@ def run_fd_hybrid(diff, message, language, fc, la, ld, call_ollama_fn, call_larg
             'rule_applied': 'bulk_scaffold_detector',
         }
 
-    # --- FD V2 GATE: route large commits to cluster-based estimation ---
+    # --- FD LARGE-COMMIT GATE: route to v3 (metadata-only) or v2 (cluster-based) ---
     _v2_cfg = _fd_v2_config()
     if fc >= _v2_cfg["min_files"]:
+        _fd_v3_enabled = os.environ.get("FD_V3_ENABLED", "").lower() in ("1", "true", "yes")
+        if _fd_v3_enabled:
+            print(f" [->v3:{fc}files]", end='', flush=True)
+            return _run_fd_v3(diff, message, language, fc, la, ld,
+                              file_info, new_file_ratio, call_ollama_fn,
+                              call_large_fn=call_large_fn,
+                              move_info=move_info, bulk_info=bulk_info)
         print(f" [->v2:{fc}files]", end='', flush=True)
         return _run_fd_v2(diff, message, language, fc, la, ld,
                           file_info, new_file_ratio, call_ollama_fn,
@@ -2218,5 +2226,515 @@ def _run_fd_v2(diff, message, language, fc, la, ld,
             'heuristic_total': heuristic_total,
             'filter_stats': filter_stats,
             'clusters': cluster_info,
+        },
+    }
+
+
+# ===== FD V3: METADATA-ONLY HOLISTIC ESTIMATOR =====
+
+_EXT_TO_LANG = {
+    ".ts": "TypeScript", ".tsx": "TypeScript",
+    ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
+    ".py": "Python",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".java": "Java",
+    ".kt": "Kotlin",
+    ".scala": "Scala",
+    ".cs": "C#",
+    ".cpp": "C++", ".cc": "C++", ".cxx": "C++",
+    ".c": "C",
+    ".swift": "Swift",
+    ".rb": "Ruby",
+    ".php": "PHP",
+    ".sh": "Shell", ".bash": "Shell",
+    ".sql": "SQL",
+    ".html": "HTML", ".htm": "HTML",
+    ".css": "CSS", ".scss": "CSS", ".sass": "CSS", ".less": "CSS",
+    ".proto": "Protobuf",
+    ".tf": "Terraform",
+    ".yaml": "YAML", ".yml": "YAML",
+    ".json": "JSON",
+    ".md": "Markdown", ".mdx": "Markdown",
+    ".toml": "TOML",
+}
+
+V3_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "low":        {"type": "number", "description": "Low estimate in hours"},
+        "mid":        {"type": "number", "description": "Best estimate in hours"},
+        "high":       {"type": "number", "description": "High estimate in hours"},
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        "reasoning":  {"type": "string", "description": "2-3 sentences: change type, effective size, complexity"},
+    },
+    "required": ["low", "mid", "high", "confidence", "reasoning"],
+}
+
+_V3_SYSTEM_PROMPT = (
+    "You are an expert software engineer estimating commit effort for a mid-level developer "
+    "(3-4 years experience, familiar with the codebase, working without AI assistance).\n"
+    "\n"
+    "## CALIBRATION\n"
+    "- Manual code: 50-100 lines/hour\n"
+    "- Auto-generated code: 0 hours (zero effort)\n"
+    "- File rename/move (per 50 files): 0.5h\n"
+    "- Tests: 50-75% of equivalent production code effort\n"
+    "- Config changes: 0.1-0.5 each\n"
+    "- Docs: 0.3h per 100 lines\n"
+    "- Bulk find-replace/refactor: 2-4h total (not per file)\n"
+    "\n"
+    "## ANTI-OVERESTIMATION\n"
+    "- SKIP files: generated, lock files, snapshots, locale files = 0h\n"
+    "- Rename-only commits: effort is coordination overhead, NOT rewriting code\n"
+    "- Bulk systematic edits (same pattern N files): count as 1 task, not N\n"
+    "- Scaffold/copy commits: base setup time only, not full feature time\n"
+    "- Tests that mirror implementation: 50-75% of production code effort, not 100%\n"
+    "- Config files: quick edits; only complex new configs take >0.5h\n"
+    "\n"
+    "## RESPONSE FORMAT\n"
+    "Respond with a JSON object matching the schema exactly.\n"
+    "- low: conservative lower bound (everything goes fast)\n"
+    "- mid: most likely estimate for a competent mid-level dev\n"
+    "- high: upper bound (unfamiliar areas, unexpected complexity)\n"
+    "- confidence: 'low' if you're uncertain about the change type, "
+    "'medium' for typical commits, 'high' when signals are clear\n"
+    "- reasoning: 2-3 sentences covering change type, effective size, and complexity drivers"
+)
+
+# Scaffold keyword patterns (shared with run_fd_hybrid — same regexes)
+_V3_SCAFFOLD_KEYWORDS = re.compile(
+    r'\b(monorepo|mono[- ]?repo|scaffold|boilerplate|template|seed|'
+    r'vendor|copy\s+(from|into|over)|bootstrap|initial\s+(commit|import|setup))\b',
+    re.IGNORECASE,
+)
+_V3_SCAFFOLD_SETUP = re.compile(
+    r'\b(wip|init)\b.*\b(setup|library|scaffold|skeleton)\b',
+    re.IGNORECASE,
+)
+
+
+def compute_v3_metadata(file_info, filter_result, new_file_ratio,
+                        total_files, total_la, total_ld):
+    """Compute additional metadata signals for v3 holistic estimation.
+
+    Args:
+        file_info: List of file dicts with filename, added, deleted, tags.
+        filter_result: Output of adaptive_filter().
+        new_file_ratio: Fraction of files that are add-only.
+        total_files: Total file count.
+        total_la: Total lines added.
+        total_ld: Total lines deleted.
+
+    Returns:
+        dict with entropy, effective churn, file size distribution,
+        module boundaries, extension distribution, language detection.
+    """
+    llm_files = filter_result["llm_files"]
+
+    # --- Shannon entropy of change distribution ---
+    total_changed = sum(f["added"] + f["deleted"] for f in file_info)
+    entropy = 0.0
+    if total_changed > 0 and len(file_info) > 1:
+        for f in file_info:
+            churn = f["added"] + f["deleted"]
+            if churn > 0:
+                p = churn / total_changed
+                entropy -= p * math.log2(p)
+
+    if file_info:
+        max_entropy = math.log2(len(file_info))
+        normalized = entropy / max_entropy if max_entropy > 0 else 0.0
+        if normalized >= 0.8:
+            entropy_label = "highly uniform"
+        elif normalized >= 0.5:
+            entropy_label = "moderately spread"
+        else:
+            entropy_label = "concentrated"
+    else:
+        entropy_label = "concentrated"
+
+    # --- Effective churn from LLM files only ---
+    effective_la = sum(f["added"] for f in llm_files)
+    effective_ld = sum(f["deleted"] for f in llm_files)
+    effective_fc = len(llm_files)
+
+    # --- File size distribution (lines changed per file) from llm_files ---
+    file_sizes = sorted(f["added"] + f["deleted"] for f in llm_files)
+    if file_sizes:
+        n = len(file_sizes)
+        file_size_p50 = file_sizes[min(int(n * 0.5), n - 1)]
+        file_size_p90 = file_sizes[min(int(n * 0.9), n - 1)]
+        file_size_max = file_sizes[-1]
+    else:
+        file_size_p50 = file_size_p90 = file_size_max = 0
+
+    # --- Module boundaries from ALL file_info (unique top-level dirs) ---
+    top_dirs = set()
+    for f in file_info:
+        parts = f["filename"].replace("\\", "/").split("/")
+        if len(parts) > 1:
+            top_dirs.add(parts[0])
+    module_boundary_count = len(top_dirs)
+    modules = sorted(top_dirs)[:10]
+
+    # --- Extension distribution (top 5) from llm_files ---
+    ext_counter = Counter()
+    for f in llm_files:
+        _, ext = os.path.splitext(f["filename"])
+        if ext:
+            ext_counter[ext.lower()] += 1
+    ext_distribution = ext_counter.most_common(5)
+
+    # --- Language detection from file extensions (llm_files) ---
+    lang_counter = Counter()
+    for ext, count in ext_counter.items():
+        lang = _EXT_TO_LANG.get(ext)
+        if lang:
+            lang_counter[lang] += count
+    languages = [lang for lang, _ in lang_counter.most_common()]
+    primary_language = languages[0] if languages else "Unknown"
+
+    return {
+        "entropy": round(entropy, 3),
+        "entropy_label": entropy_label,
+        "effective_la": effective_la,
+        "effective_ld": effective_ld,
+        "effective_fc": effective_fc,
+        "file_size_p50": file_size_p50,
+        "file_size_p90": file_size_p90,
+        "file_size_max": file_size_max,
+        "module_boundary_count": module_boundary_count,
+        "modules": modules,
+        "ext_distribution": ext_distribution,
+        "languages": languages,
+        "primary_language": primary_language,
+    }
+
+
+def build_v3_prompt(message, file_info, filter_result, clusters,
+                    move_info, bulk_info, v3_meta,
+                    new_file_ratio, total_files, total_la, total_ld):
+    """Build structured user prompt for v3 holistic estimation.
+
+    Args:
+        message: Commit message.
+        file_info: List of file dicts.
+        filter_result: Output of adaptive_filter().
+        clusters: Output of build_clusters().
+        move_info: Output of classify_move_commit().
+        bulk_info: Output of detect_bulk_refactoring().
+        v3_meta: Output of compute_v3_metadata().
+        new_file_ratio: Fraction of add-only files.
+        total_files: Total file count.
+        total_la: Total lines added.
+        total_ld: Total lines deleted.
+
+    Returns:
+        User prompt string (metadata only, no diff content).
+    """
+    skip_count = filter_result["filter_stats"]["skip"]
+    heuristic_count = filter_result["filter_stats"]["heuristic"]
+    llm_count = filter_result["filter_stats"]["llm"]
+    heur_total = filter_result["heuristic_total"]
+
+    lines = []
+
+    # --- COMMIT ---
+    lines.append("## COMMIT")
+    lines.append(f"Message: {message}")
+    lines.append("")
+
+    # --- LANGUAGE ---
+    lines.append("## LANGUAGE")
+    lines.append(f"Primary: {v3_meta['primary_language']}")
+    if len(v3_meta["languages"]) > 1:
+        lines.append(f"Also: {', '.join(v3_meta['languages'][1:5])}")
+    lines.append("")
+
+    # --- CHANGE VOLUME ---
+    lines.append("## CHANGE VOLUME")
+    lines.append(f"Total files: {total_files}  (+{total_la} / -{total_ld} lines)")
+    lines.append(f"New-file ratio: {new_file_ratio:.0%} of files are add-only")
+    module_list = ", ".join(v3_meta["modules"][:8])
+    if v3_meta["module_boundary_count"] > 8:
+        module_list += f" (+{v3_meta['module_boundary_count'] - 8} more)"
+    lines.append(f"Module boundaries touched: {v3_meta['module_boundary_count']} ({module_list})")
+    lines.append("")
+
+    # --- FILE TYPE BREAKDOWN ---
+    lines.append("## FILE TYPE BREAKDOWN")
+    lines.append(f"SKIP (generated/lock/locale): {skip_count} files — 0h")
+    lines.append(f"HEURISTIC (docs/config/tests): {heuristic_count} files — ~{heur_total:.1f}h by formula")
+    lines.append(f"LLM-required (substantive code): {llm_count} files — needs judgment")
+    lines.append(
+        f"Effective churn (LLM files only): +{v3_meta['effective_la']} / -{v3_meta['effective_ld']} lines"
+    )
+    lines.append("")
+
+    # --- DISTRIBUTION ---
+    lines.append("## DISTRIBUTION")
+    lines.append(f"Change entropy: {v3_meta['entropy']:.2f} bits ({v3_meta['entropy_label']})")
+    lines.append(
+        f"File size (lines changed) — p50: {v3_meta['file_size_p50']}, "
+        f"p90: {v3_meta['file_size_p90']}, max: {v3_meta['file_size_max']}"
+    )
+    lines.append("")
+
+    # --- EXTENSIONS ---
+    if v3_meta["ext_distribution"]:
+        lines.append("## EXTENSIONS (LLM files, top 5)")
+        for ext, count in v3_meta["ext_distribution"]:
+            lines.append(f"  {ext}: {count} files")
+        lines.append("")
+
+    # --- PATTERN FLAGS ---
+    lines.append("## PATTERN FLAGS")
+    flags_found = False
+
+    if move_info.get("is_move"):
+        pair_count = len(move_info.get("pairs", []))
+        avg_overlap = move_info.get("avg_overlap", 0.0)
+        move_ratio = move_info.get("move_ratio", 0.0)
+        move_type = move_info.get("move_type", "MOVE")
+        lines.append(
+            f"  {move_type}: {pair_count} file pairs matched, "
+            f"avg_overlap={avg_overlap:.0%}, move_ratio={move_ratio:.0%}"
+        )
+        flags_found = True
+
+    if bulk_info.get("is_bulk"):
+        bulk_ratio = bulk_info.get("bulk_ratio", 0.0)
+        pattern_desc = bulk_info.get("pattern_description", "bulk edit detected")
+        lines.append(f"  BULK_REFACTOR: ratio={bulk_ratio:.0%}")
+        lines.append(f"  {pattern_desc}")
+        flags_found = True
+
+    is_bulk_new = new_file_ratio > 0.8 and total_la > 10000 and total_files >= 50
+    has_scaffold_signal = bool(
+        _V3_SCAFFOLD_KEYWORDS.search(message) or _V3_SCAFFOLD_SETUP.search(message)
+    )
+    is_near_total_add = new_file_ratio > 0.95
+
+    if is_bulk_new and has_scaffold_signal:
+        lines.append("  SCAFFOLD (keyword): bulk-new + scaffold keyword detected")
+        flags_found = True
+    elif is_bulk_new and is_near_total_add:
+        lines.append("  SCAFFOLD (>95%): >95% new files, treat as copy/scaffold")
+        flags_found = True
+    elif is_bulk_new:
+        lines.append(
+            f"  BULK_NEW (no keyword): {new_file_ratio:.0%} new files, {total_la:,} lines added, "
+            f"{total_files} files — possible feature or scaffold"
+        )
+        flags_found = True
+    elif is_near_total_add and total_files >= 20:
+        lines.append(
+            f"  NEAR_TOTAL_ADD: {new_file_ratio:.0%} new files — "
+            f"verify if scaffold or genuine feature"
+        )
+        flags_found = True
+
+    if total_files > 0 and skip_count / total_files > 0.3:
+        skip_pct = skip_count / total_files
+        lines.append(
+            f"  HIGH_GENERATED: {skip_pct:.0%} of files are SKIP-tier (generated/lock/locale) — "
+            f"actual effort concentrated in remaining {total_files - skip_count} files"
+        )
+        flags_found = True
+
+    if not flags_found:
+        lines.append("  (none)")
+    lines.append("")
+
+    # --- STRUCTURE (cluster summary as metadata only) ---
+    lines.append("## STRUCTURE")
+    if clusters:
+        for cluster in clusters:
+            name = cluster.get("name", "(root)")
+            n_files = len(cluster.get("files", []))
+            added = cluster.get("total_added", 0)
+            deleted = cluster.get("total_deleted", 0)
+            lines.append(f"  {name}: {n_files} files (+{added}/-{deleted})")
+    else:
+        lines.append("  (no LLM-required files)")
+    lines.append("")
+
+    lines.append("Estimate effort for this commit:")
+
+    return "\n".join(lines)
+
+
+def estimate_holistic_v3(message, file_info, filter_result, clusters,
+                         move_info, bulk_info, new_file_ratio,
+                         total_files, total_la, total_ld,
+                         call_ollama_fn):
+    """FD v3: single metadata-only LLM call for large commits.
+
+    Does NOT send any diff content to the model.
+
+    Args:
+        message: Commit message.
+        file_info: List of file dicts.
+        filter_result: Output of adaptive_filter().
+        clusters: Output of build_clusters().
+        move_info: Output of classify_move_commit().
+        bulk_info: Output of detect_bulk_refactoring().
+        new_file_ratio: Fraction of add-only files.
+        total_files: Total file count.
+        total_la: Total lines added.
+        total_ld: Total lines deleted.
+        call_ollama_fn: LLM wrapper (system, prompt, schema, max_tokens) -> dict|str.
+
+    Returns:
+        dict with keys: mid, low, high, confidence, reasoning.
+        Returns None on failure.
+    """
+    v3_meta = compute_v3_metadata(
+        file_info, filter_result, new_file_ratio,
+        total_files, total_la, total_ld,
+    )
+
+    prompt = build_v3_prompt(
+        message, file_info, filter_result, clusters,
+        move_info, bulk_info, v3_meta,
+        new_file_ratio, total_files, total_la, total_ld,
+    )
+
+    result = call_ollama_fn(_V3_SYSTEM_PROMPT, prompt, schema=V3_SCHEMA, max_tokens=512)
+
+    if isinstance(result, dict) and "mid" in result:
+        return {
+            "mid": max(0.0, float(result["mid"])),
+            "low": max(0.0, float(result.get("low", 0))),
+            "high": max(0.0, float(result.get("high", 0))),
+            "confidence": result.get("confidence", "medium"),
+            "reasoning": result.get("reasoning", ""),
+            "v3_meta": v3_meta,
+            "prompt_chars": len(prompt),
+        }
+
+    return None
+
+
+def _run_fd_v3(diff, message, language, fc, la, ld,
+               file_info, new_file_ratio, call_ollama_fn,
+               call_large_fn=None, move_info=None, bulk_info=None):
+    """FD v3 orchestrator: filter -> metadata -> single holistic call.
+
+    Replaces _run_fd_v2 for fc >= 50 when FD_V3_ENABLED=true.
+    Does NOT use Branch B, holistic+combine, or heuristic_total addition.
+
+    Returns: dict compatible with run_commit() expectations.
+    """
+    # --- Step 1: Adaptive filter ---
+    filt = adaptive_filter(file_info)
+    heuristic_total = filt["heuristic_total"]
+    llm_files = filt["llm_files"]
+    filter_stats = filt["filter_stats"]
+
+    print(f" [v3:skip={filter_stats['skip']},heur={filter_stats['heuristic']},llm={filter_stats['llm']}]",
+          end='', flush=True)
+
+    # Edge case: all files filtered — heuristic only
+    if not llm_files:
+        print(f" [v3:heuristic_only={heuristic_total:.1f}h]", end='', flush=True)
+        return {
+            'estimated_hours': heuristic_total,
+            'raw_estimate': heuristic_total,
+            'method': 'FD_v3_heuristic_only',
+            'routed_to': 'v3_heuristic',
+            'analysis': {
+                'change_type': 'automated/trivial',
+                'new_logic_percent': 0,
+                'summary': f'All {fc} files filtered: {filter_stats["skip"]} skip, '
+                           f'{filter_stats["heuristic"]} heuristic',
+            },
+            'rule_applied': None,
+            'fd_details': {
+                'version': 'v3',
+                'heuristic_total': heuristic_total,
+                'filter_stats': filter_stats,
+                'clusters': [],
+            },
+        }
+
+    # --- Step 2: Build clusters (for metadata structure only, not per-cluster estimation) ---
+    clusters = build_clusters(llm_files)
+    print(f" [v3:clusters={len(clusters)}]", end='', flush=True)
+
+    # --- Step 3: Single metadata-only holistic call ---
+    # Use call_large_fn (separate large model) if available, otherwise default LLM
+    estimation_fn = call_large_fn if call_large_fn else call_ollama_fn
+
+    v3_result = estimate_holistic_v3(
+        message, file_info, filt, clusters,
+        move_info or {}, bulk_info or {},
+        new_file_ratio, fc, la, ld,
+        estimation_fn,
+    )
+
+    if v3_result is None:
+        # Fallback: heuristic-only estimate
+        fallback_est = max(heuristic_total, fc * 0.05)
+        print(f" [v3:llm-fail,fallback={fallback_est:.1f}h]", end='', flush=True)
+        return {
+            'estimated_hours': fallback_est,
+            'raw_estimate': fallback_est,
+            'method': 'FD_v3_fallback',
+            'routed_to': 'v3_fallback',
+            'analysis': {
+                'change_type': 'unknown',
+                'new_logic_percent': int(new_file_ratio * 100),
+                'summary': f'FD v3 LLM call failed, heuristic fallback',
+            },
+            'rule_applied': 'v3_llm_fallback',
+            'fd_details': {
+                'version': 'v3',
+                'heuristic_total': heuristic_total,
+                'filter_stats': filter_stats,
+                'clusters': [{"name": c["name"], "files": len(c["files"]),
+                              "total_added": c["total_added"]} for c in clusters],
+            },
+        }
+
+    # v3 returns the final estimate directly — no heuristic_total addition,
+    # no branch+holistic combining. The LLM sees heuristic_total as metadata
+    # and incorporates it into its own estimate.
+    final = v3_result["mid"]
+
+    cluster_info = [
+        {"name": c["name"], "files": len(c["files"]), "total_added": c["total_added"]}
+        for c in clusters
+    ]
+
+    print(f" [v3:est={final:.1f}h,conf={v3_result['confidence']}]", end='', flush=True)
+
+    return {
+        'estimated_hours': final,
+        'raw_estimate': final,
+        'method': 'FD_v3_holistic',
+        'routed_to': 'v3_holistic',
+        'analysis': {
+            'change_type': 'feature' if new_file_ratio > 0.5 else 'refactor',
+            'new_logic_percent': int(new_file_ratio * 100),
+            'summary': f'FD v3 metadata-only: {len(clusters)} clusters, '
+                       f'{filter_stats["llm"]} LLM files, '
+                       f'{filter_stats["skip"]+filter_stats["heuristic"]} filtered, '
+                       f'confidence={v3_result["confidence"]}',
+        },
+        'rule_applied': None,
+        'fd_details': {
+            'version': 'v3',
+            'estimate_low': v3_result["low"],
+            'estimate_mid': v3_result["mid"],
+            'estimate_high': v3_result["high"],
+            'confidence': v3_result["confidence"],
+            'reasoning': v3_result["reasoning"],
+            'heuristic_total_metadata': heuristic_total,
+            'filter_stats': filter_stats,
+            'clusters': cluster_info,
+            'v3_meta': v3_result.get("v3_meta"),
+            'prompt_chars': v3_result.get("prompt_chars"),
         },
     }

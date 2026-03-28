@@ -1348,6 +1348,12 @@ def setup_llm_env(llm_config):
     os.environ["PIPELINE_CACHE_NAMESPACE"] = PIPELINE_CACHE_NAMESPACE
     os.makedirs(PIPELINE_CACHE_DIR, exist_ok=True)
 
+    # Effective context length — restore from snapshot so the pipeline uses the same
+    # FD threshold as the server-side analysis that created this job.
+    eff_ctx = llm_config.get("effectiveContextLength")
+    if eff_ctx is not None:
+        os.environ["MODEL_CONTEXT_LENGTH"] = str(int(eff_ctx))
+
     # FD v2 configuration — read from Modal env vars (not from llm_config snapshot,
     # because server-side SystemSettings schema doesn't include fdV2 fields yet).
     # Set these via Modal Secret 'devghost-llm' or Modal environment variables.
@@ -1358,6 +1364,7 @@ def setup_llm_env(llm_config):
         ("FD_V2_HOLISTIC", "true"),
         ("FD_LARGE_LLM_PROVIDER", ""),
         ("FD_LARGE_LLM_MODEL", ""),
+        ("FD_V3_ENABLED", ""),
     ]:
         if env_key not in os.environ:
             os.environ[env_key] = default

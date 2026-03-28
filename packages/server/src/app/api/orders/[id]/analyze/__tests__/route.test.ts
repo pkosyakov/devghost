@@ -68,6 +68,13 @@ vi.mock('@/lib/llm-config', () => ({
   }),
 }));
 
+vi.mock('@/lib/services/model-context', () => ({
+  resolveEffectiveContext: vi.fn().mockResolvedValue({
+    rawContextLength: 65536,
+    effectiveContextLength: 49152, // 65536 * 0.75
+  }),
+}));
+
 vi.mock('@/lib/logger', () => {
   const noop = () => {};
   const child = () => mockLogger;
@@ -78,6 +85,7 @@ vi.mock('@/lib/logger', () => {
 import { requireUserSession } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getLlmConfig } from '@/lib/llm-config';
+import { resolveEffectiveContext } from '@/lib/services/model-context';
 import { POST } from '../route';
 
 // ── Helpers ──
@@ -137,7 +145,7 @@ describe('POST /api/orders/[id]/analyze', () => {
     mockCommitAnalysisCount.mockResolvedValue(0);
   });
 
-  it('local mode: calls processAnalysisJob (default)', async () => {
+  it('local mode: calls processAnalysisJob with contextLength (default)', async () => {
     setupSession();
     setupTransaction();
 
@@ -146,8 +154,13 @@ describe('POST /api/orders/[id]/analyze', () => {
 
     expect(res.status).toBe(200);
     expect(json.data.jobId).toBe('job-1');
-    expect(processAnalysisJob).toHaveBeenCalledWith('job-1', { cacheMode: 'model', forceRecalculate: false });
-    expect(getLlmConfig).not.toHaveBeenCalled(); // Not called in local mode
+    // Context resolution is called and effectiveContextLength is passed to the worker
+    expect(resolveEffectiveContext).toHaveBeenCalled();
+    expect(processAnalysisJob).toHaveBeenCalledWith('job-1', {
+      cacheMode: 'model',
+      forceRecalculate: false,
+      contextLength: 49152,
+    });
   });
 
   it('local mode: explicit PIPELINE_MODE=local', async () => {
@@ -207,10 +220,12 @@ describe('POST /api/orders/[id]/analyze', () => {
     expect(flagsUpdate.data.skipBilling).toBe(true); // billing disabled in mock
     expect(flagsUpdate.data.forceRecalculate).toBe(true);
 
-    // Second update: llmConfigSnapshot only
+    // Second update: llmConfigSnapshot with context fields
     const snapshotUpdate = mockJobUpdate.mock.calls[1][0];
     expect(snapshotUpdate.where.id).toBe('job-1');
     expect(snapshotUpdate.data.llmConfigSnapshot.openrouter.apiKey).toBeUndefined();
+    expect(snapshotUpdate.data.llmConfigSnapshot.contextLength).toBe(65536);
+    expect(snapshotUpdate.data.llmConfigSnapshot.effectiveContextLength).toBe(49152);
 
     // Third update: modalCallId from successful trigger
     const modalUpdate = mockJobUpdate.mock.calls[2][0];

@@ -8,15 +8,7 @@ import { getLlmConfig } from '@/lib/llm-config';
 import type { LlmConfig } from '@/lib/llm-config';
 import { analysisLogger } from '@/lib/logger';
 import { benchmarkSchema } from '@/lib/schemas';
-
-// Context window boundaries — mirrors Python pipeline constants
-const DEFAULT_CTX = 32768;
-const MIN_CONTEXT = 4096;
-const MAX_CONTEXT = 262144;
-
-function clampContext(raw: number): number {
-  return Math.max(MIN_CONTEXT, Math.min(MAX_CONTEXT, raw));
-}
+import { DEFAULT_CTX, clampContext, resolveModelContext, computeEffectiveContext } from '@/lib/services/model-context';
 
 // POST /api/orders/[id]/benchmark — trigger a benchmark run
 export async function POST(
@@ -85,21 +77,12 @@ export async function POST(
       return apiError(`Failed to verify Ollama model: ${err}`, 503);
     }
 
-    // Fetch actual context_length from model metadata
-    try {
-      const showResp = await fetch(`${baseUrl}/api/show`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: model }),
-        signal: AbortSignal.timeout(5000),
-      });
-      if (showResp.ok) {
-        const info = await showResp.json();
-        const ctxEntry = Object.entries(info.model_info || {})
-          .find(([k]) => k.endsWith('.context_length'));
-        if (ctxEntry) serverContextLength = Number(ctxEntry[1]);
-      }
-    } catch { /* non-fatal — falls back to client value */ }
+    // Fetch actual context_length from model metadata (shared helper)
+    serverContextLength = await resolveModelContext({
+      ...llmConfig,
+      provider: 'ollama',
+      ollama: { ...llmConfig.ollama, model },
+    });
   } else {
     // OpenRouter — two-step validation
     const apiKey = llmConfig.openrouter.apiKey;
@@ -108,6 +91,7 @@ export async function POST(
     }
 
     // Step 1: verify API key + extract model context from catalog
+    // Also resolves context length via the same catalog fetch
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 10000);
@@ -201,12 +185,7 @@ export async function POST(
     ? body.contextLength
     : DEFAULT_CTX;
   const rawContextLength = clampContext(serverContextLength ?? clientCtx);
-  // Re-clamp after 0.75x to keep fingerprint and pipeline-bridge in sync
-  const effectiveContextLength = clampContext(
-    provider === 'openrouter'
-      ? Math.floor(rawContextLength * 0.75)  // 25% safety for provider routing
-      : rawContextLength,
-  );
+  const effectiveContextLength = computeEffectiveContext(rawContextLength, provider as 'ollama' | 'openrouter');
 
   // Snapshot: full config minus secrets
   const snapshot = {

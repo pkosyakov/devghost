@@ -7,6 +7,7 @@ import { auditLog } from '@/lib/audit';
 import { analysisLogger } from '@/lib/logger';
 import { getLlmConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
+import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
 
 type CacheMode = 'any' | 'model' | 'off';
 
@@ -77,6 +78,30 @@ export async function POST(
     } catch (err) {
       analysisLogger.error({ err, orderId: id }, 'Admin rerun failed to build llm snapshot');
       return apiError('Failed to load LLM config for rerun', 500);
+    }
+  }
+
+  // Extract or resolve effective context from snapshot.
+  // When context is missing, resolve against the snapshot's own provider/model
+  // (not current global settings) to preserve FD routing consistency for reruns.
+  let effectiveContextLength: number | undefined;
+  const snap = snapshotConfig as Record<string, unknown>;
+  if (snap?.effectiveContextLength != null) {
+    effectiveContextLength = Number(snap.effectiveContextLength);
+  } else {
+    try {
+      const snapshotLlmConfig = configFromSnapshot(snap);
+      const resolveConfig = snapshotLlmConfig ?? await getLlmConfig();
+      const ctx = await resolveEffectiveContext(resolveConfig);
+      effectiveContextLength = ctx.effectiveContextLength;
+      snap.contextLength = ctx.rawContextLength;
+      snap.effectiveContextLength = ctx.effectiveContextLength;
+      analysisLogger.info(
+        { orderId: id, effectiveContextLength },
+        'Admin rerun: resolved context from snapshot model',
+      );
+    } catch (err) {
+      analysisLogger.warn({ err, orderId: id }, 'Admin rerun: failed to resolve context');
     }
   }
 
@@ -207,6 +232,7 @@ export async function POST(
       cacheMode,
       forceRecalculate: false,
       skipBillingOverride: true,
+      ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
     }).catch((err) => {
       analysisLogger.error({ err, jobId: job.id }, 'Admin rerun failed');
     });

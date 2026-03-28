@@ -1,7 +1,11 @@
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
+import { Prisma } from '@prisma/client';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
+import { getLlmConfig } from '@/lib/llm-config';
+import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
+import { analysisLogger } from '@/lib/logger';
 
 export async function POST(
   request: NextRequest,
@@ -19,11 +23,66 @@ export async function POST(
     return apiError('Order must be completed before updating', 400);
   }
 
-  // Get last analyzed SHAs from previous job
+  // Get last completed *analysis* job — exclude benchmarks to avoid inheriting
+  // a benchmark model's context window into production incremental runs.
   const lastJob = await prisma.analysisJob.findFirst({
-    where: { orderId: id, status: 'COMPLETED' },
+    where: { orderId: id, type: 'analysis', status: 'COMPLETED' },
     orderBy: { completedAt: 'desc' },
+    select: { lastAnalyzedShas: true, llmConfigSnapshot: true },
   });
+
+  // Resolve effective context: prefer snapshot from previous analysis job.
+  let effectiveContextLength: number | undefined;
+  let rawContextLength: number | undefined;
+  let snapshotConfig: Prisma.InputJsonValue | undefined;
+
+  const prevSnapshot = lastJob?.llmConfigSnapshot as Record<string, unknown> | null;
+  if (prevSnapshot?.effectiveContextLength != null) {
+    // Snapshot already has context — reuse as-is for consistency
+    effectiveContextLength = Number(prevSnapshot.effectiveContextLength);
+    rawContextLength = prevSnapshot.contextLength != null ? Number(prevSnapshot.contextLength) : undefined;
+    const cloned = JSON.parse(JSON.stringify(prevSnapshot)) as Record<string, unknown>;
+    if (cloned.openrouter && typeof cloned.openrouter === 'object') {
+      (cloned.openrouter as Record<string, unknown>).apiKey = undefined;
+    }
+    snapshotConfig = cloned as Prisma.InputJsonValue;
+  } else if (prevSnapshot) {
+    // Snapshot exists but lacks context — resolve against the snapshot's model,
+    // not current global settings, to preserve FD routing consistency.
+    try {
+      const snapshotLlmConfig = configFromSnapshot(prevSnapshot);
+      const resolveConfig = snapshotLlmConfig ?? await getLlmConfig();
+      const ctx = await resolveEffectiveContext(resolveConfig);
+      rawContextLength = ctx.rawContextLength;
+      effectiveContextLength = ctx.effectiveContextLength;
+      // Enrich existing snapshot with context fields
+      const enriched = JSON.parse(JSON.stringify(prevSnapshot)) as Record<string, unknown>;
+      if (enriched.openrouter && typeof enriched.openrouter === 'object') {
+        (enriched.openrouter as Record<string, unknown>).apiKey = undefined;
+      }
+      enriched.contextLength = rawContextLength;
+      enriched.effectiveContextLength = effectiveContextLength;
+      snapshotConfig = enriched as Prisma.InputJsonValue;
+    } catch (err) {
+      analysisLogger.warn({ err, orderId: id }, 'Update-analysis: failed to resolve context from snapshot model');
+    }
+  } else {
+    // No previous snapshot at all — resolve from current settings
+    try {
+      const llmConfig = await getLlmConfig();
+      const ctx = await resolveEffectiveContext(llmConfig);
+      rawContextLength = ctx.rawContextLength;
+      effectiveContextLength = ctx.effectiveContextLength;
+      snapshotConfig = {
+        ...llmConfig,
+        openrouter: { ...llmConfig.openrouter, apiKey: undefined },
+        contextLength: rawContextLength,
+        effectiveContextLength,
+      } as unknown as Prisma.InputJsonValue;
+    } catch (err) {
+      analysisLogger.warn({ err, orderId: id }, 'Update-analysis: failed to resolve context');
+    }
+  }
 
   // Create new job with last analyzed SHAs for incremental analysis
   const job = await prisma.analysisJob.create({
@@ -31,11 +90,14 @@ export async function POST(
       orderId: id,
       status: 'PENDING',
       ...(lastJob?.lastAnalyzedShas && { lastAnalyzedShas: lastJob.lastAnalyzedShas }),
+      ...(snapshotConfig && { llmConfigSnapshot: snapshotConfig }),
     },
   });
 
   try {
-    await processAnalysisJob(job.id);
+    await processAnalysisJob(job.id, {
+      ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
+    });
     return apiResponse({ jobId: job.id, status: 'COMPLETED' });
   } catch (error) {
     return apiError('Update analysis failed', 500);
