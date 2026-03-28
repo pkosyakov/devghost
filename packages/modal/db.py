@@ -325,29 +325,77 @@ def delete_analyses_since(conn, order_id: str, started_at) -> int:
     return deleted
 
 
-def save_commit_analyses(conn, analyses: list[dict]):
-    """Batch insert CommitAnalysis rows."""
+def get_base_commit_shas(conn, order_id: str, repository: str) -> set[str]:
+    """Get commit SHAs from the original analysis (jobId IS NULL) for benchmark pinning."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT "commitHash" FROM "CommitAnalysis"
+            WHERE "orderId" = %s AND "jobId" IS NULL AND repository = %s
+        """, (order_id, repository))
+        return {row[0] for row in cur.fetchall()}
+
+
+def delete_benchmark_analyses(conn, order_id: str, job_id: str) -> int:
+    """Delete all CommitAnalysis rows for a benchmark job (rollback on failure)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            'DELETE FROM "CommitAnalysis" WHERE "orderId" = %s AND "jobId" = %s',
+            (order_id, job_id),
+        )
+        deleted = cur.rowcount or 0
+    conn.commit()
+    return deleted
+
+
+def save_commit_analyses(conn, analyses: list[dict], job_id: str | None = None):
+    """Batch insert CommitAnalysis rows.
+
+    When job_id is provided (benchmarks), rows are written with that jobId and use
+    the composite unique constraint (orderId, commitHash, jobId) for conflict handling.
+    When job_id is None (regular analysis), rows use the partial index WHERE jobId IS NULL.
+    """
     with conn.cursor() as cur:
         for a in analyses:
-            cur.execute("""
-                INSERT INTO "CommitAnalysis" (
-                    id, "orderId", "commitHash", "commitMessage",
-                    "authorEmail", "authorName", "authorDate", repository,
-                    additions, deletions, "filesCount",
-                    "effortHours", category, complexity, confidence,
-                    method, "llmModel", "analyzedAt"
-                ) VALUES (
-                    gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
-                ) ON CONFLICT ("orderId", "commitHash") WHERE "jobId" IS NULL DO NOTHING
-            """, (
-                a["order_id"], a["commit_hash"], a["commit_message"],
-                a["author_email"], a["author_name"], a["author_date"],
-                a["repository"],
-                a["additions"], a["deletions"], a["files_count"],
-                a["effort_hours"], a["category"], a["complexity"],
-                a["confidence"], a["method"], a["llm_model"],
-            ))
+            if job_id is not None:
+                cur.execute("""
+                    INSERT INTO "CommitAnalysis" (
+                        id, "orderId", "jobId", "commitHash", "commitMessage",
+                        "authorEmail", "authorName", "authorDate", repository,
+                        additions, deletions, "filesCount",
+                        "effortHours", category, complexity, confidence,
+                        method, "llmModel", "analyzedAt"
+                    ) VALUES (
+                        gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
+                    ) ON CONFLICT ("orderId", "commitHash", "jobId") DO NOTHING
+                """, (
+                    a["order_id"], job_id, a["commit_hash"], a["commit_message"],
+                    a["author_email"], a["author_name"], a["author_date"],
+                    a["repository"],
+                    a["additions"], a["deletions"], a["files_count"],
+                    a["effort_hours"], a["category"], a["complexity"],
+                    a["confidence"], a["method"], a["llm_model"],
+                ))
+            else:
+                cur.execute("""
+                    INSERT INTO "CommitAnalysis" (
+                        id, "orderId", "commitHash", "commitMessage",
+                        "authorEmail", "authorName", "authorDate", repository,
+                        additions, deletions, "filesCount",
+                        "effortHours", category, complexity, confidence,
+                        method, "llmModel", "analyzedAt"
+                    ) VALUES (
+                        gen_random_uuid(), %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
+                    ) ON CONFLICT ("orderId", "commitHash") WHERE "jobId" IS NULL DO NOTHING
+                """, (
+                    a["order_id"], a["commit_hash"], a["commit_message"],
+                    a["author_email"], a["author_name"], a["author_date"],
+                    a["repository"],
+                    a["additions"], a["deletions"], a["files_count"],
+                    a["effort_hours"], a["category"], a["complexity"],
+                    a["confidence"], a["method"], a["llm_model"],
+                ))
     conn.commit()
 
 

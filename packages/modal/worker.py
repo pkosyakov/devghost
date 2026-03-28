@@ -53,10 +53,11 @@ if MODAL_SRC_DIR not in sys.path:
 from db import (
     connect_db, acquire_job, load_order, load_github_token,
     load_demo_live_settings,
-    get_existing_shas, lookup_cached_commits, copy_cached_to_order,
+    get_existing_shas, get_base_commit_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
     set_job_status, set_job_error, increment_total_commits,
     update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
+    delete_benchmark_analyses,
     append_job_event,
 )
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
