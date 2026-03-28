@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { auth } from '@/lib/auth';
+import { requireAdmin, isErrorResponse } from '@/lib/api-utils';
 
 function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -16,15 +16,12 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const session = await requireAdmin();
+  if (isErrorResponse(session)) return session;
   const { id } = await params;
 
-  const isAdmin = (session.user as any).role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, ...(isAdmin ? {} : { userId: session.user.id }) },
+    where: { id },
   });
   if (!order) {
     return NextResponse.json({ error: 'Order not found' }, { status: 404 });

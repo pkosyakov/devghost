@@ -13,7 +13,7 @@ vi.mock('@/lib/db', () => ({
 }));
 
 vi.mock('@/lib/api-utils', () => ({
-  requireUserSession: vi.fn().mockResolvedValue({ user: { id: 'u1', email: 'test@test.com', role: 'USER' } }),
+  requireAdmin: vi.fn().mockResolvedValue({ user: { id: 'u1', email: 'test@test.com', role: 'ADMIN' } }),
   isErrorResponse: vi.fn((r: unknown) => r instanceof Response),
   apiResponse: vi.fn((data: unknown) => new Response(JSON.stringify({ success: true, data }), { status: 200 })),
   apiError: vi.fn((msg: string, status: number) => new Response(JSON.stringify({ success: false, error: msg }), { status })),

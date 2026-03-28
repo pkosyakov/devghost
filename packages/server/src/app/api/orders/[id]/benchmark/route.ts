@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
-import { apiResponse, apiError, parseBody, requireUserSession, isErrorResponse } from '@/lib/api-utils';
+import { apiResponse, apiError, parseBody, requireAdmin, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { checkOllamaHealth } from '@/lib/services/pipeline-bridge';
 import { getLlmConfig } from '@/lib/llm-config';
@@ -16,7 +16,7 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const session = await requireUserSession();
+  const session = await requireAdmin();
   if (isErrorResponse(session)) return session;
 
   const parsed = await parseBody(request, benchmarkSchema);
@@ -24,9 +24,8 @@ export async function POST(
   const body = parsed.data;
   const { provider, model } = body;
 
-  const isAdmin = session.user.role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, ...(isAdmin ? {} : { userId: session.user.id }) },
+    where: { id },
   });
   if (!order) return apiError('Order not found', 404);
 
@@ -268,12 +267,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
-  const session = await requireUserSession();
+  const session = await requireAdmin();
   if (isErrorResponse(session)) return session;
 
-  const isAdminGet = session.user.role === 'ADMIN';
   const order = await prisma.order.findFirst({
-    where: { id, ...(isAdminGet ? {} : { userId: session.user.id }) },
+    where: { id },
     select: { id: true },
   });
   if (!order) return apiError('Order not found', 404);

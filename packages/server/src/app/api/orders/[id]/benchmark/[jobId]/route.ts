@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
-import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
+import { apiResponse, apiError, requireAdmin, isErrorResponse } from '@/lib/api-utils';
 import { requestCancel } from '@/lib/services/job-registry';
 
 // GET /api/orders/[id]/benchmark/[jobId] — Get benchmark comparison data
@@ -9,12 +9,11 @@ export async function GET(
   { params }: { params: Promise<{ id: string; jobId: string }> }
 ) {
   const { id, jobId } = await params;
-  const session = await requireUserSession();
+  const session = await requireAdmin();
   if (isErrorResponse(session)) return session;
 
-  // Verify ownership and benchmark job
   const benchmarkJob = await prisma.analysisJob.findFirst({
-    where: { id: jobId, orderId: id, type: 'benchmark', order: { userId: session.user.id } },
+    where: { id: jobId, orderId: id, type: 'benchmark' },
   });
   if (!benchmarkJob) return apiError('Benchmark not found', 404);
 
@@ -133,12 +132,11 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string; jobId: string }> }
 ) {
   const { id, jobId } = await params;
-  const session = await requireUserSession();
+  const session = await requireAdmin();
   if (isErrorResponse(session)) return session;
 
-  // Verify ownership
   const job = await prisma.analysisJob.findFirst({
-    where: { id: jobId, orderId: id, type: 'benchmark', order: { userId: session.user.id } },
+    where: { id: jobId, orderId: id, type: 'benchmark' },
     select: { id: true, status: true },
   });
   if (!job) return apiError('Benchmark not found', 404);

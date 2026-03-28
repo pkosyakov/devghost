@@ -15,8 +15,9 @@ vi.mock('@/lib/db', () => ({
   },
 }));
 
-vi.mock('@/lib/auth', () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: 'u1' } }),
+vi.mock('@/lib/api-utils', () => ({
+  requireAdmin: vi.fn().mockResolvedValue({ user: { id: 'u1', email: 'test@test.com', role: 'ADMIN' } }),
+  isErrorResponse: vi.fn((r: unknown) => r instanceof Response),
 }));
 
 import { GET } from '../route';
