@@ -47,6 +47,9 @@ interface Run {
   costUsd: number | null;
   promptRepeat: boolean;
   effectiveContextLength: number | null;
+  fdV3Enabled: boolean;
+  fdLargeModel: string | null;
+  fdLargeProvider: string | null;
   status: string;
   totalHours: number;
   mae: number | null;
@@ -65,6 +68,7 @@ interface Commit {
   linesDeleted: number;
   estimates: Record<string, number>;
   methods: Record<string, string>;
+  models: Record<string, string>;
   groundTruth: number | null;
 }
 
@@ -489,7 +493,8 @@ export function BenchmarkMatrix({ orderId }: { orderId: string }) {
       ...sortedRuns.map(r => {
         const v = c.estimates[runKey(r)];
         const m = c.methods?.[runKey(r)];
-        const fd = m?.startsWith('FD') ? ' FD' : '';
+        const model = c.models?.[runKey(r)];
+        const fd = m?.startsWith('FD') ? ` FD${model ? `(${model.split('/').pop()})` : ''}` : '';
         return v != null ? `${v.toFixed(1)}${fd}` : '';
       }),
       ...(hasGT ? [c.groundTruth != null ? c.groundTruth.toFixed(1) : ''] : []),
@@ -658,6 +663,11 @@ export function BenchmarkMatrix({ orderId }: { orderId: string }) {
                       <span className="text-xs font-normal whitespace-nowrap">
                         {run.model}
                       </span>
+                      {run.fdV3Enabled && run.fdLargeModel && (
+                        <span className="text-[10px] text-orange-600 font-medium whitespace-nowrap">
+                          50+ files: {run.fdLargeModel.split('/').pop()}
+                        </span>
+                      )}
                       {run.jobId !== null && (
                         <span className="text-[10px] text-muted-foreground">
                           {formatDate(run.createdAt)}
@@ -915,7 +925,7 @@ export function BenchmarkMatrix({ orderId }: { orderId: string }) {
                                 {isFD && (
                                   <span
                                     className="text-[9px] font-semibold text-orange-500 leading-none"
-                                    title={`Method: ${method}`}
+                                    title={`${method}${commit.models?.[runKey(run)] ? ` (${commit.models[runKey(run)]})` : ''}`}
                                   >
                                     FD
                                   </span>
