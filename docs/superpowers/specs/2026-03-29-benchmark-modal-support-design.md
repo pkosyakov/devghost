@@ -10,7 +10,7 @@ Benchmarks currently call `processAnalysisJob()` directly, which spawns a local 
 
 ## Scope
 
-1. **Admin-only access** — API routes and UI tab
+1. **Admin-only access** — API routes and UI (page-level gating)
 2. **Benchmark endpoint Modal dispatch** — trigger Modal when `PIPELINE_MODE=modal`
 3. **Modal worker benchmark mode** — handle `job.type === 'benchmark'` with appropriate guards
 4. **`setup_llm_env()` FD v3 propagation** — set FD env vars from snapshot
@@ -28,14 +28,27 @@ Benchmarks currently call `processAnalysisJob()` directly, which spawns a local 
 
 ### API
 
-- `POST /api/orders/[id]/benchmark` — replace `requireUserSession()` with `requireAdmin()`. Remove `userId` filter from order query (admin sees all orders).
+All benchmark routes require admin role:
+
+- `POST /api/orders/[id]/benchmark` — replace `requireUserSession()` with `requireAdmin()`. Remove `userId` filter from order query.
 - `GET /api/orders/[id]/benchmark` — same: `requireAdmin()`, no userId filter.
-- `GET /api/orders/[id]/benchmark/compare` — check `session.user.role === 'ADMIN'` (this route uses `auth()` directly). Remove userId filter.
+- `GET /api/orders/[id]/benchmark/[jobId]` — replace `requireUserSession()` with `requireAdmin()`. Remove `order: { userId }` from query.
+- `DELETE /api/orders/[id]/benchmark/[jobId]` — same: `requireAdmin()`, remove userId filter.
+- `GET /api/orders/[id]/benchmark/compare` — replace `auth()` check with admin check via `session.user.role === 'ADMIN'`. Remove userId filter.
 
-### UI
+### UI — Page-Level Gating
 
-- The "Benchmark" tab on the order page renders only when `session.user.role === 'ADMIN'`.
-- This is the sole entry point to benchmark UI. Hiding the tab is sufficient.
+Hiding the tab alone is not sufficient. The order page (`[locale]/(dashboard)/orders/[id]/page.tsx`) eagerly fetches benchmark data and renders `BenchmarkLauncher` outside the tab content area. Non-admin users would hit 403s on the benchmark API calls.
+
+Required changes:
+- Gate **all** benchmark-related state, queries, and components behind `session.user.role === 'ADMIN'`:
+  - `benchmarkJobId` state + polling query
+  - `benchmarkRuns` query (`/api/orders/${id}/benchmark`)
+  - `<BenchmarkLauncher>` component render
+  - Inline benchmark progress block
+  - `<TabsTrigger value="benchmark">` tab header
+  - `<TabsContent value="benchmark">` with `<BenchmarkMatrix>`
+- Non-admin users see no benchmark UI and trigger no benchmark API calls.
 
 ---
 
@@ -89,11 +102,33 @@ After `extract_commits()`:
 2. Filter extracted commits to only those in the base set
 3. Pattern exists in TS `processAnalysisJob` (lines 308-318)
 
+New DB helper: `get_base_commit_shas(conn, order_id, repository)` in `db.py`.
+
 ### Write CommitAnalysis with jobId
 
-`save_commit_analyses()` in `db.py` currently writes `job_id = NULL`. For benchmarks, pass `job_id = <benchmark_job_id>`.
+`save_commit_analyses()` in `db.py` currently hardcodes `jobId` as NULL in the INSERT and uses `ON CONFLICT ("orderId", "commitHash") WHERE "jobId" IS NULL`. For benchmarks:
 
-Add an optional `job_id` parameter to `save_commit_analyses()`.
+- Add optional `job_id` parameter to `save_commit_analyses()`
+- When `job_id` is provided: include `"jobId"` in the INSERT columns, use the unique constraint `@@unique([orderId, commitHash, jobId])` for conflict handling
+- The existing `ON CONFLICT ... WHERE "jobId" IS NULL` clause only applies to non-benchmark rows
+
+### Benchmark-aware rollback on failure
+
+The current failure path calls `delete_analyses_since(conn, order_id, started_at)` which only deletes rows with `jobId IS NULL`. For benchmarks, partial rows would be left behind.
+
+Add `delete_benchmark_analyses(conn, order_id, job_id)` to `db.py`:
+```sql
+DELETE FROM "CommitAnalysis"
+WHERE "orderId" = %s AND "jobId" = %s
+```
+
+In the worker exception handler, use this instead of `delete_analyses_since` when `is_benchmark`. This ensures a failed benchmark leaves no partial data — a clean retry or rerun starts fresh.
+
+### Fail-fast semantics
+
+Current benchmarks are strict fail-fast: the benchmark route passes `failFast: true`, and the Modal worker forces `FAIL_FAST=1` in `process_commits()`. This must be preserved for Modal benchmarks.
+
+The worker should set `FAIL_FAST=1` for benchmark jobs, same as it does in `process_commits()`. If a single commit fails, the entire benchmark fails — this ensures comparable runs (no partial results mixing error fallbacks with real estimates).
 
 ### Completion
 
@@ -133,8 +168,8 @@ This applies to both regular analysis (snapshot captures config at launch time) 
 ## Error Handling
 
 - **Modal trigger fails:** job stays `PENDING`, watchdog retries (same as analysis)
-- **Worker crash mid-benchmark:** job stays `RUNNING`, watchdog marks `FAILED_RETRYABLE` after timeout
-- **Pipeline error on individual commit:** commit gets `method: 'error'`, benchmark continues (failFast is already passed from endpoint)
+- **Worker crash mid-benchmark:** job stays `RUNNING`, watchdog marks `FAILED_RETRYABLE` after timeout. Rollback deletes all benchmark CommitAnalysis rows for that jobId.
+- **Pipeline error on individual commit (fail-fast):** entire benchmark fails immediately. `delete_benchmark_analyses()` cleans up partial rows. Job marked `FAILED_FATAL`. User can retry from UI.
 
 ## Testing
 
@@ -151,7 +186,8 @@ No changes needed. The existing progress endpoint already supports `?jobId=` par
 | File | Change |
 |------|--------|
 | `packages/server/src/app/api/orders/[id]/benchmark/route.ts` | Admin auth, Modal dispatch |
+| `packages/server/src/app/api/orders/[id]/benchmark/[jobId]/route.ts` | Admin auth |
 | `packages/server/src/app/api/orders/[id]/benchmark/compare/route.ts` | Admin auth |
-| `packages/server/src/components/benchmark-matrix.tsx` | Admin-only tab rendering |
-| `packages/modal/worker.py` | Benchmark mode branching |
-| `packages/modal/db.py` | `save_commit_analyses()` jobId param |
+| `packages/server/src/app/[locale]/(dashboard)/orders/[id]/page.tsx` | Page-level admin gating for all benchmark UI |
+| `packages/modal/worker.py` | Benchmark mode branching, fail-fast, FD v3 env |
+| `packages/modal/db.py` | `save_commit_analyses()` jobId param, `get_base_commit_shas()`, `delete_benchmark_analyses()` |
