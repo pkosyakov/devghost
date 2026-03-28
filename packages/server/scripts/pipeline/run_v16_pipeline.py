@@ -929,6 +929,24 @@ def apply_correction_rules(commit_msg, estimate, analysis, insertions, deletions
     return estimate, None
 
 
+# FD methods that actually call the large/expensive model (FD_LARGE_LLM_MODEL).
+# All other FD_* methods are heuristic-only or use the default model.
+_FD_LARGE_MODEL_METHODS = frozenset({
+    'FD_v3_holistic',
+    'FD_v2_single_holistic', 'FD_v2_single_call',
+    'FD_v2_cluster_holistic', 'FD_v2_cluster',
+})
+
+
+def _resolve_commit_model(method):
+    """Return the model name that actually processed this commit."""
+    if method in _FD_LARGE_MODEL_METHODS:
+        return FD_LARGE_LLM_MODEL or None
+    if method.startswith('FD'):
+        return None  # heuristic-only FD route — no LLM call
+    return OPENROUTER_MODEL
+
+
 def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
     # Step 1: get diff + changed_files
     diff, fc, la, ld, changed_files = get_commit_diff(repo_dir, sha, repo_slug)
@@ -1347,7 +1365,7 @@ def main():
                 'completion_tokens': commit_completion_tokens,
                 'duration_ms': round(commit_duration_ms, 1),
                 'openrouter_cost_usd': round(commit_cost, 6),
-                'model': FD_LARGE_LLM_MODEL if method.startswith('FD') else OPENROUTER_MODEL,
+                'model': _resolve_commit_model(method),
             }
 
             # J: ensemble fields

@@ -950,7 +950,7 @@ function mapToCommitAnalysis(
     llmModel: result.method === 'root_commit_skip' || result.method === 'error'
       ? null
       : result.method?.startsWith('FD')
-        ? (result.model || process.env.FD_LARGE_LLM_MODEL || null)
+        ? (result.model || null)
         : llmModel,
   };
 }
