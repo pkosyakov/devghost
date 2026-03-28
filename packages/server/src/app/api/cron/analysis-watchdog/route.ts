@@ -559,6 +559,9 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
 
 
 async function handleJobFailure(job: any) {
+  // Benchmark failures must not affect the underlying order
+  if (job.type === 'benchmark') return;
+
   const order = job.order ?? await prisma.order.findUnique({ where: { id: job.orderId } });
   if (!order) return;
 
