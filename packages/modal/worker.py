@@ -173,6 +173,7 @@ def run_analysis(job_id: str):
         return  # Already running, cancelled, or doesn't exist
     order_id = job.get("orderId") or job.get("order_id")
     job_started_at = job.get("startedAt") or job.get("started_at")
+    is_benchmark = job.get("type") == "benchmark"
 
     append_job_event(
         conn,
@@ -222,15 +223,18 @@ def run_analysis(job_id: str):
         github_token = load_github_token(conn, order["user_id"])
         scope = build_scope(order)
         excluded_emails = order.get("excluded_developers") or []
-        skip_billing = job.get("skipBilling", False)
-        force_recalculate = job.get("forceRecalculate", False)
-        demo_live_mode, demo_live_chunk_size = load_demo_live_settings(conn)
+        skip_billing = True if is_benchmark else job.get("skipBilling", False)
+        force_recalculate = False if is_benchmark else job.get("forceRecalculate", False)
+        if is_benchmark:
+            demo_live_mode, demo_live_chunk_size = False, 1
+        else:
+            demo_live_mode, demo_live_chunk_size = load_demo_live_settings(conn)
         demo_live_chunk_size = max(1, min(200, int(demo_live_chunk_size)))
 
         # Setup LLM environment from config snapshot (WITHOUT API key -- read from secret)
         setup_llm_env(llm_config)
 
-        cache_mode = job.get("cacheMode") or job.get("cache_mode") or "model"
+        cache_mode = "off" if is_benchmark else (job.get("cacheMode") or job.get("cache_mode") or "model")
         current_llm_model = (
             llm_config.get("openrouter", {}).get("model")
             if llm_config.get("provider") == "openrouter"
@@ -318,7 +322,8 @@ def run_analysis(job_id: str):
             )
 
             # a. Clone/update
-            update_progress(conn, job_id, step="cloning", repo_name=repo_full_name)
+            update_progress(conn, job_id, step="cloning",
+                            repo_name=None if is_benchmark else repo_full_name)
             clone_started = time.time()
             append_job_event(
                 conn,
@@ -469,6 +474,8 @@ def run_analysis(job_id: str):
                 repo_idx, len(repos), skip_billing=skip_billing,
                 demo_live_mode=demo_live_mode,
                 demo_live_chunk_size=demo_live_chunk_size,
+                is_benchmark=is_benchmark,
+                benchmark_job_id=job_id if is_benchmark else None,
             )
 
         # Phase 1.5 (LAST_N only): Global sort + truncate to top N by date
@@ -512,6 +519,8 @@ def run_analysis(job_id: str):
                     er["repo_idx"], len(repos), skip_billing=skip_billing,
                     demo_live_mode=demo_live_mode,
                     demo_live_chunk_size=demo_live_chunk_size,
+                    is_benchmark=is_benchmark,
+                    benchmark_job_id=job_id if is_benchmark else None,
                 )
 
         # (cached commits already accounted per-repo in _process_repo_commits)
@@ -531,16 +540,28 @@ def run_analysis(job_id: str):
         )
 
         # All done
-        set_job_status(conn, job_id, "LLM_COMPLETE", progress=95)
-        append_job_event(
-            conn,
-            job_id,
-            "Modal worker finished; waiting for post-processing",
-            phase="worker",
-            code="WORKER_LLM_COMPLETE",
-            payload={"progress": 95},
-        )
-        _try_trigger_watchdog_post_processing(conn, job_id)
+        if is_benchmark:
+            # Benchmarks complete directly — no post-processing (metrics, DailyEffort)
+            set_job_status(conn, job_id, "COMPLETED", progress=100)
+            append_job_event(
+                conn,
+                job_id,
+                "Benchmark completed",
+                phase="worker",
+                code="BENCHMARK_COMPLETED",
+                payload={"progress": 100, "totalAnalyzed": total_analyzed},
+            )
+        else:
+            set_job_status(conn, job_id, "LLM_COMPLETE", progress=95)
+            append_job_event(
+                conn,
+                job_id,
+                "Modal worker finished; waiting for post-processing",
+                phase="worker",
+                code="WORKER_LLM_COMPLETE",
+                payload={"progress": 95},
+            )
+            _try_trigger_watchdog_post_processing(conn, job_id)
         _commit_repos_volume_checkpoint(
             conn=conn,
             job_id=job_id,
@@ -563,9 +584,12 @@ def run_analysis(job_id: str):
         ])
 
         rollback_deleted = 0
-        if order_id and job_started_at:
+        if order_id:
             try:
-                rollback_deleted = delete_analyses_since(conn, order_id, job_started_at)
+                if is_benchmark:
+                    rollback_deleted = delete_benchmark_analyses(conn, order_id, job_id)
+                elif job_started_at:
+                    rollback_deleted = delete_analyses_since(conn, order_id, job_started_at)
                 if rollback_deleted > 0:
                     append_job_event(
                         conn,
@@ -574,7 +598,7 @@ def run_analysis(job_id: str):
                         level="warn",
                         phase="worker",
                         code="ANALYSES_ROLLBACK_OK",
-                        payload={"deletedCount": rollback_deleted},
+                        payload={"deletedCount": rollback_deleted, "benchmark": is_benchmark},
                     )
             except Exception as rollback_err:
                 try:
@@ -608,11 +632,13 @@ def run_analysis(job_id: str):
         # (network blip, Supabase restart), fall back to a fresh connection
         # so watchdog gets error context instead of a silent stale heartbeat.
         try:
-            set_job_error(conn, job_id, error_msg, fatal=is_fatal)
+            set_job_error(conn, job_id, error_msg, fatal=is_fatal,
+                          skip_order_update=is_benchmark)
         except Exception:
             try:
                 fresh_conn = connect_db()
-                set_job_error(fresh_conn, job_id, error_msg, fatal=is_fatal)
+                set_job_error(fresh_conn, job_id, error_msg, fatal=is_fatal,
+                              skip_order_update=is_benchmark)
                 fresh_conn.close()
             except Exception:
                 pass  # Watchdog will catch this via stale heartbeat
@@ -638,6 +664,7 @@ def _process_repo_commits(
     rate_limiter, total_analyzed, total_cache_hits,
     repo_idx, total_repos, skip_billing=False, demo_live_mode=False,
     demo_live_chunk_size=DEMO_LIVE_CHUNK_SIZE_ENV_FALLBACK,
+    is_benchmark=False, benchmark_job_id=None,
 ):
     """Process commits for a single repo: dedup -> cache -> LLM -> save.
     Returns updated (total_analyzed, total_cache_hits) counters.
@@ -659,21 +686,38 @@ def _process_repo_commits(
         },
     )
 
-    # Intra-order dedup
-    existing_shas = get_existing_shas(conn, order["id"], repo_full_name)
-    commits = [c for c in commits if c["sha"] not in existing_shas]
-    append_job_event(
-        conn,
-        job_id,
-        "Intra-order deduplication complete",
-        phase="dedup",
-        code="REPO_DEDUP_DONE",
-        repo_name=repo_full_name,
-        payload={
-            "existingCount": len(existing_shas),
-            "remainingCount": len(commits),
-        },
-    )
+    # Intra-order dedup / benchmark commit pinning
+    if is_benchmark:
+        # Pin to base analysis set — only analyze commits the original analyzed
+        base_shas = get_base_commit_shas(conn, order["id"], repo_full_name)
+        commits = [c for c in commits if c["sha"] in base_shas]
+        append_job_event(
+            conn,
+            job_id,
+            "Benchmark commit pinning complete",
+            phase="dedup",
+            code="BENCHMARK_PIN_DONE",
+            repo_name=repo_full_name,
+            payload={
+                "baseShaCount": len(base_shas),
+                "pinnedCount": len(commits),
+            },
+        )
+    else:
+        existing_shas = get_existing_shas(conn, order["id"], repo_full_name)
+        commits = [c for c in commits if c["sha"] not in existing_shas]
+        append_job_event(
+            conn,
+            job_id,
+            "Intra-order deduplication complete",
+            phase="dedup",
+            code="REPO_DEDUP_DONE",
+            repo_name=repo_full_name,
+            payload={
+                "existingCount": len(existing_shas),
+                "remainingCount": len(commits),
+            },
+        )
 
     if not commits:
         append_job_event(
@@ -854,7 +898,7 @@ def _process_repo_commits(
             for r in chunk_results
         ]
         if analyses:
-            save_commit_analyses(conn, analyses)
+            save_commit_analyses(conn, analyses, job_id=benchmark_job_id)
             saved_count += len(analyses)
             total_analyzed += len(analyses)
 

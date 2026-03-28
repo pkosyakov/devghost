@@ -543,6 +543,10 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
     if status == "LLM_COMPLETE":
         updates.append('"currentStep" = %s')
         params.append("llm_complete")
+    elif status == "COMPLETED":
+        updates.append('"completedAt" = NOW()')
+        updates.append('"currentStep" = %s')
+        params.append("completed")
 
     params.append(job_id)
     with conn.cursor() as cur:
@@ -553,8 +557,13 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
     conn.commit()
 
 
-def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False):
-    """Mark job as failed (retryable or fatal)."""
+def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False,
+                  skip_order_update: bool = False):
+    """Mark job as failed (retryable or fatal).
+
+    When skip_order_update is True (benchmarks), the Order status is NOT set to FAILED.
+    Benchmark failures should not affect the underlying order.
+    """
     status = "FAILED_FATAL" if fatal else "FAILED_RETRYABLE"
     with conn.cursor() as cur:
         cur.execute("""
@@ -562,7 +571,7 @@ def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False):
             SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW()
             WHERE id = %s
         """, (status, error_msg[:2000], job_id))  # Truncate error to avoid DB overflow
-        if fatal:
+        if fatal and not skip_order_update:
             cur.execute(
                 """
                 UPDATE "Order"
