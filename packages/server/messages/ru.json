@@ -836,7 +836,7 @@
       "title": "Системные настройки",
       "description": "Настройка LLM-провайдера и управление кэшем пайплайна",
       "llmProvider": "LLM-провайдер",
-      "llmProviderDescription": "Настройка AI-модели для анализа коммитов",
+      "llmProviderDescription": "Настройка дефолтной AI-модели для анализа малых и обычных коммитов (до 49 файлов)",
       "loadingSettings": "Загрузка настроек LLM...",
       "provider": "Провайдер",
       "demoLiveMode": "Demo live mode",
@@ -890,7 +890,15 @@
       "contextSize": "{size}K контекст",
       "priceIn": "вход: {price}/M",
       "priceOut": "выход: {price}/M",
-      "refreshPricing": "Обновить цены с OpenRouter"
+      "refreshPricing": "Обновить цены с OpenRouter",
+      "largePathTitle": "Модель для крупных коммитов (FD v3)",
+      "largePathDescription": "Отдельная модель для коммитов с 50+ файлами. Настраивается через переменные окружения, не редактируется здесь.",
+      "largePathEnabled": "FD v3 включён",
+      "largePathDisabled": "Выключен",
+      "largePathProvider": "Провайдер",
+      "largePathModel": "Модель",
+      "largePathNotConfigured": "Не настроено",
+      "largePathEnvNote": "Задаётся через FD_V3_ENABLED, FD_LARGE_LLM_PROVIDER, FD_LARGE_LLM_MODEL"
     },
     "monitoring": {
       "title": "Мониторинг системы",

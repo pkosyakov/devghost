@@ -17,7 +17,8 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, Settings2, AlertCircle, ChevronsUpDown, RefreshCw, Database, Trash2 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Loader2, Settings2, AlertCircle, ChevronsUpDown, RefreshCw, Database, Trash2, Layers } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
 
@@ -36,6 +37,9 @@ interface LlmSettings {
   openrouterOutputPrice?: number;
   demoLiveMode: boolean;
   demoLiveChunkSize: number;
+  fdV3Enabled?: boolean;
+  fdLargeLlmProvider?: string;
+  fdLargeLlmModel?: string;
 }
 
 interface OpenRouterModel {
@@ -68,17 +72,17 @@ export default function AdminSettingsPage() {
 
   // LLM settings
   const [llmSettings, setLlmSettings] = useState<LlmSettings>({
-    llmProvider: 'ollama',
+    llmProvider: 'openrouter',
     ollamaUrl: 'http://localhost:11434',
     ollamaModel: 'qwen2.5-coder:32b',
     openrouterApiKey: '',
-    openrouterModel: 'qwen/qwen-2.5-coder-32b-instruct',
+    openrouterModel: 'qwen/qwen3-coder-next',
     openrouterProviderOrder: 'Chutes',
     openrouterProviderIgnore: 'Cloudflare',
     openrouterAllowFallbacks: true,
     openrouterRequireParameters: true,
-    openrouterInputPrice: 0.03,
-    openrouterOutputPrice: 0.11,
+    openrouterInputPrice: 0.12,
+    openrouterOutputPrice: 0.75,
     demoLiveMode: false,
     demoLiveChunkSize: 10,
   });
@@ -199,10 +203,12 @@ export default function AdminSettingsPage() {
     setLlmSaving(true);
     setLlmError('');
     try {
+      // Strip read-only FD v3 fields before sending
+      const { fdV3Enabled, fdLargeLlmProvider, fdLargeLlmModel, ...editableSettings } = llmSettings;
       const response = await fetch('/api/admin/llm-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(llmSettings),
+        body: JSON.stringify(editableSettings),
       });
 
       const result = await response.json();
@@ -635,6 +641,55 @@ export default function AdminSettingsPage() {
                   )}
                 </Button>
               </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Large Commit Model (FD v3) — read-only */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Layers className="h-5 w-5" />
+            <CardTitle>{t('largePathTitle')}</CardTitle>
+          </div>
+          <CardDescription>
+            {t('largePathDescription')}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {llmLoading ? (
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm text-muted-foreground">{t('loadingSettings')}</span>
+            </div>
+          ) : (
+            <>
+              <div className="grid gap-4 md:grid-cols-3">
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground mb-1">{t('largePathEnabled')}</p>
+                  {llmSettings.fdV3Enabled ? (
+                    <Badge variant="default">{t('largePathEnabled')}</Badge>
+                  ) : (
+                    <Badge variant="secondary">{t('largePathDisabled')}</Badge>
+                  )}
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground mb-1">{t('largePathProvider')}</p>
+                  <p className="font-mono text-sm">
+                    {llmSettings.fdLargeLlmProvider || t('largePathNotConfigured')}
+                  </p>
+                </div>
+                <div className="rounded-md border p-3">
+                  <p className="text-xs text-muted-foreground mb-1">{t('largePathModel')}</p>
+                  <p className="font-mono text-sm">
+                    {llmSettings.fdLargeLlmModel || t('largePathNotConfigured')}
+                  </p>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {t('largePathEnvNote')}
+              </p>
             </>
           )}
         </CardContent>

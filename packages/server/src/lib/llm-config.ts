@@ -44,15 +44,17 @@ export async function getLlmConfig(): Promise<LlmConfig> {
     update: {} as any,
     create: {
       id: 'singleton',
-      llmProvider: process.env.LLM_PROVIDER || 'ollama',
+      llmProvider: process.env.LLM_PROVIDER || 'openrouter',
       ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
       ollamaModel: process.env.OLLAMA_MODEL || 'qwen2.5-coder:32b',
       openrouterApiKey: process.env.OPENROUTER_API_KEY || '',
-      openrouterModel: process.env.OPENROUTER_MODEL || 'qwen/qwen-2.5-coder-32b-instruct',
+      openrouterModel: process.env.OPENROUTER_MODEL || 'qwen/qwen3-coder-next',
       openrouterProviderOrder: process.env.OPENROUTER_PROVIDER_ORDER || 'Chutes',
       openrouterProviderIgnore: process.env.OPENROUTER_PROVIDER_IGNORE || 'Cloudflare',
       openrouterAllowFallbacks: parseBool(process.env.OPENROUTER_ALLOW_FALLBACKS, true),
       openrouterRequireParameters: parseBool(process.env.OPENROUTER_REQUIRE_PARAMETERS, true),
+      openrouterInputPrice: 0.12,
+      openrouterOutputPrice: 0.75,
       demoLiveMode: false,
     } as any,
   });
@@ -116,7 +118,7 @@ export async function getLlmConfig(): Promise<LlmConfig> {
  * Use only when async is not possible (e.g. module-level init).
  */
 export function getLlmConfigSync(): LlmConfig {
-  const provider = (process.env.LLM_PROVIDER || 'ollama') as LlmProvider;
+  const provider = (process.env.LLM_PROVIDER || 'openrouter') as LlmProvider;
 
   if (provider !== 'ollama' && provider !== 'openrouter') {
     throw new Error(
@@ -132,9 +134,9 @@ export function getLlmConfigSync(): LlmConfig {
     },
     openrouter: {
       apiKey: process.env.OPENROUTER_API_KEY || '',
-      model: process.env.OPENROUTER_MODEL || 'qwen/qwen-2.5-coder-32b-instruct',
-      inputPrice: 0.03,
-      outputPrice: 0.11,
+      model: process.env.OPENROUTER_MODEL || 'qwen/qwen3-coder-next',
+      inputPrice: 0.12,
+      outputPrice: 0.75,
       providerOrder: parseCsv(process.env.OPENROUTER_PROVIDER_ORDER, 'Chutes'),
       providerIgnore: parseCsv(process.env.OPENROUTER_PROVIDER_IGNORE, 'Cloudflare'),
       allowFallbacks: parseBool(process.env.OPENROUTER_ALLOW_FALLBACKS, true),

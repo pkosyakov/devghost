@@ -35,6 +35,16 @@ function envBool(name: string, fallback: boolean): boolean {
   return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
 }
 
+/** Read-only FD v3 large-path diagnostics from env. */
+function getFdV3Diagnostics() {
+  const enabled = (process.env.FD_V3_ENABLED ?? '').toLowerCase();
+  return {
+    fdV3Enabled: ['1', 'true', 'yes'].includes(enabled),
+    fdLargeLlmProvider: process.env.FD_LARGE_LLM_PROVIDER || '',
+    fdLargeLlmModel: process.env.FD_LARGE_LLM_MODEL || '',
+  };
+}
+
 function formatSettings(settings: {
   llmProvider: string;
   ollamaUrl: string;
@@ -72,6 +82,7 @@ function formatSettings(settings: {
     openrouterOutputPrice: Number(settings.openrouterOutputPrice),
     demoLiveMode: settings.demoLiveMode ?? false,
     demoLiveChunkSize: settings.demoLiveChunkSize ?? 10,
+    ...getFdV3Diagnostics(),
   };
 }
 
@@ -85,20 +96,21 @@ export async function GET() {
 
   if (!settings) {
     return apiResponse({
-      llmProvider: 'ollama',
+      llmProvider: 'openrouter',
       ollamaUrl: 'http://localhost:11434',
       ollamaModel: 'qwen2.5-coder:32b',
       openrouterApiKey: !!process.env.OPENROUTER_API_KEY ? '(env)' : '',
-      openrouterModel: 'qwen/qwen-2.5-coder-32b-instruct',
+      openrouterModel: 'qwen/qwen3-coder-next',
       openrouterKeySource: process.env.OPENROUTER_API_KEY ? 'env' : 'none',
       openrouterProviderOrder: process.env.OPENROUTER_PROVIDER_ORDER || 'Chutes',
       openrouterProviderIgnore: process.env.OPENROUTER_PROVIDER_IGNORE || 'Cloudflare',
       openrouterAllowFallbacks: envBool('OPENROUTER_ALLOW_FALLBACKS', true),
       openrouterRequireParameters: envBool('OPENROUTER_REQUIRE_PARAMETERS', true),
-      openrouterInputPrice: 0.03,
-      openrouterOutputPrice: 0.11,
+      openrouterInputPrice: 0.12,
+      openrouterOutputPrice: 0.75,
       demoLiveMode: false,
       demoLiveChunkSize: 10,
+      ...getFdV3Diagnostics(),
     });
   }
 
@@ -157,6 +169,9 @@ export async function PATCH(request: NextRequest) {
         demoLiveChunkSize: data.demoLiveChunkSize ?? 10,
       } as any,
     });
+
+    // Strip read-only FD v3 fields — never persist to DB via PATCH
+    // (they come from env and are returned read-only by formatSettings)
 
     const auditDetails = { ...data };
     if (auditDetails.openrouterApiKey) {

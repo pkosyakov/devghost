@@ -13,10 +13,10 @@ export async function GET() {
     where: { id: 'singleton' },
   });
 
-  const provider = settings?.llmProvider || 'ollama';
+  const provider = settings?.llmProvider || 'openrouter';
 
-  const inputPrice = settings ? Number(settings.openrouterInputPrice) : 0.03;
-  const outputPrice = settings ? Number(settings.openrouterOutputPrice) : 0.11;
+  const inputPrice = settings ? Number(settings.openrouterInputPrice) : 0.12;
+  const outputPrice = settings ? Number(settings.openrouterOutputPrice) : 0.75;
 
   const costPerCommitUsd =
     provider === 'openrouter'
@@ -28,7 +28,7 @@ export async function GET() {
     provider,
     model:
       provider === 'openrouter'
-        ? settings?.openrouterModel || 'qwen/qwen-2.5-coder-32b-instruct'
+        ? settings?.openrouterModel || 'qwen/qwen3-coder-next'
         : settings?.ollamaModel || 'qwen2.5-coder:32b',
     costPerCommitUsd,
   });
