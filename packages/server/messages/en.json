@@ -32,6 +32,7 @@
       "dashboard": "Dashboard",
       "orders": "Orders",
       "publications": "Publications",
+      "people": "People",
       "newOrder": "New order",
       "settings": "Settings",
       "profile": "Profile",
@@ -1039,6 +1040,122 @@
       "pubDeleted": "Publication deleted",
       "failedLoadRepos": "Failed to load repos",
       "validationRequired": "Order and repository are required"
+    }
+  },
+  "people": {
+    "title": "People",
+    "search": {
+      "placeholder": "Search contributors..."
+    },
+    "summary": {
+      "total": "Contributors",
+      "unresolved": "Unresolved Identities",
+      "excluded": "Excluded"
+    },
+    "filters": {
+      "classification": "Classification",
+      "identityHealth": "Identity Health",
+      "all": "All",
+      "internal": "Internal",
+      "external": "External",
+      "bot": "Bot",
+      "formerEmployee": "Former Employee",
+      "healthy": "Healthy",
+      "attention": "Needs Attention",
+      "unresolved": "Unresolved"
+    },
+    "table": {
+      "name": "Name",
+      "email": "Email",
+      "classification": "Classification",
+      "identity": "Identity",
+      "repos": "Repositories",
+      "lastActivity": "Last Activity"
+    },
+    "actions": {
+      "viewDetail": "View Detail",
+      "exclude": "Exclude",
+      "include": "Include",
+      "classify": "Classify",
+      "classifyAs": "Classify as..."
+    },
+    "identityQueue": {
+      "title": "Identity Queue",
+      "description": "Unresolved aliases that need review",
+      "resolve": "Resolve",
+      "empty": "No unresolved identities"
+    },
+    "empty": {
+      "title": "No contributors yet",
+      "description": "Run an analysis to populate contributors."
+    },
+    "error": {
+      "title": "Failed to load contributors",
+      "retry": "Retry"
+    },
+    "filteredEmpty": {
+      "title": "No contributors match filters",
+      "reset": "Reset Filters"
+    }
+  },
+  "contributorDetail": {
+    "backToList": "Back to People",
+    "header": {
+      "excluded": "Excluded",
+      "actions": "Actions"
+    },
+    "identity": {
+      "title": "Identity & Aliases",
+      "attached": "Attached Aliases",
+      "potentialMatches": "Potential Matches",
+      "resolved": "Resolved",
+      "autoMerged": "Auto-merged",
+      "manual": "Manual",
+      "unresolved": "Unresolved",
+      "attachToThis": "Attach to this contributor",
+      "classifyHint": "Classify"
+    },
+    "kpi": {
+      "commits": "Commits",
+      "repositories": "Repositories",
+      "lastActivity": "Last Activity"
+    },
+    "repos": {
+      "title": "Repository Breakdown",
+      "name": "Repository",
+      "commits": "Commits",
+      "lastActivity": "Last Activity",
+      "empty": "No repository activity found"
+    },
+    "commits": {
+      "title": "Commit Evidence",
+      "sha": "SHA",
+      "message": "Message",
+      "repo": "Repository",
+      "date": "Date",
+      "effort": "Effort (h)",
+      "empty": "No commits found"
+    },
+    "actions": {
+      "exclude": "Exclude Contributor",
+      "include": "Include Contributor",
+      "classify": "Classify",
+      "merge": "Merge with..."
+    },
+    "merge": {
+      "title": "Merge into another contributor",
+      "search": "Search contributors...",
+      "cancel": "Cancel",
+      "confirm": "Merge",
+      "noResults": "No contributors found"
+    },
+    "empty": {
+      "activity": "No activity in this period"
+    },
+    "error": {
+      "title": "Failed to load contributor",
+      "notFound": "Contributor not found",
+      "retry": "Retry"
     }
   }
 }
