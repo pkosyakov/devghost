@@ -868,6 +868,7 @@ def _process_repo_commits(
 
         chunk_results = evaluate_chunk(
             chunk_commits, repo_path, language, llm_config, rate_limiter,
+            is_benchmark=is_benchmark,
         )
 
         _touch_chunk_heartbeat(
@@ -1245,7 +1246,8 @@ def _emit_commit_live_results(
         )
 
 
-def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter):
+def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter,
+                   is_benchmark=False):
     """
     Process a chunk of commits through the LLM pipeline.
 
@@ -1256,6 +1258,13 @@ def evaluate_chunk(commits, repo_path, language, llm_config, rate_limiter):
     sys.path.insert(0, "/app/pipeline")
     from run_devghost_pipeline import process_commits
     from run_v16_pipeline import reload_config
+
+    # Benchmarks must bypass file-level LLM cache for reproducibility testing.
+    # Explicitly clear for non-benchmarks to avoid warm container state leak.
+    if is_benchmark:
+        os.environ["NO_LLM_CACHE"] = "1"
+    else:
+        os.environ.pop("NO_LLM_CACHE", None)
 
     # Sync pipeline globals with os.environ (warm container may have stale values)
     reload_config()

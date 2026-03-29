@@ -256,11 +256,6 @@ export async function POST(
     return apiError('No completed analysis found to benchmark against', 400);
   }
 
-  // Detect repeated same-config run (for noLlmCache)
-  const previousSameRun = await prisma.analysisJob.findFirst({
-    where: { orderId: id, type: 'benchmark', llmConfigFingerprint: fingerprint, status: 'COMPLETED' },
-  });
-
   const job = await prisma.analysisJob.create({
     data: {
       orderId: id,
@@ -320,7 +315,7 @@ export async function POST(
     processAnalysisJob(job.id, {
       isBenchmark: true,
       llmConfigOverride: resolvedConfig,
-      noLlmCache: !!previousSameRun,
+      noLlmCache: true,
       contextLength: effectiveContextLength,
       failFast: true,
       promptRepeat,

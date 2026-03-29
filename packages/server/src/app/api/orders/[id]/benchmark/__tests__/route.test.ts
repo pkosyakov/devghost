@@ -67,8 +67,7 @@ function setupMocks() {
   mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
   mockJobFindFirst
     .mockResolvedValueOnce(null)  // no running job
-    .mockResolvedValueOnce({ id: 'base-job' })  // base job
-    .mockResolvedValueOnce(null);  // no previous same run
+    .mockResolvedValueOnce({ id: 'base-job' });  // base job
   mockJobCreate.mockResolvedValue({ id: 'new-job' });
   // Mock fetch for OpenRouter validation (models catalog + preflight)
   (global.fetch as any) = vi.fn()
