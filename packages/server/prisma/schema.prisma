@@ -61,6 +61,92 @@ model User {
   comments              Comment[]
   refreshTokens         RefreshToken[]
   deviceTokens          DeviceToken[]
+  workspace            Workspace?
+  curationAuditLogs    CurationAuditLog[]
+}
+
+// ==================== CONTRIBUTOR FOUNDATION ====================
+
+model Workspace {
+  id           String              @id @default(cuid())
+  name         String              @default("My Workspace")
+  ownerId      String              @unique
+  owner        User                @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  contributors Contributor[]
+  aliases      ContributorAlias[]
+  auditLogs    CurationAuditLog[]
+
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+}
+
+model Contributor {
+  id             String                      @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  displayName    String
+  primaryEmail   String
+  classification ContributorClassification   @default(INTERNAL)
+  isExcluded     Boolean                     @default(false)
+  excludedAt     DateTime?
+
+  aliases        ContributorAlias[]
+  auditLogs      CurationAuditLog[]
+
+  createdAt      DateTime                    @default(now())
+  updatedAt      DateTime                    @updatedAt
+
+  @@unique([workspaceId, primaryEmail])
+  @@index([workspaceId])
+}
+
+model ContributorAlias {
+  id                 String                      @id @default(cuid())
+  workspaceId        String
+  workspace          Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  contributorId      String?
+  contributor        Contributor?                @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  providerType       String                      @default("github")
+  providerId         String?
+  email              String
+  username           String?
+
+  resolveStatus      AliasResolveStatus          @default(UNRESOLVED)
+  mergeReason        String?
+  confidence         Float                       @default(0)
+  classificationHint ContributorClassification?
+  lastSeenAt         DateTime?
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+
+  @@unique([workspaceId, providerType, email])
+  @@unique([workspaceId, providerType, providerId])
+  @@index([contributorId])
+  @@index([resolveStatus])
+  @@index([workspaceId])
+}
+
+model CurationAuditLog {
+  id                String       @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  contributorId     String?
+  contributor       Contributor? @relation(fields: [contributorId], references: [id], onDelete: SetNull)
+
+  aliasId           String?
+  action            CurationAction
+  payload           Json         @default("{}")
+  performedByUserId String
+  performedByUser   User         @relation(fields: [performedByUserId], references: [id], onDelete: Cascade)
+  createdAt         DateTime     @default(now())
+
+  @@index([workspaceId])
+  @@index([contributorId])
+  @@index([aliasId])
 }
 
 // ==================== REFRESH TOKEN (Mobile Auth) ====================
@@ -474,6 +560,28 @@ enum AnalysisJobStatus {
   FAILED_RETRYABLE    // Transient failure, watchdog will retry
   FAILED_FATAL        // Permanent failure, needs human intervention
   CANCELLED
+}
+
+enum ContributorClassification {
+  INTERNAL
+  EXTERNAL
+  BOT
+  FORMER_EMPLOYEE
+}
+
+enum AliasResolveStatus {
+  AUTO_MERGED
+  MANUAL
+  SUGGESTED
+  UNRESOLVED
+}
+
+enum CurationAction {
+  MERGE
+  UNMERGE
+  EXCLUDE
+  INCLUDE
+  CLASSIFY
 }
 
 // ==================== BILLING ====================
