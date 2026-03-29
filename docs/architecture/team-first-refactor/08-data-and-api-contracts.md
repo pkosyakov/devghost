@@ -152,8 +152,10 @@ Should include:
 - `summaryMetrics`
 - `repositoryBreakdown`
 - `pullRequests` (target-state; optional or empty in Slice 1)
-- `commitEvidence`
 - `identityHealth`
+- `potentialMatches` (unresolved aliases with shared email domain or order context; may be empty)
+
+Note: `commitEvidence` is NOT part of the detail payload. It is served via a separate paginated endpoint (`GET /api/v2/contributors/:id/commits`).
 
 Slice 1 note:
 
