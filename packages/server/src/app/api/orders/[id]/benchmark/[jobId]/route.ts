@@ -137,13 +137,30 @@ export async function DELETE(
 
   const job = await prisma.analysisJob.findFirst({
     where: { id: jobId, orderId: id, type: 'benchmark' },
-    select: { id: true, status: true },
+    select: { id: true, status: true, executionMode: true },
   });
   if (!job) return apiError('Benchmark not found', 404);
 
-  // If still running, cancel first
-  if (job.status === 'PENDING' || job.status === 'RUNNING') {
-    requestCancel(jobId);
+  const isLive = job.status === 'PENDING' || job.status === 'RUNNING';
+  const isModal = job.executionMode === 'modal';
+
+  if (isLive && isModal && job.status === 'RUNNING') {
+    // Modal worker is already running and doesn't check for cancellation.
+    // Deleting the row would orphan the worker and cause write errors.
+    return apiError('Cannot delete a running Modal benchmark. Wait for it to finish or fail.', 409);
+  }
+
+  if (isLive) {
+    if (isModal) {
+      // PENDING modal job: mark CANCELLED so acquire_job() won't pick it up
+      await prisma.analysisJob.update({
+        where: { id: jobId },
+        data: { status: 'CANCELLED', completedAt: new Date() },
+      });
+    } else {
+      // Local job: in-memory cancel signal kills the subprocess
+      requestCancel(jobId);
+    }
   }
 
   // Delete commit analyses for this benchmark run, then the job itself
