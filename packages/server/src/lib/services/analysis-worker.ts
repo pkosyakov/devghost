@@ -919,7 +919,8 @@ export async function processAnalysisJob(
 
 // ==================== Helpers ====================
 
-function mapToCommitAnalysis(
+/** @internal Exported for testing only. */
+export function mapToCommitAnalysis(
   result: PipelineCommitResult,
   commit: GitCommit | undefined,
   orderId: string,

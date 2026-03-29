@@ -942,6 +942,8 @@ def _resolve_commit_model(method):
     """Return the model name that actually processed this commit."""
     if method in _FD_LARGE_MODEL_METHODS:
         return FD_LARGE_LLM_MODEL or None
+    if method.startswith('FD_hybrid_mechanical'):
+        return OPENROUTER_MODEL  # metadata-only estimation uses default model
     if method.startswith('FD'):
         return None  # heuristic-only FD route — no LLM call
     return OPENROUTER_MODEL

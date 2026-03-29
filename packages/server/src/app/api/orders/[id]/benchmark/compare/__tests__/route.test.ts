@@ -76,6 +76,14 @@ describe('GET /api/orders/[id]/benchmark/compare', () => {
     // Per-commit models are exposed
     const bigCommit = body.commits.find((c: any) => c.sha === 'def');
     expect(bigCommit.models['job-bench']).toBe('qwen/qwen3-coder-plus');
+
+    // Heuristic FD route (FD_fallback) has no model key in original run
+    expect(bigCommit.models['original']).toBeUndefined();
+
+    // Non-FD route keeps its model
+    const smallCommit = body.commits.find((c: any) => c.sha === 'abc');
+    expect(smallCommit.models['original']).toBe('old-model');
+    expect(smallCommit.models['job-bench']).toBe('qwen/qwen3-coder-next');
   });
 
   it('handles old benchmark runs without profile metadata gracefully', async () => {
