@@ -401,7 +401,7 @@ To start `Contributor Foundation`, the minimum contracts that must exist are:
 For Slice 1, `ContributorDetail` is considered valid without a populated `pullRequests` section if:
 
 - `repositoryBreakdown` is present;
-- `commitEvidence` is present;
+- commit evidence is available via the separate paginated endpoint (`GET /api/v2/contributors/:id/commits`);
 - identity health is visible;
 - the UI does not pretend commit groups are canonical PRs.
 

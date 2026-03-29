@@ -19,7 +19,7 @@
 ```
 packages/server/
 ├── prisma/
-│   └── migrations/YYYYMMDD_contributor_foundation/  (auto-generated)
+│   └── migrations/YYYYMMDD_contributor_foundation/  (created by `pnpm db:migrate`)
 ├── scripts/
 │   └── backfill-contributors.ts
 ├── src/
@@ -85,7 +85,7 @@ packages/server/
 **Files:**
 - Modify: `packages/server/prisma/schema.prisma`
 
-This task adds the 4 new models, 3 new enums, and User relation changes. No tests — schema correctness is validated by `db:push`.
+This task adds the 4 new models, 3 new enums, and User relation changes. No tests — schema correctness is validated by `db:migrate`.
 
 - [ ] **Step 1: Add enums to schema.prisma**
 
@@ -224,19 +224,21 @@ In the User model's relations section (after existing relations like `developerP
   curationAuditLogs    CurationAuditLog[]
 ```
 
-- [ ] **Step 7: Generate Prisma client and push schema**
+- [ ] **Step 7: Create migration and generate Prisma client**
 
 Run:
 ```bash
-cd packages/server && pnpm db:generate && pnpm db:push
+cd packages/server && pnpm db:migrate --name contributor_foundation
 ```
 
-Expected: Schema changes applied successfully. No errors.
+This creates a migration file in `prisma/migrations/` AND generates the Prisma client. Verify the generated SQL contains `CREATE TABLE "Workspace"`, `"Contributor"`, `"ContributorAlias"`, `"CurationAuditLog"`, and the three enums.
+
+Expected: Migration applied successfully. No errors.
 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add packages/server/prisma/schema.prisma
+git add packages/server/prisma/schema.prisma packages/server/prisma/migrations/
 git commit -m "feat(schema): add Workspace, Contributor, ContributorAlias, CurationAuditLog models"
 ```
 
@@ -264,7 +266,7 @@ const mockPrisma = {
 };
 
 vi.mock('@/lib/db', () => ({
-  db: mockPrisma,
+  prisma: mockPrisma,
 }));
 
 import { ensureWorkspaceForUser } from './workspace-service';
@@ -322,7 +324,7 @@ Expected: FAIL — module not found
 Create `packages/server/src/lib/services/workspace-service.ts`:
 
 ```typescript
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { logger } from '@/lib/logger';
 import type { Workspace } from '@prisma/client';
 
@@ -333,7 +335,7 @@ const log = logger.child({ service: 'workspace' });
  * Returns the existing or newly created Workspace.
  */
 export async function ensureWorkspaceForUser(userId: string): Promise<Workspace> {
-  const existing = await db.workspace.findUnique({
+  const existing = await prisma.workspace.findUnique({
     where: { ownerId: userId },
   });
 
@@ -342,7 +344,7 @@ export async function ensureWorkspaceForUser(userId: string): Promise<Workspace>
   }
 
   try {
-    const workspace = await db.workspace.create({
+    const workspace = await prisma.workspace.create({
       data: { ownerId: userId },
     });
     log.info({ workspaceId: workspace.id, userId }, 'Workspace created');
@@ -350,7 +352,7 @@ export async function ensureWorkspaceForUser(userId: string): Promise<Workspace>
   } catch (err: any) {
     // Race condition: another process created the workspace
     if (err?.code === 'P2002') {
-      const raced = await db.workspace.findUnique({
+      const raced = await prisma.workspace.findUnique({
         where: { ownerId: userId },
       });
       if (raced) return raced;
@@ -409,7 +411,7 @@ const mockPrisma = {
   $transaction: vi.fn((fn: any) => fn(mockPrisma)),
 };
 
-vi.mock('@/lib/db', () => ({ db: mockPrisma }));
+vi.mock('@/lib/db', () => ({ prisma: mockPrisma }));
 vi.mock('@/lib/logger', () => ({
   logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) },
   analysisLogger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) },
@@ -517,7 +519,7 @@ Expected: FAIL — module not found
 Create `packages/server/src/lib/services/contributor-identity.ts`:
 
 ```typescript
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { analysisLogger } from '@/lib/logger';
 import { ensureWorkspaceForUser } from './workspace-service';
 import type { Order, Contributor, ContributorAlias, AliasResolveStatus } from '@prisma/client';
@@ -636,7 +638,7 @@ async function findContributorMatch(
 ): Promise<Contributor | null> {
   // Rule 1: Exact provider ID match
   if (raw.providerId) {
-    const aliasMatch = await db.contributorAlias.findFirst({
+    const aliasMatch = await prisma.contributorAlias.findFirst({
       where: {
         workspaceId,
         providerType: raw.providerType,
@@ -651,7 +653,7 @@ async function findContributorMatch(
   }
 
   // Rule 2: Exact email match
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: {
       workspaceId,
       primaryEmail: raw.email,
@@ -667,7 +669,7 @@ async function findContributorMatch(
 // ─── Project contributors from a single order ───
 
 export async function projectContributorsFromOrder(orderId: string): Promise<void> {
-  const order = await db.order.findUnique({
+  const order = await prisma.order.findUnique({
     where: { id: orderId },
     select: {
       id: true,
@@ -692,7 +694,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
   for (const raw of rawAliases) {
     // Upsert alias record
-    const existingAlias = await db.contributorAlias.findFirst({
+    const existingAlias = await prisma.contributorAlias.findFirst({
       where: {
         workspaceId: workspace.id,
         providerType: raw.providerType,
@@ -703,7 +705,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
     if (existingAlias) {
       // Manual resolution is authoritative — don't reassign
       if (existingAlias.resolveStatus === 'MANUAL') {
-        await db.contributorAlias.update({
+        await prisma.contributorAlias.update({
           where: { id: existingAlias.id },
           data: {
             lastSeenAt: new Date(),
@@ -725,7 +727,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
       // If already resolved (AUTO_MERGED), just update signals
       if (existingAlias.contributorId) {
-        await db.contributorAlias.update({
+        await prisma.contributorAlias.update({
           where: { id: existingAlias.id },
           data: updateData,
         });
@@ -735,7 +737,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
       // Unresolved alias — try to resolve
       const match = await findContributorMatch(workspace.id, raw);
       if (match) {
-        await db.contributorAlias.update({
+        await prisma.contributorAlias.update({
           where: { id: existingAlias.id },
           data: {
             ...updateData,
@@ -746,7 +748,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
           },
         });
       } else {
-        await db.contributorAlias.update({
+        await prisma.contributorAlias.update({
           where: { id: existingAlias.id },
           data: updateData,
         });
@@ -757,7 +759,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
       if (match) {
         // Attach to existing contributor
-        await db.contributorAlias.create({
+        await prisma.contributorAlias.create({
           data: {
             workspaceId: workspace.id,
             contributorId: match.id,
@@ -773,7 +775,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
         });
       } else {
         // Bootstrap: create new Contributor + primary alias
-        const contributor = await db.contributor.create({
+        const contributor = await prisma.contributor.create({
           data: {
             workspaceId: workspace.id,
             displayName: raw.displayName,
@@ -781,7 +783,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
           },
         });
 
-        await db.contributorAlias.create({
+        await prisma.contributorAlias.create({
           data: {
             workspaceId: workspace.id,
             contributorId: contributor.id,
@@ -810,7 +812,7 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 // ─── Backfill all completed orders ───
 
 export async function backfillAllOrders(): Promise<{ usersProcessed: number; ordersProcessed: number }> {
-  const users = await db.user.findMany({
+  const users = await prisma.user.findMany({
     where: {
       orders: { some: { status: 'COMPLETED' } },
     },
@@ -825,7 +827,7 @@ export async function backfillAllOrders(): Promise<{ usersProcessed: number; ord
 
     await ensureWorkspaceForUser(user.id);
 
-    const orders = await db.order.findMany({
+    const orders = await prisma.order.findMany({
       where: { userId: user.id, status: 'COMPLETED' },
       select: { id: true },
       orderBy: { createdAt: 'asc' },
@@ -953,7 +955,7 @@ Create `packages/server/src/app/api/v2/contributors/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { computeIdentityHealth } from '@/lib/services/contributor-identity';
@@ -993,10 +995,10 @@ export async function GET(request: NextRequest) {
   }
 
   // Get total count
-  const total = await db.contributor.count({ where });
+  const total = await prisma.contributor.count({ where });
 
   // Get contributors
-  const contributors = await db.contributor.findMany({
+  const contributors = await prisma.contributor.findMany({
     where,
     include: {
       aliases: {
@@ -1043,13 +1045,13 @@ export async function GET(request: NextRequest) {
     : rows;
 
   // Identity queue summary
-  const unresolvedCount = await db.contributorAlias.count({
+  const unresolvedCount = await prisma.contributorAlias.count({
     where: { workspaceId: workspace.id, resolveStatus: 'UNRESOLVED' },
   });
-  const suggestedCount = await db.contributorAlias.count({
+  const suggestedCount = await prisma.contributorAlias.count({
     where: { workspaceId: workspace.id, resolveStatus: 'SUGGESTED' },
   });
-  const excludedCount = await db.contributor.count({
+  const excludedCount = await prisma.contributor.count({
     where: { workspaceId: workspace.id, isExcluded: true },
   });
 
@@ -1074,7 +1076,7 @@ Create `packages/server/src/app/api/v2/contributors/[id]/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { computeIdentityHealth } from '@/lib/services/contributor-identity';
@@ -1090,7 +1092,7 @@ export async function GET(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id, workspaceId: workspace.id },
     include: {
       aliases: {
@@ -1114,7 +1116,7 @@ export async function GET(
 
   // Summary metrics from CommitAnalysis
   const aliasEmails = contributor.aliases.map((a) => a.email);
-  const commitAnalyses = await db.commitAnalysis.findMany({
+  const commitAnalyses = await prisma.commitAnalysis.findMany({
     where: {
       order: { userId: session.user.id },
       authorEmail: { in: aliasEmails },
@@ -1156,7 +1158,7 @@ export async function GET(
   // Potential matches: unresolved aliases with same email domain or from same orders
   const emailDomain = contributor.primaryEmail.split('@')[1];
   const potentialMatches = emailDomain
-    ? await db.contributorAlias.findMany({
+    ? await prisma.contributorAlias.findMany({
         where: {
           workspaceId: workspace.id,
           contributorId: null,
@@ -1207,7 +1209,7 @@ Create `packages/server/src/app/api/v2/contributors/[id]/commits/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { paginationQuerySchema } from '@/lib/schemas/contributor';
@@ -1224,7 +1226,7 @@ export async function GET(
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
   // Verify contributor belongs to workspace
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id, workspaceId: workspace.id },
     include: { aliases: { select: { email: true } } },
   });
@@ -1243,7 +1245,7 @@ export async function GET(
   const aliasEmails = contributor.aliases.map((a) => a.email);
 
   const [commits, total] = await Promise.all([
-    db.commitAnalysis.findMany({
+    prisma.commitAnalysis.findMany({
       where: {
         order: { userId: session.user.id },
         authorEmail: { in: aliasEmails },
@@ -1259,7 +1261,7 @@ export async function GET(
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
-    db.commitAnalysis.count({
+    prisma.commitAnalysis.count({
       where: {
         order: { userId: session.user.id },
         authorEmail: { in: aliasEmails },
@@ -1291,7 +1293,7 @@ Create `packages/server/src/app/api/v2/contributors/identity-queue/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { paginationQuerySchema } from '@/lib/schemas/contributor';
@@ -1308,7 +1310,7 @@ export async function GET(request: NextRequest) {
   const { page, pageSize } = parsed.success ? parsed.data : { page: 1, pageSize: 20 };
 
   const [aliases, total, unresolvedCount, suggestedCount] = await Promise.all([
-    db.contributorAlias.findMany({
+    prisma.contributorAlias.findMany({
       where: {
         workspaceId: workspace.id,
         resolveStatus: { in: ['UNRESOLVED', 'SUGGESTED'] },
@@ -1317,16 +1319,16 @@ export async function GET(request: NextRequest) {
       skip: (page - 1) * pageSize,
       take: pageSize,
     }),
-    db.contributorAlias.count({
+    prisma.contributorAlias.count({
       where: {
         workspaceId: workspace.id,
         resolveStatus: { in: ['UNRESOLVED', 'SUGGESTED'] },
       },
     }),
-    db.contributorAlias.count({
+    prisma.contributorAlias.count({
       where: { workspaceId: workspace.id, resolveStatus: 'UNRESOLVED' },
     }),
-    db.contributorAlias.count({
+    prisma.contributorAlias.count({
       where: { workspaceId: workspace.id, resolveStatus: 'SUGGESTED' },
     }),
   ]);
@@ -1373,7 +1375,7 @@ Create `packages/server/src/app/api/v2/contributors/merge/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { mergeBodySchema } from '@/lib/schemas/contributor';
@@ -1395,15 +1397,15 @@ export async function POST(request: NextRequest) {
 
   // Validate both belong to workspace
   const [from, to] = await Promise.all([
-    db.contributor.findFirst({ where: { id: fromContributorId, workspaceId: workspace.id } }),
-    db.contributor.findFirst({ where: { id: toContributorId, workspaceId: workspace.id } }),
+    prisma.contributor.findFirst({ where: { id: fromContributorId, workspaceId: workspace.id } }),
+    prisma.contributor.findFirst({ where: { id: toContributorId, workspaceId: workspace.id } }),
   ]);
 
   if (!from) return apiError('Source contributor not found', 404);
   if (!to) return apiError('Target contributor not found', 404);
 
   // Transactional merge
-  const result = await db.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx: any) => {
     // Move all aliases from source to target
     await tx.contributorAlias.updateMany({
       where: { contributorId: fromContributorId },
@@ -1450,7 +1452,7 @@ Create `packages/server/src/app/api/v2/contributors/unmerge/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { unmergeBodySchema } from '@/lib/schemas/contributor';
@@ -1471,7 +1473,7 @@ export async function POST(request: NextRequest) {
   const { contributorId, aliasIds } = parsed.data;
 
   // Validate contributor belongs to workspace
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id: contributorId, workspaceId: workspace.id },
     include: { aliases: true },
   });
@@ -1492,7 +1494,7 @@ export async function POST(request: NextRequest) {
   }
 
   // Transactional unmerge
-  const result = await db.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx: any) => {
     // Pick display info from first extracted alias
     const primaryAlias = ownedAliases[0];
 
@@ -1553,7 +1555,7 @@ Create `packages/server/src/app/api/v2/contributors/[id]/exclude/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { excludeBodySchema } from '@/lib/schemas/contributor';
@@ -1569,7 +1571,7 @@ export async function POST(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id, workspaceId: workspace.id },
   });
   if (!contributor) return apiError('Contributor not found', 404);
@@ -1577,13 +1579,13 @@ export async function POST(
   const body = await request.json().catch(() => ({}));
   const parsed = excludeBodySchema.safeParse(body);
 
-  const updated = await db.contributor.update({
+  const updated = await prisma.contributor.update({
     where: { id },
     data: { isExcluded: true, excludedAt: new Date() },
     include: { aliases: true },
   });
 
-  await db.curationAuditLog.create({
+  await prisma.curationAuditLog.create({
     data: {
       workspaceId: workspace.id,
       contributorId: id,
@@ -1601,7 +1603,7 @@ Create `packages/server/src/app/api/v2/contributors/[id]/include/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 
@@ -1616,18 +1618,18 @@ export async function POST(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id, workspaceId: workspace.id },
   });
   if (!contributor) return apiError('Contributor not found', 404);
 
-  const updated = await db.contributor.update({
+  const updated = await prisma.contributor.update({
     where: { id },
     data: { isExcluded: false, excludedAt: null },
     include: { aliases: true },
   });
 
-  await db.curationAuditLog.create({
+  await prisma.curationAuditLog.create({
     data: {
       workspaceId: workspace.id,
       contributorId: id,
@@ -1645,7 +1647,7 @@ Create `packages/server/src/app/api/v2/contributors/[id]/classify/route.ts`:
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { classifyContributorBodySchema } from '@/lib/schemas/contributor';
@@ -1661,7 +1663,7 @@ export async function POST(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id, workspaceId: workspace.id },
   });
   if (!contributor) return apiError('Contributor not found', 404);
@@ -1672,13 +1674,13 @@ export async function POST(
     return apiError(parsed.error.errors[0].message, 400);
   }
 
-  const updated = await db.contributor.update({
+  const updated = await prisma.contributor.update({
     where: { id },
     data: { classification: parsed.data.classification },
     include: { aliases: true },
   });
 
-  await db.curationAuditLog.create({
+  await prisma.curationAuditLog.create({
     data: {
       workspaceId: workspace.id,
       contributorId: id,
@@ -1701,7 +1703,7 @@ Create `packages/server/src/app/api/v2/contributors/aliases/[aliasId]/classify/r
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { classifyAliasBodySchema } from '@/lib/schemas/contributor';
@@ -1717,7 +1719,7 @@ export async function POST(
   const { aliasId } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const alias = await db.contributorAlias.findFirst({
+  const alias = await prisma.contributorAlias.findFirst({
     where: { id: aliasId, workspaceId: workspace.id },
   });
   if (!alias) return apiError('Alias not found', 404);
@@ -1728,12 +1730,12 @@ export async function POST(
     return apiError(parsed.error.errors[0].message, 400);
   }
 
-  const updated = await db.contributorAlias.update({
+  const updated = await prisma.contributorAlias.update({
     where: { id: aliasId },
     data: { classificationHint: parsed.data.classificationHint },
   });
 
-  await db.curationAuditLog.create({
+  await prisma.curationAuditLog.create({
     data: {
       workspaceId: workspace.id,
       contributorId: alias.contributorId,
@@ -1756,7 +1758,7 @@ Create `packages/server/src/app/api/v2/contributors/aliases/[aliasId]/resolve/ro
 
 ```typescript
 import { NextRequest } from 'next/server';
-import { db } from '@/lib/db';
+import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { resolveAliasBodySchema } from '@/lib/schemas/contributor';
@@ -1772,7 +1774,7 @@ export async function POST(
   const { aliasId } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const alias = await db.contributorAlias.findFirst({
+  const alias = await prisma.contributorAlias.findFirst({
     where: { id: aliasId, workspaceId: workspace.id },
   });
   if (!alias) return apiError('Alias not found', 404);
@@ -1784,12 +1786,12 @@ export async function POST(
   }
 
   // Validate target contributor belongs to workspace
-  const contributor = await db.contributor.findFirst({
+  const contributor = await prisma.contributor.findFirst({
     where: { id: parsed.data.contributorId, workspaceId: workspace.id },
   });
   if (!contributor) return apiError('Target contributor not found', 404);
 
-  const updated = await db.contributorAlias.update({
+  const updated = await prisma.contributorAlias.update({
     where: { id: aliasId },
     data: {
       contributorId: parsed.data.contributorId,
@@ -1799,7 +1801,7 @@ export async function POST(
     },
   });
 
-  await db.curationAuditLog.create({
+  await prisma.curationAuditLog.create({
     data: {
       workspaceId: workspace.id,
       contributorId: parsed.data.contributorId,
@@ -1814,7 +1816,7 @@ export async function POST(
     },
   });
 
-  const updatedContributor = await db.contributor.findFirst({
+  const updatedContributor = await prisma.contributor.findFirst({
     where: { id: parsed.data.contributorId },
     include: { aliases: true },
   });
@@ -1848,7 +1850,7 @@ Add import at the top of the file:
 import { projectContributorsFromOrder } from './contributor-identity';
 ```
 
-After the order COMPLETED update block (after the `await db.order.update(...)` that sets `status: 'COMPLETED'`), add:
+After the order COMPLETED update block (after the `await prisma.order.update(...)` that sets `status: 'COMPLETED'`), add:
 
 ```typescript
 // Best-effort contributor projection — does not affect analysis status
@@ -1870,7 +1872,7 @@ In `packages/server/src/app/api/auth/register/route.ts`, add import at top:
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 ```
 
-After the `const user = await db.user.create(...)` call and before the audit log, add:
+After the `const user = await prisma.user.create(...)` call and before the audit log, add:
 
 ```typescript
 // Best-effort workspace creation — must not break registration
@@ -1918,7 +1920,7 @@ git commit -m "feat: add contributor projection hook, workspace bootstrap, and /
 Create `packages/server/scripts/backfill-contributors.ts`:
 
 ```typescript
-import { db } from '../src/lib/db';
+import prisma from '../src/lib/db';
 import { backfillAllOrders } from '../src/lib/services/contributor-identity';
 
 async function main() {
@@ -1934,9 +1936,9 @@ async function main() {
     console.log(`  Orders processed: ${result.ordersProcessed}`);
 
     // Summary counts
-    const contributorCount = await db.contributor.count();
-    const aliasCount = await db.contributorAlias.count();
-    const unresolvedCount = await db.contributorAlias.count({
+    const contributorCount = await prisma.contributor.count();
+    const aliasCount = await prisma.contributorAlias.count();
+    const unresolvedCount = await prisma.contributorAlias.count({
       where: { resolveStatus: 'UNRESOLVED' },
     });
 
@@ -1949,7 +1951,7 @@ async function main() {
     console.error('Backfill failed:', err);
     process.exit(1);
   } finally {
-    await db.$disconnect();
+    await prisma.$disconnect();
   }
 }
 
@@ -3639,7 +3641,7 @@ import { useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from '@/components/ui/link';
+import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
@@ -3808,10 +3810,10 @@ This task verifies the implementation works end-to-end.
 - [ ] **Step 1: Start dev server**
 
 ```bash
-cd packages/server && timeout 15 pnpm dev
+cd packages/server && pnpm dev
 ```
 
-Verify server starts without errors.
+Start the dev server manually. Verify it starts without errors and shows `Ready` in output. Stop with Ctrl+C when done verifying.
 
 - [ ] **Step 2: Run backfill**
 
