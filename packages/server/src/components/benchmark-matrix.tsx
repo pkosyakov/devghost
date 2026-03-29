@@ -50,6 +50,8 @@ interface Run {
   fdV3Enabled: boolean;
   fdLargeModel: string | null;
   fdLargeProvider: string | null;
+  benchmarkProfile: string | null;
+  benchmarkProfileLabel: string | null;
   status: string;
   totalHours: number;
   mae: number | null;
@@ -657,6 +659,11 @@ export function BenchmarkMatrix({ orderId }: { orderId: string }) {
                     className="text-center min-w-[100px] relative"
                   >
                     <div className="flex flex-col items-center gap-1">
+                      {run.benchmarkProfileLabel && (
+                        <Badge variant="default" className="text-[10px] bg-purple-600">
+                          {run.benchmarkProfileLabel}
+                        </Badge>
+                      )}
                       <Badge variant={providerBadgeVariant(run.provider)}>
                         {run.provider}
                       </Badge>

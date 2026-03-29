@@ -134,6 +134,8 @@ export async function GET(
       fdV3Enabled: !!snap?.fdV3Enabled,
       fdLargeModel: (snap?.fdLargeModel as string) || null,
       fdLargeProvider: (snap?.fdLargeProvider as string) || null,
+      benchmarkProfile: (snap?.benchmarkProfile as string) || null,
+      benchmarkProfileLabel: (snap?.benchmarkProfileLabel as string) || null,
       status: job.status,
       totalHours: 0,
       mae: null as number | null,

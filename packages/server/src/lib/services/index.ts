@@ -28,3 +28,10 @@ export {
   type PipelineCommitResult,
   type PipelineOptions,
 } from './pipeline-bridge';
+
+export {
+  resolveBenchmarkProfile,
+  isBenchmarkProfileId,
+  type BenchmarkProfileId,
+  type ResolvedBenchmarkProfile,
+} from './benchmark-profile';

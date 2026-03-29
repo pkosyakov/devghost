@@ -107,8 +107,5 @@ export const developerSettingsSchema = z.object({
 });
 
 export const benchmarkSchema = z.object({
-  provider: z.enum(['ollama', 'openrouter'], { required_error: 'provider is required' }),
-  model: z.string().min(1, 'model is required'),
-  contextLength: z.number().positive().optional(),
-  promptRepeat: z.boolean().optional(),
+  profile: z.enum(['target_rollout'], { required_error: 'profile is required' }),
 });

@@ -656,11 +656,9 @@
       "dateRangeNotSet": "Date range not set"
     },
     "benchmark": {
-      "run": "Run Benchmark",
+      "runRollout": "Run Rollout Benchmark",
       "starting": "Starting...",
-      "promptRepeat": "Prompt Repeat",
-      "estCost": "Est. cost: ~${cost} ({commits} commits)",
-      "freeLocal": "Free (local)"
+      "rolloutProfile": "Rollout Candidate Pipeline"
     },
     "developerSelect": {
       "allDevelopers": "All developers ({count})",

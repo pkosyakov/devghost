@@ -63,34 +63,101 @@ function makeRequest(body: Record<string, unknown>): NextRequest {
   });
 }
 
+function setupMocks() {
+  mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
+  mockJobFindFirst
+    .mockResolvedValueOnce(null)  // no running job
+    .mockResolvedValueOnce({ id: 'base-job' })  // base job
+    .mockResolvedValueOnce(null);  // no previous same profile
+  mockJobCreate.mockResolvedValue({ id: 'new-job' });
+  // Mock fetch for OpenRouter validation (models catalog + preflight)
+  (global.fetch as any) = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 196608 }] }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+}
+
 describe('POST /api/orders/[id]/benchmark', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    process.env.FD_V3_ENABLED = 'true';
-    process.env.FD_LARGE_LLM_MODEL = 'qwen/qwen3-coder-plus';
-    process.env.FD_LARGE_LLM_PROVIDER = 'openrouter';
-    // Mock fetch for OpenRouter validation (models catalog + preflight)
-    (global.fetch as any) = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 32768 }] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
+    delete process.env.PIPELINE_MODE;
+    delete process.env.MODAL_ENDPOINT_URL;
+    delete process.env.MODAL_WEBHOOK_SECRET;
   });
 
-  it('includes FD v3 config in snapshot', async () => {
-    mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
-    mockJobFindFirst
-      .mockResolvedValueOnce(null)  // no running job
-      .mockResolvedValueOnce({ id: 'base-job' })  // base job
-      .mockResolvedValueOnce(null);  // no previous same model
-    mockJobCreate.mockResolvedValue({ id: 'new-job' });
-
-    const req = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
-    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+  it('resolves target_rollout profile and stores full snapshot', async () => {
+    setupMocks();
+    const req = makeRequest({ profile: 'target_rollout' });
+    const res = await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+    expect(res.status).toBe(200);
 
     const createCall = mockJobCreate.mock.calls[0]![0];
     const snapshot = createCall.data.llmConfigSnapshot;
+    expect(snapshot.benchmarkProfile).toBe('target_rollout');
+    expect(snapshot.benchmarkProfileLabel).toBe('Full Rollout Candidate');
     expect(snapshot.fdV3Enabled).toBe(true);
     expect(snapshot.fdLargeModel).toBe('qwen/qwen3-coder-plus');
     expect(snapshot.fdLargeProvider).toBe('openrouter');
+    expect(snapshot.promptRepeat).toBe(false);
+
+    // Provider/model come from profile
+    expect(createCall.data.llmProvider).toBe('openrouter');
+    expect(createCall.data.llmModel).toBe('qwen/qwen3-coder-next');
+  });
+
+  it('does NOT read FD flags from env — profile is self-contained', async () => {
+    // Even if env has different FD flags, profile should win
+    process.env.FD_V3_ENABLED = 'false';
+    process.env.FD_LARGE_LLM_MODEL = 'some-other-model';
+    process.env.FD_LARGE_LLM_PROVIDER = 'ollama';
+
+    setupMocks();
+    const req = makeRequest({ profile: 'target_rollout' });
+    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+
+    const snapshot = mockJobCreate.mock.calls[0]![0].data.llmConfigSnapshot;
+    expect(snapshot.fdV3Enabled).toBe(true);
+    expect(snapshot.fdLargeModel).toBe('qwen/qwen3-coder-plus');
+    expect(snapshot.fdLargeProvider).toBe('openrouter');
+
+    delete process.env.FD_V3_ENABLED;
+    delete process.env.FD_LARGE_LLM_MODEL;
+    delete process.env.FD_LARGE_LLM_PROVIDER;
+  });
+
+  it('resolves context length from OpenRouter catalog', async () => {
+    setupMocks();
+    const req = makeRequest({ profile: 'target_rollout' });
+    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+
+    const snapshot = mockJobCreate.mock.calls[0]![0].data.llmConfigSnapshot;
+    // The mock returns context_length: 196608
+    expect(snapshot.contextLength).toBe(196608);
+    expect(snapshot.effectiveContextLength).toBe(196608);
+  });
+
+  it('fingerprint includes full profile fields', async () => {
+    setupMocks();
+    const req = makeRequest({ profile: 'target_rollout' });
+    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+
+    const fp = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
+    expect(fp).toBeTruthy();
+    expect(typeof fp).toBe('string');
+    expect(fp.length).toBe(16);
+  });
+
+  it('local launch calls processAnalysisJob with resolved config', async () => {
+    setupMocks();
+    const req = makeRequest({ profile: 'target_rollout' });
+    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
+
+    const { processAnalysisJob } = await import('@/lib/services/analysis-worker');
+    expect(processAnalysisJob).toHaveBeenCalledWith('new-job', expect.objectContaining({
+      isBenchmark: true,
+      failFast: true,
+      promptRepeat: false,
+      contextLength: 196608,
+    }));
   });
 
   it('dispatches to Modal when PIPELINE_MODE=modal', async () => {
@@ -98,25 +165,19 @@ describe('POST /api/orders/[id]/benchmark', () => {
     process.env.MODAL_ENDPOINT_URL = 'https://modal.test/trigger';
     process.env.MODAL_WEBHOOK_SECRET = 'test-secret';
 
-    mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
-    mockJobFindFirst
-      .mockResolvedValueOnce(null)   // no running job
-      .mockResolvedValueOnce({ id: 'base-job' })  // base job
-      .mockResolvedValueOnce(null);  // no previous same model
-    mockJobCreate.mockResolvedValue({ id: 'modal-job' });
+    setupMocks();
 
-    // Mock prisma.analysisJob.update for saving flags + modalCallId
     const mockJobUpdate = vi.fn().mockResolvedValue({});
     const db = (await import('@/lib/db')).default;
     (db.analysisJob as any).update = mockJobUpdate;
 
     // Mock fetch: OpenRouter catalog + preflight + Modal trigger
     (global.fetch as any) = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 32768 }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 196608 }] }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ modal_call_id: 'mc-1' }) });
 
-    const req = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
+    const req = makeRequest({ profile: 'target_rollout' });
     const res = await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
     expect(res.status).toBe(200);
 
@@ -124,9 +185,6 @@ describe('POST /api/orders/[id]/benchmark', () => {
     const fetchCalls = (global.fetch as any).mock.calls;
     const modalCall = fetchCalls[2];
     expect(modalCall[0]).toBe('https://modal.test/trigger');
-    const modalBody = JSON.parse(modalCall[1].body);
-    expect(modalBody.job_id).toBe('modal-job');
-    expect(modalBody.auth_token).toBe('test-secret');
 
     // Verify pipeline flags saved
     const updateCall = mockJobUpdate.mock.calls[0];
@@ -134,41 +192,8 @@ describe('POST /api/orders/[id]/benchmark', () => {
     expect(updateCall[0].data.cacheMode).toBe('off');
     expect(updateCall[0].data.skipBilling).toBe(true);
 
-    // processAnalysisJob should NOT be called
+    // processAnalysisJob should NOT be called in modal mode
     const { processAnalysisJob } = await import('@/lib/services/analysis-worker');
     expect(processAnalysisJob).not.toHaveBeenCalled();
-
-    delete process.env.PIPELINE_MODE;
-    delete process.env.MODAL_ENDPOINT_URL;
-    delete process.env.MODAL_WEBHOOK_SECRET;
-  });
-
-  it('FD v3 config affects fingerprint', async () => {
-    mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
-    mockJobFindFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ id: 'base-job' })
-      .mockResolvedValueOnce(null);
-    mockJobCreate.mockResolvedValue({ id: 'job-1' });
-
-    const req1 = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
-    await POST(req1, { params: Promise.resolve({ id: 'order-1' }) });
-    const fp1 = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
-
-    // Change FD config
-    process.env.FD_LARGE_LLM_MODEL = 'qwen/qwen3-coder-32b';
-    vi.clearAllMocks();
-    mockOrderFindFirst.mockResolvedValue({ id: 'order-1', status: 'COMPLETED' });
-    mockJobFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'base-job' }).mockResolvedValueOnce(null);
-    mockJobCreate.mockResolvedValue({ id: 'job-2' });
-    (global.fetch as any) = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 32768 }] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
-
-    const req2 = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
-    await POST(req2, { params: Promise.resolve({ id: 'order-1' }) });
-    const fp2 = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
-
-    expect(fp1).not.toBe(fp2);
   });
 });

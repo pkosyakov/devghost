@@ -656,11 +656,9 @@
       "dateRangeNotSet": "Диапазон дат не задан"
     },
     "benchmark": {
-      "run": "Запустить бенчмарк",
+      "runRollout": "Запустить бенчмарк роллаута",
       "starting": "Запуск...",
-      "promptRepeat": "Повтор промпта",
-      "estCost": "Прим. стоимость: ~${cost} ({commits} коммитов)",
-      "freeLocal": "Бесплатно (локально)"
+      "rolloutProfile": "Кандидат на продакшен"
     },
     "developerSelect": {
       "allDevelopers": "Все разработчики ({count})",

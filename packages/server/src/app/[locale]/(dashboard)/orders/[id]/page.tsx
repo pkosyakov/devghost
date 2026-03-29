@@ -341,6 +341,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [benchmarkJobId, setBenchmarkJobId] = useState<string | null>(null);
   const [benchmarkLog, setBenchmarkLog] = useState<PipelineLogEntry[]>([]);
   const benchmarkLogSinceRef = useRef<number>(0);
+  const [benchmarkEvents, setBenchmarkEvents] = useState<AnalysisEventEntry[]>([]);
+  const benchmarkEventCursorRef = useRef<string | null>(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [publishRepo, setPublishRepo] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(null);
@@ -541,20 +543,49 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     },
   });
 
-  const { data: benchmarkProgress } = useQuery({
+  const { data: benchmarkProgress } = useQuery<AnalysisProgressData | null>({
     queryKey: ['benchmark-progress', id, benchmarkJobId],
     queryFn: async () => {
       if (!benchmarkJobId) return null;
-      const url = `/api/orders/${id}/progress?jobId=${benchmarkJobId}&since=${benchmarkLogSinceRef.current || ''}`;
+      const params = new URLSearchParams();
+      params.set('jobId', benchmarkJobId);
+      if (benchmarkLogSinceRef.current) params.set('since', String(benchmarkLogSinceRef.current));
+      if (benchmarkEventCursorRef.current) params.set('sinceEventId', benchmarkEventCursorRef.current);
+      const url = `/api/orders/${id}/progress?${params.toString()}`;
       const res = await fetch(url);
       if (!res.ok) return null;
       const json = await res.json();
-      const data = json.data;
+      const data = json.data as AnalysisProgressData | null;
       if (data?.log?.length) {
-        setBenchmarkLog(prev => [...prev, ...data.log]);
+        if (benchmarkLogSinceRef.current) {
+          setBenchmarkLog(prev => [...prev, ...data.log]);
+        } else {
+          setBenchmarkLog(data.log);
+        }
         benchmarkLogSinceRef.current = data.log[data.log.length - 1].ts;
       }
-      if (data?.status === 'COMPLETED' || data?.status === 'FAILED' || data?.status === 'CANCELLED') {
+      if (data?.events?.length) {
+        if (benchmarkEventCursorRef.current) {
+          setBenchmarkEvents((prev) => {
+            const merged = new Map(prev.map((e) => [e.id, e]));
+            for (const event of data.events) merged.set(event.id, event);
+            return Array.from(merged.values()).sort((a, b) => {
+              const aId = BigInt(a.id);
+              const bId = BigInt(b.id);
+              if (aId < bId) return -1;
+              if (aId > bId) return 1;
+              return 0;
+            });
+          });
+        } else {
+          setBenchmarkEvents(data.events);
+        }
+      }
+      if (data?.eventCursor) {
+        benchmarkEventCursorRef.current = data.eventCursor;
+      }
+      if (data?.status === 'COMPLETED' || data?.status === 'FAILED' || data?.status === 'CANCELLED'
+          || data?.status === 'FAILED_FATAL' || data?.status === 'FAILED_RETRYABLE') {
         setBenchmarkJobId(null);
         queryClient.invalidateQueries({ queryKey: ['benchmarks', id] });
         if (data?.status === 'COMPLETED') {
@@ -568,6 +599,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   });
 
   const benchmarkNow = useNow(!!benchmarkJobId);
+
+  // Benchmark diagnostics — mirrors main analysis heartbeat/stale detection
+  const bmHeartbeatAgeMs = benchmarkProgress?.heartbeatAt ? benchmarkNow - new Date(benchmarkProgress.heartbeatAt).getTime() : null;
+  const bmUpdateAgeMs = benchmarkProgress?.updatedAt ? benchmarkNow - new Date(benchmarkProgress.updatedAt).getTime() : null;
+  const bmIsPendingStale = benchmarkProgress?.status === 'PENDING' && bmUpdateAgeMs != null && bmUpdateAgeMs > 2 * 60 * 1000;
+  const bmIsHeartbeatStale = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 2 * 60 * 1000;
+  const bmIsHeartbeatCritical = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 10 * 60 * 1000;
 
   const { data: benchmarkRuns = [] } = useQuery<{ id: string; status: string; llmModel: string | null; completedAt: string | null; createdAt: string }[]>({
     queryKey: ['benchmarks', id],
@@ -1751,56 +1789,204 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           {isAdmin && <BenchmarkLauncher
             orderId={id}
             disabled={!!benchmarkJobId}
-            commitCount={totalCommits || undefined}
-            avgInputTokens={
-              progress?.totalPromptTokens && progress?.totalLlmCalls
-                ? Math.round(progress.totalPromptTokens / progress.totalLlmCalls)
-                : undefined
-            }
             onLaunched={(jobId) => {
               setBenchmarkJobId(jobId);
               setBenchmarkLog([]);
               benchmarkLogSinceRef.current = 0;
+              setBenchmarkEvents([]);
+              benchmarkEventCursorRef.current = null;
             }}
           />}
 
-          {/* Inline benchmark progress */}
-          {isAdmin && benchmarkJobId && benchmarkProgress && (
-            <Card className="border-purple-200">
-              <CardContent className="pt-4 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-sm font-medium">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    {t('detail.benchmarkInProgress')}
+          {/* Inline benchmark progress — rich display matching main analysis */}
+          {isAdmin && benchmarkJobId && benchmarkProgress && (() => {
+            const bmStartedAt = benchmarkProgress.startedAt ? new Date(benchmarkProgress.startedAt) : null;
+            const bmElapsed = bmStartedAt ? benchmarkNow - bmStartedAt.getTime() : 0;
+            return (
+              <Card className="border-purple-200">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      {t('detail.benchmarkInProgress')}
+                    </CardTitle>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => cancelJobMutation.mutate(benchmarkJobId)}
+                      disabled={cancelJobMutation.isPending}
+                    >
+                      {cancelJobMutation.isPending ? (
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      ) : (
+                        <Square className="h-4 w-4 mr-1" />
+                      )}
+                      {cancelJobMutation.isPending ? t('detail.cancelling') : t('detail.cancel')}
+                    </Button>
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => cancelJobMutation.mutate(benchmarkJobId)}
-                    disabled={cancelJobMutation.isPending}
-                  >
-                    {cancelJobMutation.isPending ? (
-                      <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                    ) : (
-                      <Square className="h-3 w-3 mr-1" />
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Progress value={benchmarkProgress.progress ?? 0} />
+                  <div className="flex justify-between text-sm text-muted-foreground">
+                    <span>{benchmarkProgress.currentStep ?? t('detail.preparing')}</span>
+                    <span>
+                      {t('detail.commitsProgress', {
+                        current: benchmarkProgress.currentCommit ?? 0,
+                        total: benchmarkProgress.totalCommits ?? '?',
+                      })}
+                    </span>
+                  </div>
+
+                  {/* Timing & provider info */}
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground font-mono">
+                    {bmStartedAt && (
+                      <span>
+                        {t('detail.started', { time: bmStartedAt.toLocaleTimeString('en-GB', { hour12: false }) })}
+                      </span>
                     )}
-                    {cancelJobMutation.isPending ? t('detail.cancelling') : t('detail.cancel')}
-                  </Button>
-                </div>
-                <Progress value={benchmarkProgress.progress ?? 0} className="h-2" />
-                <div className="flex justify-between text-xs text-muted-foreground">
-                  <span>{benchmarkProgress.currentStep ?? t('detail.preparing')}</span>
-                  <span>{t('detail.commitsProgress', { current: benchmarkProgress.currentCommit ?? 0, total: benchmarkProgress.totalCommits ?? '?' })}</span>
-                </div>
-                {benchmarkProgress.startedAt && (
-                  <div className="text-xs text-muted-foreground font-mono">
-                    {t('detail.elapsed', { time: formatElapsed(benchmarkNow - new Date(benchmarkProgress.startedAt).getTime()) })}
+                    {bmElapsed > 0 && (
+                      <span className="tabular-nums">
+                        {t('detail.elapsed', { time: formatElapsed(bmElapsed) })}
+                      </span>
+                    )}
+                    {benchmarkProgress.cloneSizeMb != null && benchmarkProgress.cloneSizeMb > 0 && (
+                      <span>
+                        {t('detail.clone', { size: formatSizeFromMb(benchmarkProgress.cloneSizeMb) })}
+                      </span>
+                    )}
+                    {benchmarkProgress.llmProvider && (
+                      <span className="border-l pl-4 ml-2">
+                        {benchmarkProgress.llmProvider === 'openrouter' ? 'OpenRouter' : 'Ollama'}
+                        {benchmarkProgress.llmModel && (
+                          <span className="ml-1 text-foreground/70">{benchmarkProgress.llmModel}</span>
+                        )}
+                        {benchmarkProgress.llmConcurrency != null && (
+                          <span className="ml-2 text-foreground/50">
+                            {benchmarkProgress.llmConcurrency}x
+                            {benchmarkProgress.fdLlmConcurrency != null
+                              && benchmarkProgress.fdLlmConcurrency !== benchmarkProgress.llmConcurrency && (
+                                <> / FD {benchmarkProgress.fdLlmConcurrency}x</>
+                              )}
+                          </span>
+                        )}
+                      </span>
+                    )}
                   </div>
-                )}
-                {benchmarkLog.length > 0 && <PipelineLog entries={benchmarkLog} />}
-              </CardContent>
-            </Card>
-          )}
+
+                  {/* Runtime diagnostics */}
+                  <div className="rounded-md border bg-muted/30 p-3 space-y-2">
+                    <div className="text-xs font-medium">{t('detail.progressDiagnosticsTitle')}</div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">{t('detail.jobStatusLabel')}:</span>{' '}
+                        <span className="font-mono">{benchmarkProgress.status}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">{t('detail.executionModeLabel')}:</span>{' '}
+                        <span className="font-mono">
+                          {benchmarkProgress.executionMode === 'modal'
+                            ? t('detail.executionModeModal')
+                            : t('detail.executionModeLocal')}
+                        </span>
+                      </div>
+                      {benchmarkProgress.currentRepoName && (
+                        <div className="md:col-span-2">
+                          <span className="text-muted-foreground">{t('detail.currentRepoLabel')}:</span>{' '}
+                          <span className="font-mono">{benchmarkProgress.currentRepoName}</span>
+                        </div>
+                      )}
+                      {benchmarkProgress.modalCallId && (
+                        <div className="md:col-span-2">
+                          <span className="text-muted-foreground">{t('detail.modalCallLabel')}:</span>{' '}
+                          <span className="font-mono">{benchmarkProgress.modalCallId}</span>
+                        </div>
+                      )}
+                      <div>
+                        <span className="text-muted-foreground">{t('detail.retryLabel')}:</span>{' '}
+                        <span className="font-mono">{benchmarkProgress.retryCount}/{benchmarkProgress.maxRetries}</span>
+                      </div>
+                      {benchmarkProgress.executionMode === 'modal' && (
+                        <>
+                          <div>
+                            <span className="text-muted-foreground">{t('detail.heartbeatLabel')}:</span>{' '}
+                            <span className="font-mono">
+                              {bmHeartbeatAgeMs != null ? t('detail.secondsAgo', { time: formatElapsed(bmHeartbeatAgeMs) }) : 'n/a'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">{t('detail.lastUpdateLabel')}:</span>{' '}
+                            <span className="font-mono">
+                              {bmUpdateAgeMs != null ? t('detail.secondsAgo', { time: formatElapsed(bmUpdateAgeMs) }) : 'n/a'}
+                            </span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {benchmarkProgress.error && (
+                      <div className="rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-xs text-red-700">
+                        {t('detail.workerError', { error: benchmarkProgress.error })}
+                      </div>
+                    )}
+
+                    {bmIsPendingStale && (
+                      <div className="rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1 text-xs text-amber-800">
+                        {t('detail.pendingStaleHint')}
+                      </div>
+                    )}
+
+                    {(bmIsHeartbeatStale || bmIsHeartbeatCritical) && (
+                      <div className={`rounded-md border px-2 py-1 text-xs ${
+                        bmIsHeartbeatCritical
+                          ? 'border-red-200 bg-red-50/70 text-red-700'
+                          : 'border-amber-200 bg-amber-50/70 text-amber-800'
+                      }`}>
+                        {bmIsHeartbeatCritical
+                          ? t('detail.heartbeatCriticalHint')
+                          : t('detail.heartbeatStaleHint')}
+                      </div>
+                    )}
+                  </div>
+
+                  <CommitProcessingTimeline
+                    events={benchmarkEvents}
+                    pipelineEntries={benchmarkLog}
+                    jobStartedAt={benchmarkProgress.startedAt ?? null}
+                    title={t('detail.commitTimelineTitle')}
+                    emptyLabel={t('detail.commitTimelineEmpty')}
+                    spanLabel={t('detail.commitTimelineSpan')}
+                    showChildrenLabel={t('detail.commitTimelineShowChildren')}
+                    hideChildrenLabel={t('detail.commitTimelineHideChildren')}
+                    commitLegendLabel={t('detail.commitTimelineLegendCommit')}
+                    fdChildLegendLabel={t('detail.commitTimelineLegendFdChild')}
+                  />
+
+                  {/* Live diagnostics events */}
+                  {benchmarkEvents.length > 0 ? (
+                    <AnalysisEventLog
+                      entries={benchmarkEvents}
+                      title={t('detail.liveEventsTitle')}
+                      copyLabel={t('detail.copyEvents')}
+                      copiedLabel={t('detail.copiedEvents')}
+                    />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {t('detail.noLiveEventsHint')}
+                    </p>
+                  )}
+
+                  {/* Live pipeline log */}
+                  {benchmarkLog.length > 0 ? (
+                    <PipelineLog entries={benchmarkLog} />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      {t('detail.noLiveLogHint')}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           {/* Collapsible runtime log (events + pipeline log) */}
           {(jobEvents.length > 0 || pipelineLog.length > 0) && (
