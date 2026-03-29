@@ -24,6 +24,8 @@ packages/server/tmp/
 .vscode/
 *.swp
 *.swo
+.claude/
+CODEX_NOTIFICATIONS.md
 
 # OS
 .DS_Store
