@@ -127,7 +127,16 @@ export class GitHubClient {
     return this.handleResponse<T>(response);
   }
 
+  /**
+   * POST is restricted to /graphql read queries only.
+   * SECURITY: We must never modify client repositories via their token.
+   */
   async post<T>(path: string, body: unknown): Promise<T> {
+    // Only allow POST for GraphQL queries (read-only)
+    const normalizedPath = path.startsWith('http') ? new URL(path).pathname : path;
+    if (normalizedPath !== '/graphql') {
+      throw new Error(`SECURITY: POST to ${normalizedPath} is blocked. Only /graphql is allowed.`);
+    }
     const url = path.startsWith('http') ? path : `${this.baseUrl}${path}`;
     const response = await fetch(url, {
       method: 'POST',

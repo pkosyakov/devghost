@@ -76,6 +76,8 @@ def clone_or_update(
     if os.path.isdir(git_dir):
         # Update existing clone
         _run_git(["remote", "set-url", "origin", auth_url], cwd=repo_path, env=env)
+        # SECURITY: disable push to prevent any accidental writes to client repos
+        _run_git(["remote", "set-url", "--push", "origin", "DISABLED"], cwd=repo_path, env=env)
         fetch_args = ["fetch", "--prune", "--no-tags", "origin"]
         if GIT_PARTIAL_CLONE:
             fetch_args.insert(1, "--filter=blob:none")
@@ -108,6 +110,8 @@ def clone_or_update(
             env=env,
             timeout=GIT_CLONE_TIMEOUT_SEC,
         )
+        # SECURITY: disable push to prevent any accidental writes to client repos
+        _run_git(["remote", "set-url", "--push", "origin", "DISABLED"], cwd=repo_path, env=env)
 
     return repo_path
 

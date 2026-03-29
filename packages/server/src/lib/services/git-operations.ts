@@ -171,6 +171,8 @@ export async function cloneOrUpdateRepo(
       // Update existing clone — ensure longpaths is set for Windows
       await execGit(['config', 'core.longpaths', 'true'], { cwd: repoPath }).catch(() => {});
       await execGit(['remote', 'set-url', 'origin', authUrl], { cwd: repoPath, env: gitEnv });
+      // SECURITY: disable push to prevent any accidental writes to client repos
+      await execGit(['remote', 'set-url', '--push', 'origin', 'DISABLED'], { cwd: repoPath, env: gitEnv });
 
       const fetchArgs = ['fetch', '--prune', '--no-tags', 'origin'];
       if (GIT_PARTIAL_CLONE) fetchArgs.splice(1, 0, '--filter=blob:none');
@@ -193,6 +195,8 @@ export async function cloneOrUpdateRepo(
     cloneArgs.push(authUrl, repoPath);
 
     await execGitWithFilterFallback(cloneArgs, { env: gitEnv, timeout: GIT_CLONE_TIMEOUT_MS });
+    // SECURITY: disable push to prevent any accidental writes to client repos
+    await execGit(['remote', 'set-url', '--push', 'origin', 'DISABLED'], { cwd: repoPath, env: gitEnv });
 
     const { stdout } = await execGit(['rev-list', '--count', 'HEAD'], { cwd: repoPath });
     const sizeKb = await getRepoSizeKb(repoPath);
