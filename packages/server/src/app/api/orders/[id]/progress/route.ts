@@ -167,10 +167,13 @@ export async function GET(
   // reflects resumed work instead of showing a restart from zero.
   let persistedSuccessfulCount: number | null = null;
   if (isLiveStatus && job.executionMode === 'modal') {
+    // For benchmarks, count commits written by THIS job (not the original analysis).
+    // Original analysis commits have jobId=null; benchmark commits have jobId=job.id.
+    const countJobId = job.type === 'benchmark' ? job.id : null;
     persistedSuccessfulCount = await prisma.commitAnalysis.count({
       where: {
         orderId: id,
-        jobId: null,
+        jobId: countJobId,
         method: { not: 'error' },
       },
     });
