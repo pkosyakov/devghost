@@ -106,6 +106,14 @@ export const developerSettingsSchema = z.object({
   shareAutoCalculated: z.boolean().optional(),
 });
 
-export const benchmarkSchema = z.object({
-  profile: z.enum(['target_rollout'], { required_error: 'profile is required' }),
-});
+export const benchmarkSchema = z.union([
+  z.object({
+    profile: z.enum(['target_rollout']),
+  }),
+  z.object({
+    provider: z.enum(['ollama', 'openrouter'], { required_error: 'provider is required' }),
+    model: z.string().min(1, 'model is required'),
+    contextLength: z.number().positive().optional(),
+    promptRepeat: z.boolean().optional(),
+  }),
+]);

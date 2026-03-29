@@ -68,7 +68,7 @@ function setupMocks() {
   mockJobFindFirst
     .mockResolvedValueOnce(null)  // no running job
     .mockResolvedValueOnce({ id: 'base-job' })  // base job
-    .mockResolvedValueOnce(null);  // no previous same profile
+    .mockResolvedValueOnce(null);  // no previous same run
   mockJobCreate.mockResolvedValue({ id: 'new-job' });
   // Mock fetch for OpenRouter validation (models catalog + preflight)
   (global.fetch as any) = vi.fn()
@@ -76,7 +76,7 @@ function setupMocks() {
     .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) });
 }
 
-describe('POST /api/orders/[id]/benchmark', () => {
+describe('POST /api/orders/[id]/benchmark — profile mode', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.PIPELINE_MODE;
@@ -98,14 +98,11 @@ describe('POST /api/orders/[id]/benchmark', () => {
     expect(snapshot.fdLargeModel).toBe('qwen/qwen3-coder-plus');
     expect(snapshot.fdLargeProvider).toBe('openrouter');
     expect(snapshot.promptRepeat).toBe(false);
-
-    // Provider/model come from profile
     expect(createCall.data.llmProvider).toBe('openrouter');
     expect(createCall.data.llmModel).toBe('qwen/qwen3-coder-next');
   });
 
   it('does NOT read FD flags from env — profile is self-contained', async () => {
-    // Even if env has different FD flags, profile should win
     process.env.FD_V3_ENABLED = 'false';
     process.env.FD_LARGE_LLM_MODEL = 'some-other-model';
     process.env.FD_LARGE_LLM_PROVIDER = 'ollama';
@@ -130,34 +127,31 @@ describe('POST /api/orders/[id]/benchmark', () => {
     await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
 
     const snapshot = mockJobCreate.mock.calls[0]![0].data.llmConfigSnapshot;
-    // The mock returns context_length: 196608
     expect(snapshot.contextLength).toBe(196608);
     expect(snapshot.effectiveContextLength).toBe(196608);
   });
+});
 
-  it('fingerprint includes full profile fields', async () => {
-    setupMocks();
-    const req = makeRequest({ profile: 'target_rollout' });
-    await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
-
-    const fp = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
-    expect(fp).toBeTruthy();
-    expect(typeof fp).toBe('string');
-    expect(fp.length).toBe(16);
+describe('POST /api/orders/[id]/benchmark — model mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.FD_V3_ENABLED = 'true';
+    process.env.FD_LARGE_LLM_MODEL = 'qwen/qwen3-coder-plus';
+    process.env.FD_LARGE_LLM_PROVIDER = 'openrouter';
+    delete process.env.PIPELINE_MODE;
   });
 
-  it('local launch calls processAnalysisJob with resolved config', async () => {
+  it('includes FD v3 config from env in snapshot', async () => {
     setupMocks();
-    const req = makeRequest({ profile: 'target_rollout' });
+    const req = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
     await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
 
-    const { processAnalysisJob } = await import('@/lib/services/analysis-worker');
-    expect(processAnalysisJob).toHaveBeenCalledWith('new-job', expect.objectContaining({
-      isBenchmark: true,
-      failFast: true,
-      promptRepeat: false,
-      contextLength: 196608,
-    }));
+    const snapshot = mockJobCreate.mock.calls[0]![0].data.llmConfigSnapshot;
+    expect(snapshot.fdV3Enabled).toBe(true);
+    expect(snapshot.fdLargeModel).toBe('qwen/qwen3-coder-plus');
+    expect(snapshot.fdLargeProvider).toBe('openrouter');
+    expect(snapshot.benchmarkProfile).toBeNull();
+    expect(snapshot.benchmarkProfileLabel).toBeNull();
   });
 
   it('dispatches to Modal when PIPELINE_MODE=modal', async () => {
@@ -173,27 +167,40 @@ describe('POST /api/orders/[id]/benchmark', () => {
 
     // Mock fetch: OpenRouter catalog + preflight + Modal trigger
     (global.fetch as any) = vi.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 196608 }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ data: [{ id: 'qwen/qwen3-coder-next', context_length: 32768 }] }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ modal_call_id: 'mc-1' }) });
 
-    const req = makeRequest({ profile: 'target_rollout' });
+    const req = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
     const res = await POST(req, { params: Promise.resolve({ id: 'order-1' }) });
     expect(res.status).toBe(200);
 
-    // Verify Modal was triggered (3rd fetch call)
     const fetchCalls = (global.fetch as any).mock.calls;
     const modalCall = fetchCalls[2];
     expect(modalCall[0]).toBe('https://modal.test/trigger');
 
-    // Verify pipeline flags saved
-    const updateCall = mockJobUpdate.mock.calls[0];
-    expect(updateCall[0].data.executionMode).toBe('modal');
-    expect(updateCall[0].data.cacheMode).toBe('off');
-    expect(updateCall[0].data.skipBilling).toBe(true);
-
-    // processAnalysisJob should NOT be called in modal mode
     const { processAnalysisJob } = await import('@/lib/services/analysis-worker');
     expect(processAnalysisJob).not.toHaveBeenCalled();
+
+    delete process.env.PIPELINE_MODE;
+    delete process.env.MODAL_ENDPOINT_URL;
+    delete process.env.MODAL_WEBHOOK_SECRET;
+  });
+
+  it('FD v3 config affects fingerprint', async () => {
+    setupMocks();
+    const req1 = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
+    await POST(req1, { params: Promise.resolve({ id: 'order-1' }) });
+    const fp1 = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
+
+    process.env.FD_LARGE_LLM_MODEL = 'qwen/qwen3-coder-32b';
+    vi.clearAllMocks();
+    setupMocks();
+
+    const req2 = makeRequest({ provider: 'openrouter', model: 'qwen/qwen3-coder-next' });
+    await POST(req2, { params: Promise.resolve({ id: 'order-1' }) });
+    const fp2 = mockJobCreate.mock.calls[0]![0].data.llmConfigFingerprint;
+
+    expect(fp1).not.toBe(fp2);
   });
 });

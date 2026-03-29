@@ -3,11 +3,12 @@ import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { apiResponse, apiError, parseBody, requireAdmin, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
+import { checkOllamaHealth } from '@/lib/services/pipeline-bridge';
 import { getLlmConfig } from '@/lib/llm-config';
 import type { LlmConfig } from '@/lib/llm-config';
 import { analysisLogger } from '@/lib/logger';
 import { benchmarkSchema } from '@/lib/schemas';
-import { DEFAULT_CTX, clampContext, computeEffectiveContext } from '@/lib/services/model-context';
+import { DEFAULT_CTX, clampContext, resolveModelContext, computeEffectiveContext } from '@/lib/services/model-context';
 import { resolveBenchmarkProfile } from '@/lib/services/benchmark-profile';
 
 // POST /api/orders/[id]/benchmark — trigger a benchmark run
@@ -22,9 +23,6 @@ export async function POST(
   const parsed = await parseBody(request, benchmarkSchema);
   if (!parsed.success) return parsed.error;
   const body = parsed.data;
-
-  // Resolve the benchmark profile server-side
-  const profile = resolveBenchmarkProfile(body.profile);
 
   const order = await prisma.order.findFirst({
     where: { id },
@@ -43,123 +41,209 @@ export async function POST(
     return apiError('A job is already in progress', 409);
   }
 
-  // Validate OpenRouter connectivity and model availability
-  const llmConfig = await getLlmConfig();
-  const apiKey = llmConfig.openrouter.apiKey;
-  if (!apiKey) {
-    return apiError('OpenRouter API key is not configured', 400);
+  // Branch: profile-based (rollout candidate) vs model-based (ad-hoc experiment)
+  const isProfileMode = 'profile' in body;
+
+  let provider: 'ollama' | 'openrouter';
+  let model: string;
+  let promptRepeat: boolean;
+  let fdV3Enabled: boolean;
+  let fdLargeModel: string | null;
+  let fdLargeProvider: string | null;
+  let benchmarkProfile: string | null = null;
+  let benchmarkProfileLabel: string | null = null;
+
+  if (isProfileMode) {
+    const profile = resolveBenchmarkProfile(body.profile);
+    provider = profile.provider;
+    model = profile.model;
+    promptRepeat = profile.promptRepeat;
+    fdV3Enabled = profile.fdV3Enabled;
+    fdLargeModel = profile.fdLargeModel;
+    fdLargeProvider = profile.fdLargeProvider;
+    benchmarkProfile = profile.id;
+    benchmarkProfileLabel = profile.label;
+  } else {
+    provider = body.provider;
+    model = body.model;
+    promptRepeat = !!body.promptRepeat;
+    // Ad-hoc mode: inherit FD config from current env
+    fdV3Enabled = process.env.FD_V3_ENABLED?.toLowerCase() === 'true' || process.env.FD_V3_ENABLED === '1';
+    fdLargeModel = process.env.FD_LARGE_LLM_MODEL?.trim() || null;
+    fdLargeProvider = process.env.FD_LARGE_LLM_PROVIDER?.trim().toLowerCase() || null;
   }
 
+  // Health check adapts to provider
+  const llmConfig = await getLlmConfig();
   let serverContextLength: number | null = null;
 
-  // Step 1: verify API key + extract model context from catalog
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
-    const modelsRes = await fetch('https://openrouter.ai/api/v1/models', {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: controller.signal,
+  if (provider === 'ollama') {
+    const ollamaUrl = llmConfig.ollama.url;
+    const healthy = await checkOllamaHealth(ollamaUrl);
+    if (!healthy) {
+      return apiError(`Ollama is not reachable at ${ollamaUrl}`, 503);
+    }
+
+    const baseUrl = ollamaUrl.replace(/\/+$/, '');
+
+    // Verify model exists via /api/tags
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const tagsRes = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+      clearTimeout(timeout);
+
+      if (!tagsRes.ok) {
+        return apiError(`Failed to list Ollama models (HTTP ${tagsRes.status})`, 503);
+      }
+      const tagsData = await tagsRes.json() as { models?: Array<{ name: string }> };
+      const modelNames = (tagsData.models ?? []).map(m => m.name);
+      if (!modelNames.some(n => n === model || n.startsWith(`${model}:`))) {
+        return apiError(
+          `Model "${model}" not found in Ollama. Available: ${modelNames.join(', ')}`,
+          400,
+        );
+      }
+    } catch (err) {
+      if (err instanceof Response) throw err;
+      return apiError(`Failed to verify Ollama model: ${err}`, 503);
+    }
+
+    // Fetch actual context_length from model metadata
+    serverContextLength = await resolveModelContext({
+      ...llmConfig,
+      provider: 'ollama',
+      ollama: { ...llmConfig.ollama, model },
     });
-    clearTimeout(timeout);
-
-    if (!modelsRes.ok) {
-      return apiError(`OpenRouter API key validation failed (HTTP ${modelsRes.status})`, 503);
+  } else {
+    // OpenRouter — two-step validation
+    const apiKey = llmConfig.openrouter.apiKey;
+    if (!apiKey) {
+      return apiError('OpenRouter API key is not configured', 400);
     }
-    const modelsData = await modelsRes.json();
-    const catalogEntry = (modelsData.data || []).find((m: any) => m.id === profile.model);
-    if (catalogEntry?.context_length) {
-      serverContextLength = catalogEntry.context_length;
-    }
-  } catch (err) {
-    return apiError(`OpenRouter is not reachable: ${err}`, 503);
-  }
 
-  // Step 2: lightweight preflight — verify model works with strict JSON mode
-  // No provider routing — benchmark tests the rollout candidate, not system routing rules
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-    const preflightRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: profile.model,
-        messages: [{ role: 'user', content: 'Respond with json {}' }],
-        max_tokens: 10,
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'test',
-            strict: true,
-            schema: {
-              type: 'object',
-              properties: { ok: { type: 'boolean' } },
-              required: ['ok'],
-              additionalProperties: false,
+    // Step 1: verify API key + extract model context from catalog
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const modelsRes = await fetch('https://openrouter.ai/api/v1/models', {
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!modelsRes.ok) {
+        return apiError(`OpenRouter API key validation failed (HTTP ${modelsRes.status})`, 503);
+      }
+      const modelsData = await modelsRes.json();
+      const catalogEntry = (modelsData.data || []).find((m: any) => m.id === model);
+      if (catalogEntry?.context_length) {
+        serverContextLength = catalogEntry.context_length;
+      }
+    } catch (err) {
+      return apiError(`OpenRouter is not reachable: ${err}`, 503);
+    }
+
+    // Step 2: lightweight preflight — verify model works with strict JSON mode
+    // No provider routing — benchmark tests arbitrary models,
+    // system routing rules are tuned for the default model and may reject others.
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 30000);
+      const preflightRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'Respond with json {}' }],
+          max_tokens: 10,
+          response_format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'test',
+              strict: true,
+              schema: {
+                type: 'object',
+                properties: { ok: { type: 'boolean' } },
+                required: ['ok'],
+                additionalProperties: false,
+              },
             },
           },
-        },
-      }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
 
-    if (!preflightRes.ok) {
-      const errBody = await preflightRes.text().catch(() => '');
-      return apiError(
-        `OpenRouter preflight failed for model "${profile.model}" (HTTP ${preflightRes.status}): ${errBody.slice(0, 300)}`,
-        400,
-      );
+      if (!preflightRes.ok) {
+        const errBody = await preflightRes.text().catch(() => '');
+        return apiError(
+          `OpenRouter preflight failed for model "${model}" (HTTP ${preflightRes.status}): ${errBody.slice(0, 300)}`,
+          400,
+        );
+      }
+    } catch (err) {
+      return apiError(`OpenRouter preflight request failed: ${err}`, 503);
     }
-  } catch (err) {
-    return apiError(`OpenRouter preflight request failed: ${err}`, 503);
   }
 
-  // Build resolved config from the benchmark profile (not from env)
+  // Build resolved config with selected provider+model
   const resolvedConfig: LlmConfig = {
     ...llmConfig,
-    provider: profile.provider,
-    openrouter: {
+    provider,
+  };
+  if (provider === 'ollama') {
+    resolvedConfig.ollama = { ...llmConfig.ollama, model };
+  } else {
+    resolvedConfig.openrouter = {
       ...llmConfig.openrouter,
-      model: profile.model,
+      model,
       providerOrder: [],
       providerIgnore: [],
       allowFallbacks: false,
       requireParameters: true,
-    },
-  };
+    };
+  }
 
-  // Context window — server-validated value preferred, DEFAULT_CTX as fallback
-  const rawContextLength = clampContext(serverContextLength ?? DEFAULT_CTX);
-  const effectiveContextLength = computeEffectiveContext(rawContextLength, profile.provider);
+  // Context window — server-validated value preferred, client/default as fallback
+  const clientCtx = !isProfileMode && typeof body.contextLength === 'number' && body.contextLength > 0
+    ? body.contextLength
+    : DEFAULT_CTX;
+  const rawContextLength = clampContext(serverContextLength ?? clientCtx);
+  const effectiveContextLength = computeEffectiveContext(rawContextLength, provider);
 
-  // Snapshot: full config minus secrets, with profile metadata
+  // Snapshot: full config minus secrets
   const snapshot = {
     ...resolvedConfig,
     openrouter: { ...resolvedConfig.openrouter, apiKey: '[REDACTED]' },
     contextLength: rawContextLength,
     effectiveContextLength,
-    promptRepeat: profile.promptRepeat,
-    fdV3Enabled: profile.fdV3Enabled,
-    fdLargeModel: profile.fdLargeModel,
-    fdLargeProvider: profile.fdLargeProvider,
-    benchmarkProfile: profile.id,
-    benchmarkProfileLabel: profile.label,
+    promptRepeat,
+    fdV3Enabled,
+    fdLargeModel,
+    fdLargeProvider,
+    benchmarkProfile,
+    benchmarkProfileLabel,
   };
 
-  // Fingerprint: hash of the full profile-relevant fields
+  // Fingerprint: hash of config-relevant fields
   const fpData = JSON.stringify({
-    benchmarkProfile: profile.id,
-    provider: profile.provider,
-    model: profile.model,
+    ...(benchmarkProfile ? { benchmarkProfile } : {}),
+    provider, model,
     contextLength: effectiveContextLength,
-    fdV3Enabled: profile.fdV3Enabled,
-    fdLargeModel: profile.fdLargeModel,
-    fdLargeProvider: profile.fdLargeProvider,
-    promptRepeat: profile.promptRepeat,
+    fdV3Enabled,
+    fdLargeModel,
+    fdLargeProvider,
+    promptRepeat,
+    ...(provider === 'openrouter' && !isProfileMode ? {
+      providerOrder: resolvedConfig.openrouter.providerOrder,
+      providerIgnore: resolvedConfig.openrouter.providerIgnore,
+      allowFallbacks: resolvedConfig.openrouter.allowFallbacks,
+      requireParameters: resolvedConfig.openrouter.requireParameters,
+    } : {}),
   });
   const fingerprint = crypto.createHash('sha256').update(fpData).digest('hex').slice(0, 16);
 
@@ -172,8 +256,8 @@ export async function POST(
     return apiError('No completed analysis found to benchmark against', 400);
   }
 
-  // Detect repeated same-profile run (for noLlmCache)
-  const previousSameProfileRun = await prisma.analysisJob.findFirst({
+  // Detect repeated same-config run (for noLlmCache)
+  const previousSameRun = await prisma.analysisJob.findFirst({
     where: { orderId: id, type: 'benchmark', llmConfigFingerprint: fingerprint, status: 'COMPLETED' },
   });
 
@@ -183,8 +267,8 @@ export async function POST(
       status: 'PENDING',
       type: 'benchmark',
       baseJobId: baseJob.id,
-      llmProvider: profile.provider,
-      llmModel: profile.model,
+      llmProvider: provider,
+      llmModel: model,
       llmConfigSnapshot: snapshot,
       llmConfigFingerprint: fingerprint,
     },
@@ -236,10 +320,10 @@ export async function POST(
     processAnalysisJob(job.id, {
       isBenchmark: true,
       llmConfigOverride: resolvedConfig,
-      noLlmCache: !!previousSameProfileRun,
+      noLlmCache: !!previousSameRun,
       contextLength: effectiveContextLength,
       failFast: true,
-      promptRepeat: profile.promptRepeat,
+      promptRepeat,
     }).catch((err) => {
       analysisLogger.error({ err, jobId: job.id, orderId: id }, 'Benchmark failed');
     });

@@ -1789,6 +1789,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           {isAdmin && <BenchmarkLauncher
             orderId={id}
             disabled={!!benchmarkJobId}
+            commitCount={totalCommits || undefined}
+            avgInputTokens={
+              progress?.totalPromptTokens && progress?.totalLlmCalls
+                ? Math.round(progress.totalPromptTokens / progress.totalLlmCalls)
+                : undefined
+            }
             onLaunched={(jobId) => {
               setBenchmarkJobId(jobId);
               setBenchmarkLog([]);
