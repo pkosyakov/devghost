@@ -873,10 +873,10 @@ export async function processAnalysisJob(
 
     // Best-effort contributor projection — does not affect analysis status
     try {
-      await projectContributorsFromOrder(orderId);
+      await projectContributorsFromOrder(order.id);
     } catch (projectionErr) {
       analysisLogger.error(
-        { err: projectionErr, orderId },
+        { err: projectionErr, orderId: order.id },
         'Contributor projection failed (non-blocking)'
       );
     }

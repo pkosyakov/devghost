@@ -7,8 +7,7 @@ import { useRouter } from '@/i18n/navigation';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
-import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 
 interface ContributorMergeModalProps {
   contributorId: string;
@@ -79,19 +78,22 @@ export function ContributorMergeModal({
         />
 
         {data && data.length > 0 ? (
-          <RadioGroup value={selectedId ?? ''} onValueChange={setSelectedId}>
-            <div className="space-y-2 max-h-[200px] overflow-y-auto">
-              {data.map((c: any) => (
-                <div key={c.id} className="flex items-center space-x-2 rounded-md border p-2">
-                  <RadioGroupItem value={c.id} id={c.id} />
-                  <Label htmlFor={c.id} className="flex-1 cursor-pointer">
-                    <span className="font-medium">{c.displayName}</span>
-                    <span className="text-muted-foreground ml-2">{c.primaryEmail}</span>
-                  </Label>
-                </div>
-              ))}
-            </div>
-          </RadioGroup>
+          <div className="space-y-2 max-h-[200px] overflow-y-auto">
+            {data.map((c: any) => (
+              <button
+                key={c.id}
+                type="button"
+                className={cn(
+                  'flex items-center w-full text-left space-x-2 rounded-md border p-2 transition-colors',
+                  selectedId === c.id ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'
+                )}
+                onClick={() => setSelectedId(c.id)}
+              >
+                <span className="font-medium">{c.displayName}</span>
+                <span className="text-muted-foreground ml-2">{c.primaryEmail}</span>
+              </button>
+            ))}
+          </div>
         ) : search.length >= 2 ? (
           <p className="text-sm text-muted-foreground py-4">{t('noResults')}</p>
         ) : null}
