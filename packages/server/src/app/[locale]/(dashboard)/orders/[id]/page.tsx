@@ -580,6 +580,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     enabled: isAdmin && order?.status === 'COMPLETED',
   });
 
+  // Auto-detect running benchmark job (e.g., after page refresh)
+  useEffect(() => {
+    if (benchmarkJobId) return;
+    const running = benchmarkRuns.find((r: { status: string }) =>
+      r.status === 'PENDING' || r.status === 'RUNNING'
+    );
+    if (running) {
+      setBenchmarkJobId(running.id);
+    }
+  }, [benchmarkRuns, benchmarkJobId]);
+
   // Clear analysisStarted flag once order transitions to PROCESSING
   // Reset logSinceRef and force-refresh progress on completion so the full
   // persisted log is loaded from DB (not stale incremental cache)
