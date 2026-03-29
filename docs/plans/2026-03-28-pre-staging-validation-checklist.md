@@ -91,31 +91,37 @@ Stop rule:
 - any test or compile failure blocks the rest of the checklist
 
 
-## Phase 2 — Small-Path Replay on Merged Code
+## Phase 2 — Small-Path Actual-Context Replay on Merged Code
 
-This is the exact pre-staging check for the merged small/default path.
+This check must validate the merged small/default path with the real effective model context.
+
+Important:
+
+- do **not** use a plain `run_commit()` replay that leaves `MODEL_CONTEXT_LENGTH` at the Python default `32768`
+- that path measures the old pre-Release-1 runtime behavior and will over-route `16-30` file commits into legacy FD
+- the small-path gate must be evaluated with the model's real effective context, matching the shipping route/bridge behavior
 
 ### Command
 
 ```powershell
-python C:\Projects\devghost\packages\server\scripts\pipeline\experiment_production_pipeline_replay.py `
+python C:\Projects\devghost\packages\server\scripts\pipeline\experiment_small_commit_optimization.py `
   --repo C:\Projects\_tmp_devghost_audit\artisan-private `
-  --models "Qwen3 Next" `
-  --cache-namespace pre_staging_small_qwen_next_2026_03_28
+  --cache-namespace pre_staging_small_actual_ctx_2026_03_28
 ```
 
 ### What this measures
 
-- exact `run_commit()` behavior
-- current small/default model = `qwen/qwen3-coder-next`
-- real production routing and post-processing
+- a fresh live replay with `qwen/qwen3-coder-next` using the model's actual context length
+- the effective post-Release-1 small/default path
 - revised 20-case GT
+- comparison against the known bad `32768`-context baseline
 
 ### Required gate
 
+- use the `Actual-context exact replay` row from the generated report
 - overall `<= 30% MAPE`
 - `>= 15/20` in-range
-- no obvious false routing into legacy large behavior on this dataset
+- overflow / large bucket should be materially better than the default-context replay
 - no routine `5.0h` fallback artifacts
 
 ### Expected artifact
@@ -130,10 +136,10 @@ Save the exact file names used for sign-off.
 
 Stop and investigate if any are true:
 
-- overall MAPE is above `30%`
-- in-range drops below `15/20`
-- several cases unexpectedly route into FD / large path
-- the result looks materially worse than the known post-fix baseline
+- the `Actual-context exact replay` row is above `30% MAPE`
+- the `Actual-context exact replay` row is below `15/20` in-range
+- the `Actual-context exact replay` row is materially worse than the known `27.7% / 15 of 20` validated baseline
+- the report suggests the gain from actual context has disappeared
 
 
 ## Phase 3 — Large-Path Replay on Merged Code
