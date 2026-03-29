@@ -57,12 +57,101 @@ interface CacheStats {
   llm: number;
 }
 
+type RolloutHealthStatus = 'pass' | 'warn' | 'fail' | 'na';
+
+interface EstimatorHealthMetric {
+  status: RolloutHealthStatus;
+}
+
+interface EstimatorHealth {
+  windowHours: number;
+  generatedAt: string;
+  overallStatus: RolloutHealthStatus;
+  fallbackRate: EstimatorHealthMetric & {
+    percent: number | null;
+    fallbackCount: number;
+    totalCount: number;
+  };
+  fdV3Share: EstimatorHealthMetric & {
+    percent: number | null;
+    fdV3HolisticCount: number;
+    fdV3NonHolisticCount: number;
+    fdTotalCount: number;
+  };
+  modalJobs: EstimatorHealthMetric & {
+    recentModalJobCount: number;
+    failedCount: number;
+    stuckPendingCount: number;
+    stuckRunningCount: number;
+    stalledPostProcessingCount: number;
+    totalIssues: number;
+  };
+  attribution: EstimatorHealthMetric & {
+    suspiciousCount: number;
+    heuristicAttributedCount: number;
+    specialMethodAttributedCount: number;
+    largeModelMissingCount: number;
+    samples: Array<{
+      sha: string;
+      method: string | null;
+      llmModel: string | null;
+      repository: string;
+      analyzedAt: string;
+    }>;
+  };
+}
+
 /** Format price as string, handling very small numbers. */
 function formatPrice(price: number): string {
   if (price === 0) return '$0';
   if (price < 0.001) return `$${price.toFixed(6)}`;
   if (price < 1) return `$${price.toFixed(4)}`;
   return `$${price.toFixed(2)}`;
+}
+
+function healthBadgeClass(status: RolloutHealthStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'bg-emerald-100 text-emerald-700 border-emerald-200';
+    case 'warn':
+      return 'bg-amber-100 text-amber-700 border-amber-200';
+    case 'fail':
+      return 'bg-red-100 text-red-700 border-red-200';
+    default:
+      return 'bg-slate-100 text-slate-600 border-slate-200';
+  }
+}
+
+function healthCardClass(status: RolloutHealthStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'border-emerald-200';
+    case 'warn':
+      return 'border-amber-200';
+    case 'fail':
+      return 'border-red-200';
+    default:
+      return 'border-slate-200';
+  }
+}
+
+function healthLabel(status: RolloutHealthStatus): string {
+  switch (status) {
+    case 'pass':
+      return 'PASS';
+    case 'warn':
+      return 'WARN';
+    case 'fail':
+      return 'FAIL';
+    default:
+      return 'N/A';
+  }
+}
+
+function formatHealthPercent(percent: number): string {
+  return `${new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 2,
+  }).format(percent)}%`;
 }
 
 export default function AdminSettingsPage() {
@@ -108,6 +197,53 @@ export default function AdminSettingsPage() {
       return res.json();
     },
   });
+
+  const {
+    data: estimatorHealth,
+    isLoading: estimatorHealthLoading,
+    isFetching: estimatorHealthFetching,
+    isError: estimatorHealthError,
+    refetch: refetchEstimatorHealth,
+  } = useQuery<EstimatorHealth>({
+    queryKey: ['admin-estimator-health'],
+    queryFn: async () => {
+      const res = await fetch('/api/admin/estimator-health');
+      if (!res.ok) throw new Error('Failed to fetch estimator health');
+      const json = await res.json();
+      return json.data;
+    },
+    refetchInterval: 30_000,
+  });
+
+  const estimatorHealthUnavailable = !estimatorHealthLoading && (estimatorHealthError || !estimatorHealth);
+
+  const resolveHealthDisplay = (status?: RolloutHealthStatus) => {
+    if (estimatorHealthUnavailable) {
+      return {
+        status: 'fail' as const,
+        label: t('healthUnavailable'),
+      };
+    }
+
+    if (estimatorHealthLoading) {
+      return {
+        status: 'na' as const,
+        label: tc('loading'),
+      };
+    }
+
+    const resolvedStatus = status ?? 'na';
+    return {
+      status: resolvedStatus,
+      label: healthLabel(resolvedStatus),
+    };
+  };
+
+  const overallHealthDisplay = resolveHealthDisplay(estimatorHealth?.overallStatus);
+  const fallbackHealthDisplay = resolveHealthDisplay(estimatorHealth?.fallbackRate.status);
+  const fdShareHealthDisplay = resolveHealthDisplay(estimatorHealth?.fdV3Share.status);
+  const modalHealthDisplay = resolveHealthDisplay(estimatorHealth?.modalJobs.status);
+  const attributionHealthDisplay = resolveHealthDisplay(estimatorHealth?.attribution.status);
 
   const [clearingLevel, setClearingLevel] = useState<string | null>(null);
 
@@ -271,9 +407,180 @@ export default function AdminSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">{t('title')}</h1>
-        <p className="text-muted-foreground">{t('description')}</p>
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">{t('title')}</h1>
+            <p className="text-muted-foreground">{t('description')}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge className={healthBadgeClass(overallHealthDisplay.status)}>
+              {t('rolloutHealthBadge', {
+                status: overallHealthDisplay.label,
+                hours: estimatorHealth?.windowHours ?? 24,
+              })}
+            </Badge>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => refetchEstimatorHealth()}
+              disabled={estimatorHealthFetching}
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${estimatorHealthFetching ? 'animate-spin' : ''}`} />
+              {t('refreshHealth')}
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <Card className={healthCardClass(fallbackHealthDisplay.status)}>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{t('fallbackRateTitle')}</p>
+                  <p className="text-xs text-muted-foreground">{t('fallbackRateDescription')}</p>
+                </div>
+                <Badge variant="outline" className={healthBadgeClass(fallbackHealthDisplay.status)}>
+                  {fallbackHealthDisplay.label}
+                </Badge>
+              </div>
+              <div className="mt-3">
+                <div className="text-2xl font-semibold tabular-nums">
+                  {estimatorHealthLoading
+                    ? '...'
+                    : estimatorHealthUnavailable
+                      ? t('healthUnavailable')
+                      : estimatorHealth?.fallbackRate.percent != null
+                      ? formatHealthPercent(estimatorHealth.fallbackRate.percent)
+                      : t('healthNoData')}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {estimatorHealthUnavailable
+                    ? t('healthUnavailableHint')
+                    : estimatorHealth?.fallbackRate.totalCount
+                    ? t('fallbackRateHint', {
+                      count: estimatorHealth.fallbackRate.fallbackCount,
+                      total: estimatorHealth.fallbackRate.totalCount,
+                    })
+                    : t('healthNoRecentCommits')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={healthCardClass(fdShareHealthDisplay.status)}>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{t('fdShareTitle')}</p>
+                  <p className="text-xs text-muted-foreground">{t('fdShareDescription')}</p>
+                </div>
+                <Badge variant="outline" className={healthBadgeClass(fdShareHealthDisplay.status)}>
+                  {fdShareHealthDisplay.label}
+                </Badge>
+              </div>
+              <div className="mt-3">
+                <div className="text-2xl font-semibold tabular-nums">
+                  {estimatorHealthLoading
+                    ? '...'
+                    : estimatorHealthUnavailable
+                      ? t('healthUnavailable')
+                      : estimatorHealth?.fdV3Share.percent != null
+                      ? formatHealthPercent(estimatorHealth.fdV3Share.percent)
+                      : t('healthNoData')}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {estimatorHealthUnavailable
+                    ? t('healthUnavailableHint')
+                    : estimatorHealth?.fdV3Share.fdTotalCount
+                    ? t('fdShareHint', {
+                      fdV3: estimatorHealth.fdV3Share.fdV3HolisticCount,
+                      nonHolistic: estimatorHealth.fdV3Share.fdV3NonHolisticCount,
+                      total: estimatorHealth.fdV3Share.fdTotalCount,
+                    })
+                    : t('healthNoRecentFd')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={healthCardClass(modalHealthDisplay.status)}>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{t('modalJobsTitle')}</p>
+                  <p className="text-xs text-muted-foreground">{t('modalJobsDescription')}</p>
+                </div>
+                <Badge variant="outline" className={healthBadgeClass(modalHealthDisplay.status)}>
+                  {modalHealthDisplay.label}
+                </Badge>
+              </div>
+              <div className="mt-3">
+                <div className="text-2xl font-semibold tabular-nums">
+                  {estimatorHealthLoading
+                    ? '...'
+                    : estimatorHealthUnavailable
+                      ? t('healthUnavailable')
+                      : estimatorHealth?.modalJobs.totalIssues ?? 0}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {estimatorHealthUnavailable
+                    ? t('healthUnavailableHint')
+                    : (estimatorHealth?.modalJobs.recentModalJobCount ?? 0) > 0 || (estimatorHealth?.modalJobs.totalIssues ?? 0) > 0
+                      ? t('modalJobsHint', {
+                        failed: estimatorHealth?.modalJobs.failedCount ?? 0,
+                        pending: estimatorHealth?.modalJobs.stuckPendingCount ?? 0,
+                        running: estimatorHealth?.modalJobs.stuckRunningCount ?? 0,
+                        post: estimatorHealth?.modalJobs.stalledPostProcessingCount ?? 0,
+                      })
+                      : t('healthNoRecentModal')}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={healthCardClass(attributionHealthDisplay.status)}>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-medium">{t('attributionTitle')}</p>
+                  <p className="text-xs text-muted-foreground">{t('attributionDescription')}</p>
+                </div>
+                <Badge variant="outline" className={healthBadgeClass(attributionHealthDisplay.status)}>
+                  {attributionHealthDisplay.label}
+                </Badge>
+              </div>
+              <div className="mt-3">
+                <div className="text-2xl font-semibold tabular-nums">
+                  {estimatorHealthLoading
+                    ? '...'
+                    : estimatorHealthUnavailable
+                      ? t('healthUnavailable')
+                      : estimatorHealth?.attribution.suspiciousCount ?? 0}
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {estimatorHealthUnavailable
+                    ? t('healthUnavailableHint')
+                    : (estimatorHealth?.attribution.suspiciousCount ?? 0) > 0 || (estimatorHealth?.fallbackRate.totalCount ?? 0) > 0
+                      ? t('attributionHint', {
+                        heuristic: estimatorHealth?.attribution.heuristicAttributedCount ?? 0,
+                        special: estimatorHealth?.attribution.specialMethodAttributedCount ?? 0,
+                        missing: estimatorHealth?.attribution.largeModelMissingCount ?? 0,
+                      })
+                      : t('healthNoRecentCommits')}
+                </p>
+                {!estimatorHealthUnavailable && estimatorHealth?.attribution.samples?.length ? (
+                  <p className="mt-2 truncate text-[11px] font-mono text-muted-foreground">
+                    {t('attributionSample', {
+                      sha: estimatorHealth.attribution.samples[0]!.sha.slice(0, 8),
+                      method: estimatorHealth.attribution.samples[0]!.method ?? 'unknown',
+                    })}
+                  </p>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* LLM Provider */}
