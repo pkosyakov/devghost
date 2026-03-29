@@ -43,7 +43,7 @@ Four new models + one relation added to User.
 
 ### Workspace
 
-Temporary organization scope, 1:1 with User. No UI. When Organization lands later, Workspace becomes Organization.
+Temporary scope boundary, 1:1 with User. No UI. When Organization lands later, Workspace can map or attach to Organization — but is not assumed to be a direct rename.
 
 ```prisma
 model Workspace {
@@ -183,6 +183,18 @@ model User {
 }
 ```
 
+### Identity health taxonomy (frozen)
+
+Shared vocabulary for frontend filters, API params, and badge rendering:
+
+| Value | Meaning | Badge |
+|---|---|---|
+| `healthy` | All aliases resolved, no issues | Green / checkmark |
+| `attention` | Has unresolved aliases but contributor itself is resolved | Yellow / warning |
+| `unresolved` | Contributor has no resolved aliases or is itself unresolved | Red / alert |
+
+Computed from alias data, not stored. Used in: `identityHealth` filter param, `identityHealth.status` response field, `identity-health-badge.tsx` component.
+
 ### Key schema invariants
 
 - `ContributorAlias.contributorId` nullable — unresolved aliases exist without a contributor
@@ -292,7 +304,7 @@ All new endpoints under `/api/v2/contributors/`. Workspace resolved from authent
 GET /api/v2/contributors
   Query: ?page=1&pageSize=20&sort=lastActivityAt&sortOrder=desc
          &classification=INTERNAL,EXTERNAL
-         &identityHealth=unresolved
+         &identityHealth=healthy|attention|unresolved
          &search=john
   Response: apiResponse({
     contributors: ContributorSummaryRow[],
@@ -309,11 +321,14 @@ GET /api/v2/contributors/:id
     aliases: ContributorAlias[],
     summaryMetrics: { totalCommits, activeRepositoryCount, lastActivityAt },
     repositoryBreakdown: { repoName, commitCount, lastActivityAt }[],
-    identityHealth: { status, unresolvedAliasCount }
+    identityHealth: { status: 'healthy'|'attention'|'unresolved', unresolvedAliasCount },
+    potentialMatches: { aliasId, email, username, providerType, lastSeenAt }[]
   })
 ```
 
 Note: detail does NOT include commit evidence array. Commits are a separate endpoint.
+
+`potentialMatches` = unresolved aliases in the same workspace that share email domain or appear in orders where this contributor has activity. Lightweight heuristic, not fuzzy matching. May return empty array.
 
 **Commit evidence (paginated):**
 ```
@@ -463,7 +478,7 @@ Route: `/[locale]/(dashboard)/people/page.tsx`
 ### Key rules
 
 - **One row = one canonical contributor.** Unresolved aliases without contributor live in Identity Queue panel, not in the table.
-- Click on "N unresolved" in summary strip → scrolls to Identity Queue panel + optionally applies `identityHealth=attention` filter to table.
+- Click on "N unresolved" in summary strip → scrolls to Identity Queue panel + optionally applies `identityHealth=unresolved` filter to table.
 - Identity health is a **separate column** (or badge with tooltip/aria-label), not just an icon. Classification and identity health are different axes.
 
 ### Components
