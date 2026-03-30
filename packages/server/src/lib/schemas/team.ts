@@ -1,0 +1,39 @@
+import { z } from 'zod';
+
+export const teamListQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  pageSize: z.coerce.number().int().positive().max(100).default(20),
+  sort: z.enum(['name', 'memberCount', 'activeRepositoryCount', 'lastActivityAt', 'createdAt']).default('name'),
+  sortOrder: z.enum(['asc', 'desc']).default('asc'),
+  search: z.string().optional(),
+});
+
+export const createTeamBodySchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  description: z.string().max(500).optional(),
+});
+
+export const updateTeamBodySchema = z.object({
+  name: z.string().min(1).max(100).trim().optional(),
+  description: z.string().max(500).nullable().optional(),
+});
+
+export const addMemberBodySchema = z.object({
+  contributorId: z.string().min(1),
+  effectiveFrom: z.coerce.date().optional(),
+  effectiveTo: z.coerce.date().nullable().optional(),
+  isPrimary: z.boolean().optional().default(false),
+  role: z.string().max(100).optional(),
+});
+
+export const updateMemberBodySchema = z.object({
+  effectiveFrom: z.coerce.date().optional(),
+  effectiveTo: z.coerce.date().nullable().optional(),
+  isPrimary: z.boolean().optional(),
+  role: z.string().max(100).nullable().optional(),
+});
+
+export const teamRepositoriesQuerySchema = z.object({
+  from: z.coerce.date().optional(),
+  to: z.coerce.date().optional(),
+});
