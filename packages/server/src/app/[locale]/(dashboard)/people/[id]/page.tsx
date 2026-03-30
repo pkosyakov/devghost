@@ -29,7 +29,7 @@ export default function ContributorDetailPage() {
     queryFn: async () => {
       const res = await fetch(`/api/v2/contributors/${id}`);
       const json = await res.json();
-      if (!json.success) throw new Error(json.error);
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
     },
   });

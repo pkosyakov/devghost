@@ -48,7 +48,7 @@ export function IdentityHealthBadge({ status, unresolvedCount }: IdentityHealthB
       </TooltipTrigger>
       <TooltipContent>
         {status === 'healthy' && t('healthy')}
-        {status === 'attention' && `${unresolvedCount ?? 0} unresolved`}
+        {status === 'attention' && t('unresolvedCount', { count: unresolvedCount ?? 0 })}
         {status === 'unresolved' && t('unresolved')}
       </TooltipContent>
     </Tooltip>

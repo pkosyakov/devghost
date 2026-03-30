@@ -10,7 +10,8 @@ export async function POST(request: NextRequest) {
 
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
+  if (!body) return apiError('Invalid request body', 400);
   const parsed = mergeBodySchema.safeParse(body);
   if (!parsed.success) {
     return apiError(parsed.error.errors[0].message, 400);

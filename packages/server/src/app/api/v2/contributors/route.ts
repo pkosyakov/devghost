@@ -37,15 +37,28 @@ export async function GET(request: NextRequest) {
     ];
   }
 
-  // When identityHealth filter is active, we must fetch all matching contributors
-  // first, compute health, filter, then paginate in-memory. Without the filter,
-  // we can paginate at the DB level for efficiency.
-  const useInMemoryPagination = !!identityHealth;
+  // DB-level identity health filter using alias resolveStatus
+  if (identityHealth === 'healthy') {
+    // No UNRESOLVED or SUGGESTED aliases
+    where.aliases = { none: { resolveStatus: { in: ['UNRESOLVED', 'SUGGESTED'] } } };
+  } else if (identityHealth === 'attention') {
+    // Has both unresolved AND resolved aliases
+    where.AND = [
+      { aliases: { some: { resolveStatus: { in: ['UNRESOLVED', 'SUGGESTED'] } } } },
+      { aliases: { some: { resolveStatus: { in: ['AUTO_MERGED', 'MANUAL'] } } } },
+    ];
+  } else if (identityHealth === 'unresolved') {
+    // Has unresolved aliases but NO resolved ones
+    where.AND = [
+      { aliases: { some: { resolveStatus: { in: ['UNRESOLVED', 'SUGGESTED'] } } } },
+      { aliases: { none: { resolveStatus: { in: ['AUTO_MERGED', 'MANUAL'] } } } },
+    ];
+  }
 
-  // Get total count (before health filter)
+  // Get total count (with health filter applied at DB level)
   const total = await prisma.contributor.count({ where });
 
-  // Get contributors
+  // Get contributors with DB-level pagination
   const contributors = await prisma.contributor.findMany({
     where,
     include: {
@@ -62,7 +75,8 @@ export async function GET(request: NextRequest) {
         : sort === 'primaryEmail'
           ? { primaryEmail: sortOrder }
           : { updatedAt: sortOrder }, // lastActivityAt approximated by updatedAt
-    ...(useInMemoryPagination ? {} : { skip: (page - 1) * pageSize, take: pageSize }),
+    skip: (page - 1) * pageSize,
+    take: pageSize,
   });
 
   // Compute identity health per contributor
@@ -95,16 +109,6 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  // Apply identity health filter and in-memory pagination
-  const filtered = identityHealth
-    ? rows.filter((r) => r.identityHealth.status === identityHealth)
-    : rows;
-
-  const filteredTotal = useInMemoryPagination ? filtered.length : total;
-  const paginatedRows = useInMemoryPagination
-    ? filtered.slice((page - 1) * pageSize, page * pageSize)
-    : filtered;
-
   // Identity queue summary
   const unresolvedCount = await prisma.contributorAlias.count({
     where: { workspaceId: workspace.id, resolveStatus: 'UNRESOLVED' },
@@ -117,12 +121,12 @@ export async function GET(request: NextRequest) {
   });
 
   return apiResponse({
-    contributors: paginatedRows,
+    contributors: rows,
     pagination: {
       page,
       pageSize,
-      total: filteredTotal,
-      totalPages: Math.ceil(filteredTotal / pageSize),
+      total,
+      totalPages: Math.ceil(total / pageSize),
     },
     identityQueueSummary: { unresolvedCount, suggestedCount },
     totalContributors: total,

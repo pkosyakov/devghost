@@ -64,7 +64,7 @@ export async function GET(
       message: c.commitMessage,
       repo: c.repository,
       authoredAt: c.authorDate,
-      effortHours: c.effortHours,
+      effortHours: c.effortHours != null ? Number(c.effortHours) : null,
     })),
     pagination: {
       page,

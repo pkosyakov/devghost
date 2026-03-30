@@ -9,6 +9,8 @@ import { Input } from '@/components/ui/input';
 import { ChevronDown, ChevronUp, Search } from 'lucide-react';
 import { IdentityHealthBadge } from './identity-health-badge';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
+import { Link } from '@/i18n/navigation';
 
 interface PeopleIdentityQueueProps {
   unresolvedCount: number;
@@ -17,6 +19,7 @@ interface PeopleIdentityQueueProps {
 export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProps) {
   const t = useTranslations('people.identityQueue');
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [isOpen, setIsOpen] = useState(unresolvedCount > 0);
   const [resolvingAliasId, setResolvingAliasId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -27,16 +30,18 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
     queryFn: async () => {
       const res = await fetch('/api/v2/contributors/identity-queue?pageSize=5');
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
     },
     enabled: isOpen && unresolvedCount > 0,
   });
 
   const { data: searchResults } = useQuery({
-    queryKey: ['contributors-search', search],
+    queryKey: ['resolve-search', search],
     queryFn: async () => {
       const res = await fetch(`/api/v2/contributors?search=${encodeURIComponent(search)}&pageSize=5`);
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data?.contributors ?? [];
     },
     enabled: !!resolvingAliasId && search.length >= 2,
@@ -49,8 +54,11 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contributorId }),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['identity-queue'] });
       queryClient.invalidateQueries({ queryKey: ['contributors'] });
@@ -164,6 +172,14 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
                   )}
                 </div>
               ))}
+              {unresolvedCount > 5 && (
+                <Link
+                  href="/people?identityHealth=unresolved"
+                  className="block text-center text-sm text-primary hover:underline mt-2"
+                >
+                  {t('viewAll')}
+                </Link>
+              )}
             </div>
           ) : (
             <p className="text-sm text-muted-foreground">{t('empty')}</p>

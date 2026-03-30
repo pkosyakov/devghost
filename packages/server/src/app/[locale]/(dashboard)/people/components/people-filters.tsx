@@ -1,5 +1,6 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useTranslations } from 'next-intl';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
@@ -24,14 +25,25 @@ export function PeopleFilters({
 }: PeopleFiltersProps) {
   const t = useTranslations('people.filters');
   const tSearch = useTranslations('people.search');
+  const [localSearch, setLocalSearch] = useState(search);
+
+  // Sync external changes (e.g. reset filters)
+  useEffect(() => { setLocalSearch(search); }, [search]);
+
+  // Debounce search input
+  useEffect(() => {
+    if (localSearch === search) return;
+    const timer = setTimeout(() => onSearchChange(localSearch), 300);
+    return () => clearTimeout(timer);
+  }, [localSearch, search, onSearchChange]);
 
   return (
     <div className="flex items-center gap-3">
       <div className="relative flex-1 max-w-sm">
         <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
+          value={localSearch}
+          onChange={(e) => setLocalSearch(e.target.value)}
           placeholder={tSearch('placeholder')}
           className="pl-9"
         />

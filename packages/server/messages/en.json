@@ -7,7 +7,10 @@
     "save": "Save",
     "cancel": "Cancel",
     "delete": "Delete",
-    "retry": "Retry"
+    "retry": "Retry",
+    "previous": "Previous",
+    "next": "Next",
+    "totalCount": "{count} total"
   },
   "layout": {
     "header": {
@@ -1060,9 +1063,11 @@
       "external": "External",
       "bot": "Bot",
       "formerEmployee": "Former Employee",
+      "former_employee": "Former Employee",
       "healthy": "Healthy",
       "attention": "Needs Attention",
-      "unresolved": "Unresolved"
+      "unresolved": "Unresolved",
+      "unresolvedCount": "{count} unresolved"
     },
     "table": {
       "name": "Name",
@@ -1087,7 +1092,8 @@
       "searchContributor": "Search contributor...",
       "noResults": "No contributors found",
       "confirmResolve": "Attach to contributor",
-      "empty": "No unresolved identities"
+      "empty": "No unresolved identities",
+      "viewAll": "View all unresolved"
     },
     "empty": {
       "title": "No contributors yet",

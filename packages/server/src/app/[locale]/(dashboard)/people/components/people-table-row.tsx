@@ -8,6 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, D
 import { Button } from '@/components/ui/button';
 import { MoreHorizontal } from 'lucide-react';
 import { IdentityHealthBadge } from './identity-health-badge';
+import { useToast } from '@/hooks/use-toast';
 import { formatDistanceToNow } from 'date-fns';
 
 interface ContributorRow {
@@ -31,6 +32,7 @@ export function PeopleTableRow({ contributor, searchParams }: PeopleTableRowProp
   const tFilters = useTranslations('people.filters');
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const excludeMutation = useMutation({
     mutationFn: async () => {
@@ -39,9 +41,12 @@ export function PeopleTableRow({ contributor, searchParams }: PeopleTableRowProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['contributors'] }),
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
   });
 
   const includeMutation = useMutation({
@@ -51,9 +56,12 @@ export function PeopleTableRow({ contributor, searchParams }: PeopleTableRowProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['contributors'] }),
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
   });
 
   const classifyMutation = useMutation({
@@ -63,9 +71,12 @@ export function PeopleTableRow({ contributor, searchParams }: PeopleTableRowProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ classification }),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['contributors'] }),
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
   });
 
   const handleNavigate = () => {

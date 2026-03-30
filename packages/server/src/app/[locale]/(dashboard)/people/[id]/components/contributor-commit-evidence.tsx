@@ -15,6 +15,7 @@ interface ContributorCommitEvidenceProps {
 
 export function ContributorCommitEvidence({ contributorId }: ContributorCommitEvidenceProps) {
   const t = useTranslations('contributorDetail.commits');
+  const tCommon = useTranslations('common');
   const [page, setPage] = useState(1);
   const pageSize = 20;
 
@@ -25,6 +26,7 @@ export function ContributorCommitEvidence({ contributorId }: ContributorCommitEv
         `/api/v2/contributors/${contributorId}/commits?page=${page}&pageSize=${pageSize}`
       );
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
     },
   });
@@ -35,7 +37,7 @@ export function ContributorCommitEvidence({ contributorId }: ContributorCommitEv
         <CardTitle className="text-base">{t('title')}</CardTitle>
         {data?.pagination && (
           <span className="text-sm text-muted-foreground">
-            {data.pagination.total} total
+            {tCommon('totalCount', { count: data.pagination.total })}
           </span>
         )}
       </CardHeader>
@@ -93,7 +95,7 @@ export function ContributorCommitEvidence({ contributorId }: ContributorCommitEv
                   disabled={page <= 1}
                   onClick={() => setPage(page - 1)}
                 >
-                  Previous
+                  {tCommon('previous')}
                 </Button>
                 <Button
                   variant="outline"
@@ -101,7 +103,7 @@ export function ContributorCommitEvidence({ contributorId }: ContributorCommitEv
                   disabled={page >= data.pagination.totalPages}
                   onClick={() => setPage(page + 1)}
                 >
-                  Next
+                  {tCommon('next')}
                 </Button>
               </div>
             )}

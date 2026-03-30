@@ -36,44 +36,26 @@ export async function GET(
   ).length;
   const identityHealth = computeIdentityHealth({ resolvedCount, unresolvedCount });
 
-  // Summary metrics from CommitAnalysis
+  // Summary metrics from CommitAnalysis — DB-level aggregation
   const aliasEmails = contributor.aliases.map((a) => a.email);
-  const commitAnalyses = await prisma.commitAnalysis.findMany({
+
+  const repoGroups = await prisma.commitAnalysis.groupBy({
+    by: ['repository'],
     where: {
       order: { userId: session.user.id },
       authorEmail: { in: aliasEmails },
     },
-    select: {
-      id: true,
-      repository: true,
-      authorDate: true,
-      effortHours: true,
-    },
+    _count: { id: true },
+    _max: { authorDate: true },
   });
 
-  // Repository breakdown
-  const repoMap = new Map<string, { commitCount: number; lastActivityAt: Date }>();
-  for (const ca of commitAnalyses) {
-    const repo = ca.repository || 'unknown';
-    const existing = repoMap.get(repo);
-    if (existing) {
-      existing.commitCount++;
-      if (ca.authorDate && ca.authorDate > existing.lastActivityAt) {
-        existing.lastActivityAt = ca.authorDate;
-      }
-    } else {
-      repoMap.set(repo, {
-        commitCount: 1,
-        lastActivityAt: ca.authorDate || new Date(0),
-      });
-    }
-  }
+  const totalCommits = repoGroups.reduce((sum, g) => sum + g._count.id, 0);
 
-  const repositoryBreakdown = Array.from(repoMap.entries())
-    .map(([repoName, data]) => ({
-      repoName,
-      commitCount: data.commitCount,
-      lastActivityAt: data.lastActivityAt,
+  const repositoryBreakdown = repoGroups
+    .map((g) => ({
+      repoName: g.repository || 'unknown',
+      commitCount: g._count.id,
+      lastActivityAt: g._max.authorDate || new Date(0),
     }))
     .sort((a, b) => b.commitCount - a.commitCount);
 
@@ -98,9 +80,9 @@ export async function GET(
       })
     : [];
 
-  const lastActivity = commitAnalyses.reduce<Date | null>((latest, ca) => {
-    if (!ca.authorDate) return latest;
-    return latest && latest > ca.authorDate ? latest : ca.authorDate;
+  const lastActivity = repoGroups.reduce<Date | null>((latest, g) => {
+    if (!g._max.authorDate) return latest;
+    return latest && latest > g._max.authorDate ? latest : g._max.authorDate;
   }, null);
 
   return apiResponse({
@@ -114,8 +96,8 @@ export async function GET(
     },
     aliases: contributor.aliases,
     summaryMetrics: {
-      totalCommits: commitAnalyses.length,
-      activeRepositoryCount: repoMap.size,
+      totalCommits,
+      activeRepositoryCount: repoGroups.length,
       lastActivityAt: lastActivity,
     },
     repositoryBreakdown,

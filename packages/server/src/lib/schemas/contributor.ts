@@ -16,7 +16,7 @@ export const identityHealthEnum = z.enum(['healthy', 'attention', 'unresolved'])
 export const contributorListQuerySchema = z.object({
   page: z.coerce.number().int().positive().default(1),
   pageSize: z.coerce.number().int().positive().max(100).default(20),
-  sort: z.enum(['displayName', 'primaryEmail', 'lastActivityAt', 'activeRepositoryCount']).default('displayName'),
+  sort: z.enum(['displayName', 'primaryEmail', 'lastActivityAt']).default('displayName'),
   sortOrder: z.enum(['asc', 'desc']).default('asc'),
   classification: z.string().optional(), // comma-separated: "INTERNAL,EXTERNAL"
   identityHealth: identityHealthEnum.optional(),

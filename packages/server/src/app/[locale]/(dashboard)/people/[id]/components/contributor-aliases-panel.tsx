@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
+import { useToast } from '@/hooks/use-toast';
 
 interface Alias {
   id: string;
@@ -37,6 +38,7 @@ export function ContributorAliasesPanel({
 }: ContributorAliasesPanelProps) {
   const t = useTranslations('contributorDetail.identity');
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const resolveMutation = useMutation({
     mutationFn: async (aliasId: string) => {
@@ -45,8 +47,11 @@ export function ContributorAliasesPanel({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contributorId }),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contributor', contributorId] });
       queryClient.invalidateQueries({ queryKey: ['contributors'] });

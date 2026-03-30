@@ -14,6 +14,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 
 export default function PeoplePage() {
   const t = useTranslations('people');
+  const tCommon = useTranslations('common');
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
@@ -57,7 +58,7 @@ export default function PeoplePage() {
     queryFn: async () => {
       const res = await fetch(`/api/v2/contributors?${queryParams.toString()}`);
       const json = await res.json();
-      if (!json.success) throw new Error(json.error);
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
     },
   });
@@ -149,7 +150,7 @@ export default function PeoplePage() {
           {/* Pagination */}
           <div className="flex items-center justify-between">
             <p className="text-sm text-muted-foreground">
-              {data.pagination.total} total
+              {tCommon('totalCount', { count: data.pagination.total })}
             </p>
             <div className="flex gap-2">
               <Button
@@ -158,7 +159,7 @@ export default function PeoplePage() {
                 disabled={page <= 1}
                 onClick={() => updateParams({ page: String(page - 1) })}
               >
-                Previous
+                {tCommon('previous')}
               </Button>
               <Button
                 variant="outline"
@@ -166,7 +167,7 @@ export default function PeoplePage() {
                 disabled={page >= data.pagination.totalPages}
                 onClick={() => updateParams({ page: String(page + 1) })}
               >
-                Next
+                {tCommon('next')}
               </Button>
             </div>
           </div>

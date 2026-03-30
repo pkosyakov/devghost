@@ -24,7 +24,8 @@ export async function POST(
     return apiError('Only UNRESOLVED or SUGGESTED aliases can be resolved', 400);
   }
 
-  const body = await request.json();
+  const body = await request.json().catch(() => null);
+  if (!body) return apiError('Invalid request body', 400);
   const parsed = resolveAliasBodySchema.safeParse(body);
   if (!parsed.success) {
     return apiError(parsed.error.errors[0].message, 400);

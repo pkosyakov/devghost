@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
+import { useToast } from '@/hooks/use-toast';
 
 interface ContributorMergeModalProps {
   contributorId: string;
@@ -23,16 +24,18 @@ export function ContributorMergeModal({
   const t = useTranslations('contributorDetail.merge');
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [search, setSearch] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const { data } = useQuery({
-    queryKey: ['contributors-search', search],
+    queryKey: ['merge-search', search],
     queryFn: async () => {
       const res = await fetch(
         `/api/v2/contributors?search=${encodeURIComponent(search)}&pageSize=10`
       );
       const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data?.contributors?.filter((c: any) => c.id !== contributorId) ?? [];
     },
     enabled: open && search.length >= 2,
@@ -48,8 +51,11 @@ export function ContributorMergeModal({
           toContributorId: selectedId,
         }),
       });
-      return res.json();
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json;
     },
+    onError: (err: Error) => toast({ variant: 'destructive', title: err.message }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['contributors'] });
       queryClient.invalidateQueries({ queryKey: ['identity-queue'] });

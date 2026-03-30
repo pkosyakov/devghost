@@ -249,59 +249,67 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
     } else {
       const match = await findContributorMatch(workspace.id, raw);
 
-      if (match) {
-        await prisma.contributorAlias.create({
-          data: {
-            workspaceId: workspace.id,
-            contributorId: match.id,
-            providerType: raw.providerType,
-            providerId: raw.providerId || null,
-            email: raw.email,
-            username: raw.username || null,
-            resolveStatus: 'AUTO_MERGED',
-            mergeReason: raw.providerId ? 'exact_provider_match' : 'exact_email_match',
-            confidence: 1.0,
-            lastSeenAt: new Date(),
-          },
-        });
-      } else if (raw.source === 'primary') {
-        // Primary aliases: create new canonical contributor
-        const contributor = await prisma.contributor.create({
-          data: { workspaceId: workspace.id, displayName: raw.displayName, primaryEmail: raw.email },
-        });
+      try {
+        if (match) {
+          await prisma.contributorAlias.create({
+            data: {
+              workspaceId: workspace.id,
+              contributorId: match.id,
+              providerType: raw.providerType,
+              providerId: raw.providerId || null,
+              email: raw.email,
+              username: raw.username || null,
+              resolveStatus: 'AUTO_MERGED',
+              mergeReason: raw.providerId ? 'exact_provider_match' : 'exact_email_match',
+              confidence: 1.0,
+              lastSeenAt: new Date(),
+            },
+          });
+        } else if (raw.source === 'primary') {
+          // Primary aliases: create new canonical contributor
+          const contributor = await prisma.contributor.create({
+            data: { workspaceId: workspace.id, displayName: raw.displayName, primaryEmail: raw.email },
+          });
 
-        await prisma.contributorAlias.create({
-          data: {
-            workspaceId: workspace.id,
-            contributorId: contributor.id,
-            providerType: raw.providerType,
-            providerId: raw.providerId || null,
-            email: raw.email,
-            username: raw.username || null,
-            resolveStatus: 'AUTO_MERGED',
-            mergeReason: 'exact_email_match',
-            confidence: 1.0,
-            lastSeenAt: new Date(),
-          },
-        });
+          await prisma.contributorAlias.create({
+            data: {
+              workspaceId: workspace.id,
+              contributorId: contributor.id,
+              providerType: raw.providerType,
+              providerId: raw.providerId || null,
+              email: raw.email,
+              username: raw.username || null,
+              resolveStatus: 'AUTO_MERGED',
+              mergeReason: 'exact_email_match',
+              confidence: 1.0,
+              lastSeenAt: new Date(),
+            },
+          });
 
-        log.info({ contributorId: contributor.id, email: raw.email, orderId }, 'New contributor created');
-      } else {
-        // Merged-from aliases without a match: leave UNRESOLVED for identity queue
-        await prisma.contributorAlias.create({
-          data: {
-            workspaceId: workspace.id,
-            contributorId: null,
-            providerType: raw.providerType,
-            providerId: raw.providerId || null,
-            email: raw.email,
-            username: raw.username || null,
-            resolveStatus: 'UNRESOLVED',
-            lastSeenAt: new Date(),
-          },
-        });
+          log.info({ contributorId: contributor.id, email: raw.email, orderId }, 'New contributor created');
+        } else {
+          // Merged-from aliases without a match: leave UNRESOLVED for identity queue
+          await prisma.contributorAlias.create({
+            data: {
+              workspaceId: workspace.id,
+              contributorId: null,
+              providerType: raw.providerType,
+              providerId: raw.providerId || null,
+              email: raw.email,
+              username: raw.username || null,
+              resolveStatus: 'UNRESOLVED',
+              lastSeenAt: new Date(),
+            },
+          });
 
-        log.info({ email: raw.email, orderId }, 'Unresolved alias added to identity queue');
+          log.info({ email: raw.email, orderId }, 'Unresolved alias added to identity queue');
+        }
+      } catch (err: any) {
+        if (err?.code === 'P2002') {
+          log.warn({ email: raw.email, orderId }, 'Skipped duplicate alias (unique constraint)');
+        } else {
+          throw err;
+        }
       }
     }
   }
