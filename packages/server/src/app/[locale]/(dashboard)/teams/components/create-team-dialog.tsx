@@ -42,6 +42,7 @@ export function CreateTeamDialog({ triggerLabel }: { triggerLabel?: string }) {
     onSuccess: () => {
       toast({ description: t('success') });
       queryClient.invalidateQueries({ queryKey: ['teams'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
       setOpen(false);
       setName('');
       setDescription('');

@@ -61,6 +61,7 @@ export function SaveViewDialog({ open, onOpenChange, activeScope }: SaveViewDial
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['saved-views'] });
       queryClient.invalidateQueries({ queryKey: ['scope-saved-views'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
       onOpenChange(false);
     },
   });

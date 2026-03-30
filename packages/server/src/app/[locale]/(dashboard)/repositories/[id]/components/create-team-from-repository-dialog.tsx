@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useRouter } from '@/i18n/navigation';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Dialog,
   DialogContent,
@@ -52,6 +52,7 @@ export function CreateTeamFromRepositoryDialog({
   const tCommon = useTranslations('common');
   const { toast } = useToast();
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const initialName = useMemo(() => buildDefaultTeamName(repositoryName), [repositoryName]);
   const selectableContributors = useMemo(
@@ -114,6 +115,7 @@ export function CreateTeamFromRepositoryDialog({
     },
     onSuccess: (team) => {
       toast({ description: t('success') });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
       setOpen(false);
       router.push(`/teams/${team.id}?scopeKind=team&scopeId=${team.id}&onboarding=first-team`);
     },
