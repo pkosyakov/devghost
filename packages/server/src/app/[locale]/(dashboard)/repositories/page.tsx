@@ -10,8 +10,11 @@ import { RepositorySummaryStrip } from './components/repository-summary-strip';
 import { RepositoryFilters } from './components/repository-filters';
 import { RepositoryTable } from './components/repository-table';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
+import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
+import { UsersRound } from 'lucide-react';
 
 export default function RepositoriesPageWrapper() {
   return (
@@ -61,6 +64,9 @@ function RepositoriesPage() {
   if (search) queryParams.set('search', search);
   const activeScopeParams = pickActiveScopeParams(searchParams);
   activeScopeParams.forEach((value, key) => queryParams.set(key, value));
+
+  const { data: stageData } = useWorkspaceStage();
+  const showFirstTeamBanner = stageData?.workspaceStage === 'first_data';
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['repositories', queryParams.toString()],
@@ -134,6 +140,18 @@ function RepositoriesPage() {
         staleCount={staleCount}
         neverCount={neverCount}
       />
+
+      {showFirstTeamBanner && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex items-center gap-4 pt-6">
+            <UsersRound className="h-6 w-6 shrink-0 text-primary" />
+            <div className="space-y-1">
+              <p className="font-medium">{t('firstTeamBanner.title')}</p>
+              <p className="text-sm text-muted-foreground">{t('firstTeamBanner.description')}</p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <RepositoryFilters
         search={search}

@@ -1403,6 +1403,10 @@
     "error": {
       "title": "Failed to load repositories",
       "retry": "Retry"
+    },
+    "firstTeamBanner": {
+      "title": "Ready to create your first team?",
+      "description": "Open a repository you know well and use \"Create Team from Repository\" to bootstrap your first team from its contributors."
     }
   },
   "repositoryDetail": {
