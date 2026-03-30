@@ -119,6 +119,8 @@ Introduce persistent shared analytical context and reusable reporting scopes on 
 
 ## Slice 4A: Onboarding Journey Hardening
 
+**Status: merged to `master` (2026-03-31)**
+
 ### Goal
 
 Turn the post-Slice-4 surfaces into a coherent new-customer path instead of a set of disconnected screens.

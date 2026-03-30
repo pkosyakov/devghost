@@ -107,45 +107,59 @@ Repository slice must build on Slice 1:
 
 Status:
 
-- implementation is active on `feature/team-pivot`
-- the branch contains Team schema, APIs, screens, and tests
-- this slice should be treated as the current code baseline for designing Slice 4
+- implemented
+- reviewed
+- merged to `master`
 
-Practical meaning:
+Meaning:
 
-- team list/detail already exist in code;
-- team detail currently owns local `from/to` analytical state;
-- Slice 4 must design against this real implementation, not against the older plan-only picture.
+- `Team` CRUD, membership, activity-derived repositories, detail page
+- team list/detail APIs and screens are production code
+- team detail uses shared scope params via `GlobalContextBar` (introduced in Slice 4)
 
 ### Slice 4: Global Scope and Saved Views
 
 Status:
 
-- architecture packet exists
-- execution brief exists
-- operator prompt exists
-- screen specs exist for `Home`, `Global Context Bar`, `Saved View List`, and `Saved View Detail`
+- implemented
+- reviewed
+- merged to `master`
 
-Current next-step packet:
+Meaning:
 
-- [04-global-scope-and-saved-views.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views.md)
-- [04-global-scope-and-saved-views-execution-brief.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views-execution-brief.md)
-- [04-global-scope-and-saved-views-operator-prompt.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views-operator-prompt.md)
+- `ActiveScope` is URL-backed (`scopeKind`, `scopeId`, `from`, `to`, `repositoryIds`, `contributorIds`)
+- `SavedView` CRUD with workspace-scoped visibility
+- `GlobalContextBar` provides shared scope controls on analytical paths
+- `/dashboard` is now scope-aware `Home` with maturity-based stages
+- `Reports` page lists/manages saved views
+
+### Slice 4A: Onboarding Journey Hardening
+
+Status:
+
+- implemented
+- reviewed (two review rounds, all findings resolved)
+- merged to `master`
+
+Meaning:
+
+- `/api/v2/workspace-stage` lightweight endpoint drives maturity-aware UX
+- `useWorkspaceStage()` client hook with 5-min cache + invalidation on all mutations
+- `GlobalContextBar` hidden for `empty`/`first_data` stages (queries also disabled)
+- sidebar dims Teams and Reports for early-stage users
+- analysis results show onboarding handoff card for `first_data` users
+- repository list shows first-team bootstrap banner
+- team detail prompts first saved view when `needsFirstSavedView`
+- `workspace-stage` cache invalidated on: analysis completion, team creation (2 paths), saved view creation, saved view archive/restore (2 paths)
 
 ## Current Git/worktree state
 
-At the time this handoff was written:
+At the time this handoff was written (2026-03-31):
 
 - main workspace: [C:\Projects\devghost](C:\Projects\devghost)
-- active branch in the main workspace: `feature/team-pivot`
-- current `git worktree list --porcelain` shows only the main workspace worktree
-- the former Slice 2 worktree at [C:\Projects\devghost\.worktrees\repository-read-model](C:\Projects\devghost\.worktrees\repository-read-model) has been removed
-- the former branch `feature/repository-read-model` has been deleted after merge
-
-Main workspace note:
-
-- the main workspace currently contains local doc/architecture changes that are not committed on `master`;
-- treat the files on disk under `docs/architecture/team-first-refactor` as the latest local source of truth for this machine, even if `git status` is dirty.
+- active branch in the main workspace: `master`
+- no active worktrees or feature branches
+- all slices through 4A are merged to `master`
 
 Important operating rule:
 
@@ -153,67 +167,14 @@ Important operating rule:
 - do not assume the active implementation is in the main workspace;
 - review and edits should happen in the worktree that actually appears in `git worktree list --porcelain`, not in a remembered path from an earlier session.
 
-## Latest known review state for Slice 2
+## Review history (merged slices)
 
-Repository Read Model was iteratively reviewed in:
-
-- the former dedicated worktree [C:\Projects\devghost\.worktrees\repository-read-model](C:\Projects\devghost\.worktrees\repository-read-model)
-
-Latest known state:
-
-- the previously raised static code-review findings for Slice 2 were addressed;
-- the last review pass did not identify new code findings;
-- Slice 2 is already merged to `master`;
-- the dedicated repository worktree and feature branch were cleaned up after merge.
-
-## Latest known review state for Slice 3 plan and code
-
-The current Team Pivot implementation plan is:
-
-- [2026-03-30-team-pivot.md](C:\Projects\devghost\docs\superpowers\plans\2026-03-30-team-pivot.md)
-
-All previously open plan-review findings were resolved across four review rounds:
-
-1. Migration: uses `prisma migrate dev` (local) / `prisma migrate deploy` (staging/prod), never `db:push`. DDL verification via `rg`.
-2. Membership overlap: validated as domain invariant in both `addMember()` and `updateMembership()`, with dedicated test coverage.
-3. Teams List: matches locked contracts — `teamId`, `memberCount` (distinct contributors), `activeRepositoryCount`, `lastActivityAt`, `healthStatus` (Slice 3 placeholder), workspace-wide summary (`teamCount`/`activeTeamCount`/`memberedContributorCount`), sortable repos column.
-4. Derived-key sorting: two-path strategy (DB-sort + skip/take for `name`/`createdAt`; fetch-all + in-memory sort + splice for derived fields). Tests cover global sort correctness across pages.
-5. memberCount semantics: unified to distinct contributors across list rows, sort, and detail KPIs.
-
-Non-blocking notes for future slices:
+All slices through 4A have been reviewed and merged. Key non-blocking notes for future slices:
 
 - `activeContributorCount` is computed but not yet shown in TeamTable (UI simplification, not a contract gap).
 - Summary strip is workspace-wide while table is search-filtered — may need copy/tooltip later for clarity.
-- Derived-sort fetches all matching teams into memory — acceptable for Slice 3 scale, may need precomputed aggregates at scale.
-
-Current code reality on `feature/team-pivot`:
-
-- Team list/detail APIs and screens exist;
-- team detail uses shared `from/to` params across local widgets, but still owns that state locally;
-- the dashboard layout remains the obvious insertion point for Slice 4 global scope chrome;
-- `/dashboard` is still order-centric and must be replaced by scope-aware `Home` in Slice 4.
-
-## Latest known design state for Slice 4
-
-Slice 4 has been designed against the real Slice 3 implementation baseline.
-
-Prepared artifacts:
-
-- [04-global-scope-and-saved-views.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views.md)
-- [04-global-scope-and-saved-views-execution-brief.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views-execution-brief.md)
-- [04-global-scope-and-saved-views-operator-prompt.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views-operator-prompt.md)
-- [home.md](C:\Projects\devghost\docs\architecture\team-first-refactor\07-screen-specs\home.md)
-- [global-context-bar.md](C:\Projects\devghost\docs\architecture\team-first-refactor\07-screen-specs\global-context-bar.md)
-- [saved-view-list.md](C:\Projects\devghost\docs\architecture\team-first-refactor\07-screen-specs\saved-view-list.md)
-- [saved-view-detail.md](C:\Projects\devghost\docs\architecture\team-first-refactor\07-screen-specs\saved-view-detail.md)
-
-Locked Slice 4 decisions already reflected in the architecture package:
-
-- `ActiveScope` is URL-backed in Slice 4 v1;
-- `SavedView` is workspace-scoped in production until `Organization` exists;
-- separate persisted `Dashboard` object is deferred;
-- `/dashboard` becomes the scope-aware `Home`;
-- Team Detail local date controls must be replaced or synchronized where the global context bar is introduced.
+- Derived-sort fetches all matching teams into memory — acceptable at current scale, may need precomputed aggregates later.
+- `next lint` is no longer functional (removed in Next.js 16, no eslint.config exists). Pre-existing build failures on `/settings`, `/admin/users`, `/admin/audit` from missing Suspense boundaries around `useSearchParams()`.
 
 ## Recommended resume protocol
 
@@ -237,8 +198,7 @@ When resuming this initiative in a new session:
 
 ## Next likely steps
 
-Depending on where the code stands when the next session begins, the next action will usually be one of:
+Slices 1–4A are all merged. The next action will usually be:
 
-1. review or complete the active `feature/team-pivot` implementation;
-2. if Slice 3 is merge-ready, merge it and clean up the branch/worktree state;
-3. then hand off [04-global-scope-and-saved-views.md](C:\Projects\devghost\docs\architecture\team-first-refactor\12-implementation-packets\04-global-scope-and-saved-views.md) for implementation.
+1. Design and implement Slice 5: Curation and Diagnostics.
+2. Address pre-existing build issues (Suspense boundaries, eslint config) if blocking deployment.
