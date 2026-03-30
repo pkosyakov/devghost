@@ -42,4 +42,7 @@ export const updateMemberBodySchema = z.object({
 export const teamRepositoriesQuerySchema = z.object({
   from: z.coerce.date().optional(),
   to: z.coerce.date().optional(),
-});
+}).refine(
+  (d) => !d.from || !d.to || d.from <= d.to,
+  { message: 'from must be before or equal to to', path: ['to'] },
+);
