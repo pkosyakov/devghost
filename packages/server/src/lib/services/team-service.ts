@@ -274,12 +274,21 @@ export async function getTeamDetail(
     role: m.role,
   }));
 
-  // scopeInfo — local query-param scope for Slice 3
+  // Normalize date-only `to` to end-of-day before building scopeInfo and
+  // passing to computeTeamRepositories, so the reported scope matches the
+  // effective query window.
+  let normalizedScope = scopeRange;
+  if (normalizedScope?.to) {
+    const eod = new Date(normalizedScope.to);
+    eod.setUTCHours(23, 59, 59, 999);
+    normalizedScope = { ...normalizedScope, to: eod };
+  }
+
   const scopeInfo = {
     source: 'local' as const,
     dateRange: {
-      start: scopeRange?.from?.toISOString() ?? null,
-      end: scopeRange?.to?.toISOString() ?? null,
+      start: normalizedScope?.from?.toISOString() ?? null,
+      end: normalizedScope?.to?.toISOString() ?? null,
     },
   };
 
@@ -291,7 +300,7 @@ export async function getTeamDetail(
     contributor: { aliases: m.contributor.aliases },
   }));
   const repositories = await computeTeamRepositories(
-    workspaceId, membershipsForRepos, scopeRange,
+    workspaceId, membershipsForRepos, normalizedScope,
   );
 
   const now = new Date();
