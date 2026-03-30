@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useTranslations } from 'next-intl';
 import { useParams, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
@@ -15,7 +15,15 @@ import { ContributorRepoBreakdown } from './components/contributor-repo-breakdow
 import { ContributorCommitEvidence } from './components/contributor-commit-evidence';
 import { ContributorMergeModal } from './components/contributor-merge-modal';
 
-export default function ContributorDetailPage() {
+export default function ContributorDetailPageWrapper() {
+  return (
+    <Suspense fallback={<div className="space-y-6 p-6"><Skeleton className="h-8 w-48" /><Skeleton className="h-64 w-full" /></div>}>
+      <ContributorDetailPage />
+    </Suspense>
+  );
+}
+
+function ContributorDetailPage() {
   const t = useTranslations('contributorDetail');
   const { id } = useParams<{ id: string }>();
   const searchParams = useSearchParams();

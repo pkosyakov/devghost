@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { Suspense, useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
@@ -11,7 +11,15 @@ import { RepositoryTable } from './components/repository-table';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
-export default function RepositoriesPage() {
+export default function RepositoriesPageWrapper() {
+  return (
+    <Suspense fallback={<div className="space-y-6 p-6"><Skeleton className="h-8 w-48" /><Skeleton className="h-64 w-full" /></div>}>
+      <RepositoriesPage />
+    </Suspense>
+  );
+}
+
+function RepositoriesPage() {
   const t = useTranslations('repositories');
   const tCommon = useTranslations('common');
   const searchParams = useSearchParams();

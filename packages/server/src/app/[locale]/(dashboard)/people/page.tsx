@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { Suspense, useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
@@ -12,7 +12,15 @@ import { PeopleTable } from './components/people-table';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 
-export default function PeoplePage() {
+export default function PeoplePageWrapper() {
+  return (
+    <Suspense fallback={<div className="space-y-6 p-6"><Skeleton className="h-8 w-48" /><Skeleton className="h-64 w-full" /></div>}>
+      <PeoplePage />
+    </Suspense>
+  );
+}
+
+function PeoplePage() {
   const t = useTranslations('people');
   const tCommon = useTranslations('common');
   const searchParams = useSearchParams();
