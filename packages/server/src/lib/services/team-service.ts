@@ -87,34 +87,29 @@ export async function listTeams(
     }
   }
 
-  // Fetch commit activity aggregated by (authorEmail, repository) to avoid
-  // unbounded row fetch. Uses groupBy to return O(unique_email_repo_pairs)
-  // instead of O(total_commits). Includes min/max dates for point-in-time
-  // attribution against membership windows.
+  // Fetch all commits for member emails in a single query, then apply exact
+  // per-team point-in-time attribution in memory. This uses the same per-commit
+  // window filtering as computeTeamRepositories, keeping list and detail consistent.
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
-  // email → repo → { minDate, maxDate }
-  const commitsByEmailRepo = new Map<string, Map<string, { minDate: Date; maxDate: Date }>>();
+  type CommitRow = { repository: string; authorEmail: string; authorDate: Date | null };
+  let allCommits: CommitRow[] = [];
 
   if (workspace && allEmails.size > 0) {
-    const grouped = await prisma.commitAnalysis.groupBy({
-      by: ['authorEmail', 'repository'],
+    allCommits = await prisma.commitAnalysis.findMany({
       where: {
         authorEmail: { in: Array.from(allEmails) },
         order: { userId: workspace.ownerId },
       },
-      _min: { authorDate: true },
-      _max: { authorDate: true },
+      select: { repository: true, authorEmail: true, authorDate: true },
     });
+  }
 
-    for (const g of grouped) {
-      if (!g._min.authorDate || !g._max.authorDate) continue;
-      let repoMap = commitsByEmailRepo.get(g.authorEmail);
-      if (!repoMap) {
-        repoMap = new Map();
-        commitsByEmailRepo.set(g.authorEmail, repoMap);
-      }
-      repoMap.set(g.repository, { minDate: g._min.authorDate, maxDate: g._max.authorDate });
-    }
+  // Index commits by email for efficient per-team lookups
+  const commitsByEmail = new Map<string, CommitRow[]>();
+  for (const c of allCommits) {
+    let list = commitsByEmail.get(c.authorEmail);
+    if (!list) { list = []; commitsByEmail.set(c.authorEmail, list); }
+    list.push(c);
   }
 
   // Build enriched rows
@@ -125,25 +120,21 @@ export async function listTeams(
     );
     const activeContributorIds = new Set(activeMemberships.map((m) => m.contributorId));
 
-    // Derive repos and lastActivity — approximate point-in-time attribution.
-    // Uses groupBy min/max dates to check whether the commit date range [minDate, maxDate]
-    // for (email, repo) overlaps with the membership window. This can produce false positives
-    // when all real commits fall outside the window but the range spans it. The detail view
-    // (computeTeamRepositories) applies per-commit attribution for exact results.
+    // Exact point-in-time attribution: a commit counts for this team only if
+    // it falls within at least one membership window for that email in this team.
     const teamRepos = new Set<string>();
     let lastActivityAt: Date | null = null;
     for (const m of t.memberships) {
       for (const a of m.contributor.aliases) {
-        const repoMap = commitsByEmailRepo.get(a.email);
-        if (!repoMap) continue;
-        for (const [repo, dates] of repoMap) {
-          // Skip if membership starts after the latest commit in this repo
-          if (m.effectiveFrom > dates.maxDate) continue;
-          // Skip if membership ended before the earliest commit (exclusive effectiveTo)
-          if (m.effectiveTo && m.effectiveTo <= dates.minDate) continue;
-          teamRepos.add(repo);
-          if (dates.maxDate && (!lastActivityAt || dates.maxDate > lastActivityAt)) {
-            lastActivityAt = dates.maxDate;
+        const commits = commitsByEmail.get(a.email);
+        if (!commits) continue;
+        for (const c of commits) {
+          if (!c.authorDate) continue;
+          if (c.authorDate < m.effectiveFrom) continue;
+          if (m.effectiveTo && c.authorDate >= m.effectiveTo) continue;
+          teamRepos.add(c.repository);
+          if (!lastActivityAt || c.authorDate > lastActivityAt) {
+            lastActivityAt = c.authorDate;
           }
         }
       }

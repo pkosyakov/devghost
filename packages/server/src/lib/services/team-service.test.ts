@@ -76,9 +76,9 @@ describe('team-service', () => {
         },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
-        { authorEmail: 'alice@co.com', repository: 'org/frontend', _min: { authorDate: commitDate }, _max: { authorDate: commitDate } },
-        { authorEmail: 'alice@co.com', repository: 'org/shared', _min: { authorDate: new Date('2025-08-01') }, _max: { authorDate: new Date('2025-08-01') } },
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
+        { authorEmail: 'alice@co.com', repository: 'org/frontend', authorDate: commitDate },
+        { authorEmail: 'alice@co.com', repository: 'org/shared', authorDate: new Date('2025-08-01') },
       ]);
       // Summary queries: activeTeamIds, memberedContributors
       mockPrisma.teamMembership.findMany
@@ -116,7 +116,7 @@ describe('team-service', () => {
         },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([]);
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }])
         .mockResolvedValueOnce([{ contributorId: 'c1' }, { contributorId: 'c2' }]);
@@ -140,13 +140,15 @@ describe('team-service', () => {
         },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
-        // Repo with commits only BEFORE membership started — should be excluded
-        { authorEmail: 'a@co.com', repository: 'org/old', _min: { authorDate: new Date('2025-01-01') }, _max: { authorDate: new Date('2025-03-01') } },
-        // Repo with commits within membership window — should be included
-        { authorEmail: 'a@co.com', repository: 'org/current', _min: { authorDate: new Date('2025-07-01') }, _max: { authorDate: new Date('2025-09-01') } },
-        // Repo with commits only AFTER membership ended — should be excluded
-        { authorEmail: 'a@co.com', repository: 'org/future', _min: { authorDate: new Date('2026-02-01') }, _max: { authorDate: new Date('2026-03-01') } },
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
+        // Commits only BEFORE membership started — should be excluded
+        { authorEmail: 'a@co.com', repository: 'org/old', authorDate: new Date('2025-01-01') },
+        { authorEmail: 'a@co.com', repository: 'org/old', authorDate: new Date('2025-03-01') },
+        // Commits within membership window — should be included
+        { authorEmail: 'a@co.com', repository: 'org/current', authorDate: new Date('2025-07-01') },
+        { authorEmail: 'a@co.com', repository: 'org/current', authorDate: new Date('2025-09-01') },
+        // Commits only AFTER membership ended — should be excluded
+        { authorEmail: 'a@co.com', repository: 'org/future', authorDate: new Date('2026-02-01') },
       ]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }])
@@ -187,10 +189,10 @@ describe('team-service', () => {
           memberships: [{ contributorId: 'c3', effectiveFrom: new Date('2025-01-01'), effectiveTo: null, contributor: { aliases: [{ email: 'c@co.com' }] } }] },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
-        { authorEmail: 'a@co.com', repository: 'org/r1', _min: { authorDate: new Date('2025-03-01') }, _max: { authorDate: new Date('2025-03-01') } },
-        { authorEmail: 'b@co.com', repository: 'org/r2', _min: { authorDate: new Date('2025-09-01') }, _max: { authorDate: new Date('2025-09-01') } }, // most recent
-        { authorEmail: 'c@co.com', repository: 'org/r3', _min: { authorDate: new Date('2025-06-01') }, _max: { authorDate: new Date('2025-06-01') } },
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
+        { authorEmail: 'a@co.com', repository: 'org/r1', authorDate: new Date('2025-03-01') },
+        { authorEmail: 'b@co.com', repository: 'org/r2', authorDate: new Date('2025-09-01') }, // most recent
+        { authorEmail: 'c@co.com', repository: 'org/r3', authorDate: new Date('2025-06-01') },
       ]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }, { teamId: 't2' }, { teamId: 't3' }])
@@ -226,7 +228,7 @@ describe('team-service', () => {
           ] },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([]);
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }, { teamId: 't2' }])
         .mockResolvedValueOnce([{ contributorId: 'c1' }, { contributorId: 'c2' }, { contributorId: 'c3' }]);
