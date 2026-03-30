@@ -117,6 +117,37 @@ Introduce persistent shared analytical context and reusable reporting scopes on 
 - activating a saved view updates the shared scope instead of opening an isolated mini-app;
 - `/dashboard` is no longer primarily an order-centric page.
 
+## Slice 4A: Onboarding Journey Hardening
+
+### Goal
+
+Turn the post-Slice-4 surfaces into a coherent new-customer path instead of a set of disconnected screens.
+
+### Includes
+
+- maturity-aware onboarding UX hardening
+- first-analysis results handoff
+- stronger repo-seeded first-team bootstrap discoverability
+- explicit first-saved-view guidance after first team creation
+- suppression or de-emphasis of advanced concepts too early in the journey
+
+### Does not include
+
+- new schema/entities
+- backend/domain rename of `Order`
+- route rename away from `/orders/*`
+- scheduled report delivery
+- public report sharing
+- Slice 5 diagnostics/curation work
+
+### Acceptance criteria
+
+- a new user sees one clear next step at each maturity stage;
+- analysis results explicitly hand off into `People`, `Repositories`, and first-team creation;
+- first-team creation is discoverable from repository-oriented surfaces;
+- after first team creation, the product clearly drives the first saved view;
+- mature workspaces still retain operational mode.
+
 ## Slice 5: Curation and Diagnostics
 
 ### Goal
