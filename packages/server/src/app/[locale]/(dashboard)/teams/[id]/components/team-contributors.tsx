@@ -50,6 +50,7 @@ export function TeamContributors({ teamId, contributors, onEditMember }: TeamCon
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['team', teamId] });
+      queryClient.invalidateQueries({ queryKey: ['team-repositories', teamId] });
     },
     onError: () => {
       toast({ variant: 'destructive', description: t('removeError') });

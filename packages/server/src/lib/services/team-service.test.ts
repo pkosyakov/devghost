@@ -77,8 +77,8 @@ describe('team-service', () => {
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
       mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
-        { authorEmail: 'alice@co.com', repository: 'org/frontend', _max: { authorDate: commitDate } },
-        { authorEmail: 'alice@co.com', repository: 'org/shared', _max: { authorDate: new Date('2025-08-01') } },
+        { authorEmail: 'alice@co.com', repository: 'org/frontend', _min: { authorDate: commitDate }, _max: { authorDate: commitDate } },
+        { authorEmail: 'alice@co.com', repository: 'org/shared', _min: { authorDate: new Date('2025-08-01') }, _max: { authorDate: new Date('2025-08-01') } },
       ]);
       // Summary queries: activeTeamIds, memberedContributors
       mockPrisma.teamMembership.findMany
@@ -98,6 +98,65 @@ describe('team-service', () => {
       expect(result.summary.teamCount).toBe(1);
       expect(result.summary.activeTeamCount).toBe(1);
       expect(result.summary.memberedContributorCount).toBe(2);
+    });
+
+    it('excludes future-dated memberships from activeContributorCount', async () => {
+      const now = new Date();
+      const futureDate = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days ahead
+      mockPrisma.team.count.mockResolvedValue(1);
+      mockPrisma.team.findMany.mockResolvedValue([
+        {
+          id: 't1', name: 'Alpha', description: null, createdAt: now, updatedAt: now,
+          memberships: [
+            // Currently active member
+            { contributorId: 'c1', effectiveFrom: new Date('2025-01-01'), effectiveTo: null, contributor: { aliases: [{ email: 'a@co.com' }] } },
+            // Future-dated member — should NOT count as active
+            { contributorId: 'c2', effectiveFrom: futureDate, effectiveTo: null, contributor: { aliases: [{ email: 'b@co.com' }] } },
+          ],
+        },
+      ]);
+      mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
+      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([]);
+      mockPrisma.teamMembership.findMany
+        .mockResolvedValueOnce([{ teamId: 't1' }])
+        .mockResolvedValueOnce([{ contributorId: 'c1' }, { contributorId: 'c2' }]);
+
+      const result = await listTeams('ws-1', { page: 1, pageSize: 20, sort: 'name', sortOrder: 'asc' });
+
+      expect(result.teams[0].memberCount).toBe(2); // total unique members (includes future)
+      expect(result.teams[0].activeContributorCount).toBe(1); // only c1, not c2
+    });
+
+    it('excludes repos with commits outside membership window from list counts', async () => {
+      const now = new Date();
+      mockPrisma.team.count.mockResolvedValue(1);
+      mockPrisma.team.findMany.mockResolvedValue([
+        {
+          id: 't1', name: 'Alpha', description: null, createdAt: now, updatedAt: now,
+          memberships: [
+            // Membership from Jun to Dec 2025
+            { contributorId: 'c1', effectiveFrom: new Date('2025-06-01'), effectiveTo: new Date('2025-12-31'), contributor: { aliases: [{ email: 'a@co.com' }] } },
+          ],
+        },
+      ]);
+      mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
+      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
+        // Repo with commits only BEFORE membership started — should be excluded
+        { authorEmail: 'a@co.com', repository: 'org/old', _min: { authorDate: new Date('2025-01-01') }, _max: { authorDate: new Date('2025-03-01') } },
+        // Repo with commits within membership window — should be included
+        { authorEmail: 'a@co.com', repository: 'org/current', _min: { authorDate: new Date('2025-07-01') }, _max: { authorDate: new Date('2025-09-01') } },
+        // Repo with commits only AFTER membership ended — should be excluded
+        { authorEmail: 'a@co.com', repository: 'org/future', _min: { authorDate: new Date('2026-02-01') }, _max: { authorDate: new Date('2026-03-01') } },
+      ]);
+      mockPrisma.teamMembership.findMany
+        .mockResolvedValueOnce([{ teamId: 't1' }])
+        .mockResolvedValueOnce([{ contributorId: 'c1' }]);
+
+      const result = await listTeams('ws-1', { page: 1, pageSize: 20, sort: 'name', sortOrder: 'asc' });
+
+      // Only 'org/current' has activity within the membership window
+      expect(result.teams[0].activeRepositoryCount).toBe(1);
+      expect(result.teams[0].lastActivityAt).toEqual(new Date('2025-09-01'));
     });
 
     it('applies search filter', async () => {
@@ -129,9 +188,9 @@ describe('team-service', () => {
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
       mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
-        { authorEmail: 'a@co.com', repository: 'org/r1', _max: { authorDate: new Date('2025-03-01') } },
-        { authorEmail: 'b@co.com', repository: 'org/r2', _max: { authorDate: new Date('2025-09-01') } }, // most recent
-        { authorEmail: 'c@co.com', repository: 'org/r3', _max: { authorDate: new Date('2025-06-01') } },
+        { authorEmail: 'a@co.com', repository: 'org/r1', _min: { authorDate: new Date('2025-03-01') }, _max: { authorDate: new Date('2025-03-01') } },
+        { authorEmail: 'b@co.com', repository: 'org/r2', _min: { authorDate: new Date('2025-09-01') }, _max: { authorDate: new Date('2025-09-01') } }, // most recent
+        { authorEmail: 'c@co.com', repository: 'org/r3', _min: { authorDate: new Date('2025-06-01') }, _max: { authorDate: new Date('2025-06-01') } },
       ]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }, { teamId: 't2' }, { teamId: 't3' }])

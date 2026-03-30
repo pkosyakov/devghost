@@ -70,6 +70,7 @@ export function EditMembershipDialog({ teamId, membership, open, onOpenChange }:
     onSuccess: () => {
       toast({ description: t('success') });
       queryClient.invalidateQueries({ queryKey: ['team', teamId] });
+      queryClient.invalidateQueries({ queryKey: ['team-repositories', teamId] });
       onOpenChange(false);
     },
     onError: () => {

@@ -78,7 +78,7 @@ export default function TeamDetailPage() {
           <AddMemberDialog
             teamId={id}
             existingContributorIds={data.contributors
-              .filter((c: any) => !c.effectiveTo || new Date(c.effectiveTo) > new Date())
+              .filter((c: any) => new Date(c.effectiveFrom) <= new Date() && (!c.effectiveTo || new Date(c.effectiveTo) > new Date()))
               .map((c: any) => c.contributorId)}
           />
         </div>

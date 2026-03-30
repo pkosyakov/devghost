@@ -89,9 +89,11 @@ export async function listTeams(
 
   // Fetch commit activity aggregated by (authorEmail, repository) to avoid
   // unbounded row fetch. Uses groupBy to return O(unique_email_repo_pairs)
-  // instead of O(total_commits).
+  // instead of O(total_commits). Includes min/max dates for point-in-time
+  // attribution against membership windows.
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
-  const commitsByEmail = new Map<string, { repos: Set<string>; lastDate: Date | null }>();
+  // email → repo → { minDate, maxDate }
+  const commitsByEmailRepo = new Map<string, Map<string, { minDate: Date; maxDate: Date }>>();
 
   if (workspace && allEmails.size > 0) {
     const grouped = await prisma.commitAnalysis.groupBy({
@@ -100,17 +102,18 @@ export async function listTeams(
         authorEmail: { in: Array.from(allEmails) },
         order: { userId: workspace.ownerId },
       },
+      _min: { authorDate: true },
       _max: { authorDate: true },
     });
 
     for (const g of grouped) {
-      const entry = commitsByEmail.get(g.authorEmail) ?? { repos: new Set(), lastDate: null };
-      entry.repos.add(g.repository);
-      const d = g._max.authorDate;
-      if (d && (!entry.lastDate || d > entry.lastDate)) {
-        entry.lastDate = d;
+      if (!g._min.authorDate || !g._max.authorDate) continue;
+      let repoMap = commitsByEmailRepo.get(g.authorEmail);
+      if (!repoMap) {
+        repoMap = new Map();
+        commitsByEmailRepo.set(g.authorEmail, repoMap);
       }
-      commitsByEmail.set(g.authorEmail, entry);
+      repoMap.set(g.repository, { minDate: g._min.authorDate, maxDate: g._max.authorDate });
     }
   }
 
@@ -118,20 +121,26 @@ export async function listTeams(
   const now = new Date();
   const rows = teams.map((t) => {
     const activeMemberships = t.memberships.filter(
-      (m) => !m.effectiveTo || m.effectiveTo > now,
+      (m) => m.effectiveFrom <= now && (!m.effectiveTo || m.effectiveTo > now),
     );
     const activeContributorIds = new Set(activeMemberships.map((m) => m.contributorId));
 
-    // Derive repos and lastActivity from member emails
+    // Derive repos and lastActivity — apply point-in-time attribution by checking
+    // whether the commit date range for (email, repo) overlaps with the membership window.
     const teamRepos = new Set<string>();
     let lastActivityAt: Date | null = null;
     for (const m of t.memberships) {
       for (const a of m.contributor.aliases) {
-        const activity = commitsByEmail.get(a.email);
-        if (activity) {
-          for (const repo of activity.repos) teamRepos.add(repo);
-          if (activity.lastDate && (!lastActivityAt || activity.lastDate > lastActivityAt)) {
-            lastActivityAt = activity.lastDate;
+        const repoMap = commitsByEmailRepo.get(a.email);
+        if (!repoMap) continue;
+        for (const [repo, dates] of repoMap) {
+          // Skip if membership starts after the latest commit in this repo
+          if (m.effectiveFrom > dates.maxDate) continue;
+          // Skip if membership ended before the earliest commit (exclusive effectiveTo)
+          if (m.effectiveTo && m.effectiveTo <= dates.minDate) continue;
+          teamRepos.add(repo);
+          if (dates.maxDate && (!lastActivityAt || dates.maxDate > lastActivityAt)) {
+            lastActivityAt = dates.maxDate;
           }
         }
       }
@@ -184,7 +193,7 @@ export async function listTeams(
   const [wsTeamCount, activeTeamIds, allMemberedContributors] = await Promise.all([
     prisma.team.count({ where: { workspaceId } }),
     prisma.teamMembership.findMany({
-      where: { team: { workspaceId }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] },
+      where: { team: { workspaceId }, effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] },
       select: { teamId: true },
       distinct: ['teamId'],
     }),
@@ -294,7 +303,7 @@ export async function getTeamDetail(
   const now = new Date();
   const activeContributorIds = new Set(
     team.memberships
-      .filter((m) => !m.effectiveTo || m.effectiveTo > now)
+      .filter((m) => m.effectiveFrom <= now && (!m.effectiveTo || m.effectiveTo > now))
       .map((m) => m.contributor.id),
   );
 

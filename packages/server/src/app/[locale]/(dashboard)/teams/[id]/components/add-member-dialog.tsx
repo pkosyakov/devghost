@@ -71,6 +71,7 @@ export function AddMemberDialog({ teamId, existingContributorIds }: AddMemberDia
     onSuccess: () => {
       toast({ description: t('success') });
       queryClient.invalidateQueries({ queryKey: ['team', teamId] });
+      queryClient.invalidateQueries({ queryKey: ['team-repositories', teamId] });
       resetAndClose();
     },
     onError: (err: Error) => {
