@@ -118,7 +118,7 @@ export async function listTeams(
   const now = new Date();
   const rows = teams.map((t) => {
     const activeMemberships = t.memberships.filter(
-      (m) => !m.effectiveTo || m.effectiveTo >= now,
+      (m) => !m.effectiveTo || m.effectiveTo > now,
     );
     const activeContributorIds = new Set(activeMemberships.map((m) => m.contributorId));
 
@@ -184,7 +184,7 @@ export async function listTeams(
   const [wsTeamCount, activeTeamIds, allMemberedContributors] = await Promise.all([
     prisma.team.count({ where: { workspaceId } }),
     prisma.teamMembership.findMany({
-      where: { team: { workspaceId }, OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }] },
+      where: { team: { workspaceId }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] },
       select: { teamId: true },
       distinct: ['teamId'],
     }),
@@ -294,7 +294,7 @@ export async function getTeamDetail(
   const now = new Date();
   const activeContributorIds = new Set(
     team.memberships
-      .filter((m) => !m.effectiveTo || m.effectiveTo >= now)
+      .filter((m) => !m.effectiveTo || m.effectiveTo > now)
       .map((m) => m.contributor.id),
   );
 
@@ -614,7 +614,7 @@ async function computeTeamRepositories(
     if (!windows) return false;
     return windows.some((w) => {
       if (c.authorDate! < w.from) return false;
-      if (w.to && c.authorDate! > w.to) return false;
+      if (w.to && c.authorDate! >= w.to) return false;
       return true;
     });
   });

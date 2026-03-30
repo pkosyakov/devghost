@@ -506,5 +506,32 @@ describe('team-service', () => {
       expect(result!.repositories).toHaveLength(1);
       expect(result!.repositories[0].activeCommitCount).toBe(1);
     });
+
+    it('treats effectiveTo as exclusive (commit ON end date is excluded)', async () => {
+      const endDate = new Date('2025-12-31');
+
+      mockPrisma.team.findFirst.mockResolvedValue({
+        id: 't1',
+        memberships: [{
+          contributorId: 'c1',
+          effectiveFrom: new Date('2025-01-01'),
+          effectiveTo: endDate,
+          contributor: { aliases: [{ email: 'alice@co.com' }] },
+        }],
+      });
+      mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
+        // Commit exactly ON the end date — should be excluded (exclusive effectiveTo)
+        { repository: 'org/repo', authorEmail: 'alice@co.com', authorDate: endDate, commitHash: 'boundary' },
+        // Commit one day before — should be included
+        { repository: 'org/repo', authorEmail: 'alice@co.com', authorDate: new Date('2025-12-30'), commitHash: 'before' },
+      ]);
+      mockPrisma.repository.findMany.mockResolvedValue([]);
+
+      const result = await getTeamRepositories('t1', 'ws-1');
+
+      expect(result!.repositories).toHaveLength(1);
+      expect(result!.repositories[0].activeCommitCount).toBe(1); // only 'before', not 'boundary'
+    });
   });
 });
