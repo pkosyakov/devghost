@@ -51,11 +51,13 @@ describe('extractAliasesFromOrder', () => {
       displayName: 'John Doe',
       username: 'johndoe',
       providerType: 'github',
+      source: 'primary',
     });
     expect(aliases[1]).toMatchObject({
       email: 'jane@corp.com',
       displayName: 'Jane Smith',
       username: undefined,
+      source: 'primary',
     });
   });
 
@@ -77,9 +79,12 @@ describe('extractAliasesFromOrder', () => {
     const aliases = extractAliasesFromOrder(order as any);
 
     expect(aliases.length).toBeGreaterThanOrEqual(2);
-    const emails = aliases.map((a: any) => a.email);
-    expect(emails).toContain('john@example.com');
-    expect(emails).toContain('jdoe@old.com');
+    const primary = aliases.find((a: any) => a.email === 'john@example.com');
+    const merged = aliases.find((a: any) => a.email === 'jdoe@old.com');
+    expect(primary).toBeDefined();
+    expect(merged).toBeDefined();
+    expect(primary!.source).toBe('primary');
+    expect(merged!.source).toBe('merged_from');
   });
 
   it('deduplicates aliases by email', () => {

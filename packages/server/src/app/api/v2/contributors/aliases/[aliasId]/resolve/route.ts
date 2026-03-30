@@ -19,6 +19,11 @@ export async function POST(
   });
   if (!alias) return apiError('Alias not found', 404);
 
+  // Only allow resolving UNRESOLVED or SUGGESTED aliases
+  if (alias.resolveStatus !== 'UNRESOLVED' && alias.resolveStatus !== 'SUGGESTED') {
+    return apiError('Only UNRESOLVED or SUGGESTED aliases can be resolved', 400);
+  }
+
   const body = await request.json();
   const parsed = resolveAliasBodySchema.safeParse(body);
   if (!parsed.success) {
@@ -30,6 +35,16 @@ export async function POST(
     where: { id: parsed.data.contributorId, workspaceId: workspace.id },
   });
   if (!contributor) return apiError('Target contributor not found', 404);
+
+  // If alias is already attached to a contributor, ensure the source won't be orphaned
+  if (alias.contributorId && alias.contributorId !== parsed.data.contributorId) {
+    const sourceAliasCount = await prisma.contributorAlias.count({
+      where: { contributorId: alias.contributorId, id: { not: aliasId } },
+    });
+    if (sourceAliasCount === 0) {
+      return apiError('Cannot move the last alias from a contributor — unmerge or delete the contributor instead', 400);
+    }
+  }
 
   const updated = await prisma.contributorAlias.update({
     where: { id: aliasId },

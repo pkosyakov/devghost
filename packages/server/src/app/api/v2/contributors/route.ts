@@ -37,7 +37,12 @@ export async function GET(request: NextRequest) {
     ];
   }
 
-  // Get total count
+  // When identityHealth filter is active, we must fetch all matching contributors
+  // first, compute health, filter, then paginate in-memory. Without the filter,
+  // we can paginate at the DB level for efficiency.
+  const useInMemoryPagination = !!identityHealth;
+
+  // Get total count (before health filter)
   const total = await prisma.contributor.count({ where });
 
   // Get contributors
@@ -57,11 +62,10 @@ export async function GET(request: NextRequest) {
         : sort === 'primaryEmail'
           ? { primaryEmail: sortOrder }
           : { updatedAt: sortOrder }, // lastActivityAt approximated by updatedAt
-    skip: (page - 1) * pageSize,
-    take: pageSize,
+    ...(useInMemoryPagination ? {} : { skip: (page - 1) * pageSize, take: pageSize }),
   });
 
-  // Compute identity health per contributor and apply filter
+  // Compute identity health per contributor
   const rows = contributors.map((c) => {
     const resolvedCount = c.aliases.filter(
       (a) => a.resolveStatus === 'AUTO_MERGED' || a.resolveStatus === 'MANUAL',
@@ -83,10 +87,15 @@ export async function GET(request: NextRequest) {
     };
   });
 
-  // Filter by identity health if specified (post-query since it's computed)
+  // Apply identity health filter and in-memory pagination
   const filtered = identityHealth
     ? rows.filter((r) => r.identityHealth.status === identityHealth)
     : rows;
+
+  const filteredTotal = useInMemoryPagination ? filtered.length : total;
+  const paginatedRows = useInMemoryPagination
+    ? filtered.slice((page - 1) * pageSize, page * pageSize)
+    : filtered;
 
   // Identity queue summary
   const unresolvedCount = await prisma.contributorAlias.count({
@@ -100,12 +109,12 @@ export async function GET(request: NextRequest) {
   });
 
   return apiResponse({
-    contributors: filtered,
+    contributors: paginatedRows,
     pagination: {
       page,
       pageSize,
-      total: identityHealth ? filtered.length : total,
-      totalPages: Math.ceil((identityHealth ? filtered.length : total) / pageSize),
+      total: filteredTotal,
+      totalPages: Math.ceil(filteredTotal / pageSize),
     },
     identityQueueSummary: { unresolvedCount, suggestedCount },
     totalContributors: total,

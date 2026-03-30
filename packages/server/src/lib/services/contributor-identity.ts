@@ -13,6 +13,7 @@ interface RawAlias {
   username?: string;
   providerId?: string;
   providerType: string;
+  source: 'primary' | 'merged_from';
 }
 
 type IdentityHealthStatus = 'healthy' | 'attention' | 'unresolved';
@@ -42,6 +43,7 @@ export function extractAliasesFromOrder(order: {
       username: dev.login || dev.username || undefined,
       providerId: dev.id?.toString() || undefined,
       providerType: 'github',
+      source: 'primary',
     });
   }
 
@@ -59,6 +61,7 @@ export function extractAliasesFromOrder(order: {
           username: group.primary.login || group.primary.username || undefined,
           providerId: group.primary.id?.toString() || undefined,
           providerType: 'github',
+          source: 'primary',
         });
       }
     }
@@ -73,6 +76,7 @@ export function extractAliasesFromOrder(order: {
         username: alias.login || alias.username || undefined,
         providerId: alias.id?.toString() || undefined,
         providerType: 'github',
+        source: 'merged_from',
       });
     }
   }
@@ -151,9 +155,18 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
   }
 
   for (const raw of rawAliases) {
-    const existingAlias = await prisma.contributorAlias.findFirst({
-      where: { workspaceId: workspace.id, providerType: raw.providerType, email: raw.email },
-    });
+    // Look up existing alias: prefer providerId match, fall back to email
+    let existingAlias = null;
+    if (raw.providerId) {
+      existingAlias = await prisma.contributorAlias.findFirst({
+        where: { workspaceId: workspace.id, providerType: raw.providerType, providerId: raw.providerId },
+      });
+    }
+    if (!existingAlias) {
+      existingAlias = await prisma.contributorAlias.findFirst({
+        where: { workspaceId: workspace.id, providerType: raw.providerType, email: raw.email },
+      });
+    }
 
     if (existingAlias) {
       if (existingAlias.resolveStatus === 'MANUAL') {
@@ -171,6 +184,11 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
       if (raw.providerId && !existingAlias.providerId) {
         updateData.providerId = raw.providerId;
+      }
+
+      // Sync email if alias was found by providerId and email changed
+      if (raw.email !== existingAlias.email) {
+        updateData.email = raw.email;
       }
 
       if (existingAlias.contributorId) {
@@ -211,7 +229,8 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
             lastSeenAt: new Date(),
           },
         });
-      } else {
+      } else if (raw.source === 'primary') {
+        // Primary aliases: create new canonical contributor
         const contributor = await prisma.contributor.create({
           data: { workspaceId: workspace.id, displayName: raw.displayName, primaryEmail: raw.email },
         });
@@ -232,6 +251,22 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
         });
 
         log.info({ contributorId: contributor.id, email: raw.email, orderId }, 'New contributor created');
+      } else {
+        // Merged-from aliases without a match: leave UNRESOLVED for identity queue
+        await prisma.contributorAlias.create({
+          data: {
+            workspaceId: workspace.id,
+            contributorId: null,
+            providerType: raw.providerType,
+            providerId: raw.providerId || null,
+            email: raw.email,
+            username: raw.username || null,
+            resolveStatus: 'UNRESOLVED',
+            lastSeenAt: new Date(),
+          },
+        });
+
+        log.info({ email: raw.email, orderId }, 'Unresolved alias added to identity queue');
       }
     }
   }
