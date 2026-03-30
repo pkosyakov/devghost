@@ -353,6 +353,11 @@ export async function processAnalysisJob(
         if (existingSet.size > 0) {
           rlog.info({ existing: existingSet.size, total: commits.length }, 'Intra-order dedup — skipping already analyzed');
           totalAnalyzed += existingSet.size;
+          // Count deduped commits in totalCommits so progress shows correct denominator
+          await prisma.analysisJob.update({
+            where: { id: jobId },
+            data: { totalCommits: { increment: existingSet.size } },
+          });
           commits = commits.filter(c => !existingSet.has(c.sha));
         }
       }
