@@ -31,6 +31,7 @@ import { signOut, useSession } from 'next-auth/react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 import { buildHrefWithActiveScope } from '@/lib/active-scope';
+import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -82,6 +83,13 @@ export function Sidebar() {
   const searchParams = useSearchParams();
   const { data: session } = useSession();
   const isAdmin = session?.user?.role === 'ADMIN';
+  // undefined stageData = not yet loaded → default to no dimming (avoids regressing mature users)
+  const { data: stageData } = useWorkspaceStage();
+  const isEarlyStage = stageData?.workspaceStage === 'empty' || stageData?.workspaceStage === 'first_data';
+  const noSavedViews = stageData ? stageData.onboarding.savedViewCount === 0 : false;
+  const deemphasizedKeys = new Set<string>();
+  if (isEarlyStage) deemphasizedKeys.add('teams');
+  if (isEarlyStage || noSavedViews) deemphasizedKeys.add('reports');
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
   const [userSectionHeight, setUserSectionHeight] = useState<number | null>(null);
 
@@ -189,6 +197,7 @@ export function Sidebar() {
         const itemHref = analyticalPaths.has(item.href)
           ? buildHrefWithActiveScope(item.href, searchParams)
           : item.href;
+        const isDimmed = deemphasizedKeys.has(item.nameKey);
         return (
           <div key={item.nameKey}>
             <Link
@@ -198,6 +207,7 @@ export function Sidebar() {
                 isActive
                   ? 'bg-primary text-primary-foreground'
                   : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+                isDimmed && !isActive && 'opacity-40',
               )}
             >
               <item.icon className="h-5 w-5" />
