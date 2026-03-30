@@ -253,8 +253,8 @@
     "operational": {
       "firstSavedView": {
         "title": "Save your first reusable view",
-        "description": "Open a team, choose the date range you care about, then use Save View in the top scope bar so you can reopen this scope from Reports later.",
-        "openTeam": "Open first team",
+        "description": "Open your team, choose a useful date range, and save it as a report you can reopen anytime.",
+        "openTeam": "Open team and save view",
         "learnMore": "Open Reports"
       }
     },
@@ -1565,7 +1565,10 @@
       "title": "Your first team is ready",
       "description": "Review the suggested members and repositories below. Then choose a useful date range in the top scope bar and click Save View to create your first reusable report.",
       "openHome": "Open team on Home",
-      "reports": "Open Reports"
+      "reports": "Open Reports",
+      "saveViewTitle": "Save this as your first report",
+      "saveViewDescription": "Choose a useful date range in the scope bar above, then save this view so you can return to it anytime.",
+      "saveViewCta": "Save View"
     },
     "addMember": {
       "title": "Add Team Member",

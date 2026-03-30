@@ -188,7 +188,7 @@ function OperationalStage({
       </div>
 
       {data.onboarding?.needsFirstSavedView && (
-        <Card>
+        <Card className="border-primary/20 bg-primary/5">
           <CardContent className="flex flex-col gap-4 pt-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-1">
               <p className="font-medium">{t('operational.firstSavedView.title')}</p>

@@ -8,8 +8,11 @@ import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Save } from 'lucide-react';
 import { pickActiveScopeParams } from '@/lib/active-scope';
+import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
+import { SaveViewDialog } from '@/components/layout/save-view-dialog';
+import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 import { TeamHeader } from './components/team-header';
 import { TeamKpiSummary } from './components/team-kpi-summary';
@@ -25,6 +28,30 @@ export default function TeamDetailPage() {
   const [editingMember, setEditingMember] = useState<Membership | null>(null);
   const scopeQs = useMemo(() => pickActiveScopeParams(searchParams).toString(), [searchParams]);
   const isFirstTeamOnboarding = searchParams.get('onboarding') === 'first-team';
+  const { data: stageData } = useWorkspaceStage();
+  const showSaveViewPrompt = isFirstTeamOnboarding && stageData?.onboarding?.needsFirstSavedView;
+  const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+
+  const activeScopePayload = useMemo(() => {
+    const raw = activeScopeQuerySchema.safeParse(Object.fromEntries(searchParams.entries()));
+    const scope = raw.success ? raw.data : {
+      scopeKind: 'team' as const,
+      scopeId: id,
+      from: undefined,
+      to: undefined,
+      repositoryIds: [] as string[],
+      contributorIds: [] as string[],
+    };
+    return {
+      scopeKind: scope.scopeKind || ('team' as const),
+      scopeId: scope.scopeId || id,
+      from: scope.from,
+      to: scope.to,
+      repositoryIds: scope.repositoryIds,
+      contributorIds: scope.contributorIds,
+    };
+  }, [searchParams, id]);
+
   const backHref = useMemo(() => {
     const serialized = pickActiveScopeParams(searchParams).toString();
     return serialized ? `/teams?${serialized}` : '/teams';
@@ -98,6 +125,28 @@ export default function TeamDetailPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {showSaveViewPrompt && (
+        <>
+          <Card className="border-primary/20 bg-primary/5">
+            <CardContent className="flex flex-col gap-3 pt-6 lg:flex-row lg:items-center lg:justify-between">
+              <div className="space-y-1">
+                <p className="font-medium">{t('onboarding.saveViewTitle')}</p>
+                <p className="text-sm text-muted-foreground">{t('onboarding.saveViewDescription')}</p>
+              </div>
+              <Button onClick={() => setSaveDialogOpen(true)}>
+                <Save className="h-4 w-4 mr-2" />
+                {t('onboarding.saveViewCta')}
+              </Button>
+            </CardContent>
+          </Card>
+          <SaveViewDialog
+            open={saveDialogOpen}
+            onOpenChange={setSaveDialogOpen}
+            activeScope={activeScopePayload}
+          />
+        </>
       )}
 
       <TeamKpiSummary
