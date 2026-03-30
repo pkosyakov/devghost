@@ -76,6 +76,7 @@ model Workspace {
   contributors Contributor[]
   aliases      ContributorAlias[]
   repositories Repository[]
+  teams        Team[]
   auditLogs    CurationAuditLog[]
 
   createdAt    DateTime            @default(now())
@@ -92,8 +93,9 @@ model Contributor {
   isExcluded     Boolean                     @default(false)
   excludedAt     DateTime?
 
-  aliases        ContributorAlias[]
-  auditLogs      CurationAuditLog[]
+  aliases           ContributorAlias[]
+  auditLogs         CurationAuditLog[]
+  teamMemberships   TeamMembership[]
 
   createdAt      DateTime                    @default(now())
   updatedAt      DateTime                    @updatedAt
@@ -183,6 +185,47 @@ model Repository {
 
   @@unique([workspaceId, provider, fullName])
   @@index([workspaceId])
+}
+
+// ==================== TEAM ====================
+
+model Team {
+  id            String           @id @default(cuid())
+  workspaceId   String
+  workspace     Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name          String
+  description   String?
+
+  memberships   TeamMembership[]
+
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+}
+
+model TeamMembership {
+  id             String       @id @default(cuid())
+  teamId         String
+  team           Team         @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  contributorId  String
+  contributor    Contributor  @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+
+  effectiveFrom  DateTime     @default(now())
+  effectiveTo    DateTime?
+  isPrimary      Boolean      @default(false)
+  role           String?
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([teamId, contributorId, effectiveFrom])
+  @@index([teamId])
+  @@index([contributorId])
+  @@index([teamId, effectiveFrom, effectiveTo])
 }
 
 // ==================== REFRESH TOKEN (Mobile Auth) ====================
