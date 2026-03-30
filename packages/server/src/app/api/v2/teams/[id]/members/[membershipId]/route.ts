@@ -14,17 +14,17 @@ export async function PATCH(
   const { id, membershipId } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const body = await parseBody(request, updateMemberBodySchema);
-  if (isErrorResponse(body)) return body;
+  const parsed = await parseBody(request, updateMemberBodySchema);
+  if (!parsed.success) return parsed.error;
 
-  const result = await updateMembership(membershipId, id, workspace.id, body);
+  const result = await updateMembership(membershipId, id, workspace.id, parsed.data);
 
-  if ('error' in result) {
+  if ('error' in result && result.error) {
     const status = result.error.includes('overlap') ? 409 : 404;
     return apiError(result.error, status);
   }
 
-  return apiResponse(result.membership);
+  return apiResponse('membership' in result ? result.membership : result);
 }
 
 export async function DELETE(
@@ -39,7 +39,7 @@ export async function DELETE(
 
   const result = await removeMembership(membershipId, id, workspace.id);
 
-  if ('error' in result) {
+  if ('error' in result && result.error) {
     return apiError(result.error, 404);
   }
 

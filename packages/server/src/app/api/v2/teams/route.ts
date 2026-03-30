@@ -26,11 +26,11 @@ export async function POST(request: NextRequest) {
 
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const body = await parseBody(request, createTeamBodySchema);
-  if (isErrorResponse(body)) return body;
+  const parsed = await parseBody(request, createTeamBodySchema);
+  if (!parsed.success) return parsed.error;
 
   try {
-    const team = await createTeam(workspace.id, body);
+    const team = await createTeam(workspace.id, parsed.data);
     return apiResponse(team, 201);
   } catch (err: any) {
     if (err?.code === 'P2002') {

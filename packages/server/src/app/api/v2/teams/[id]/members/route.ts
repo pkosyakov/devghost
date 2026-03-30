@@ -14,15 +14,15 @@ export async function POST(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const body = await parseBody(request, addMemberBodySchema);
-  if (isErrorResponse(body)) return body;
+  const parsed = await parseBody(request, addMemberBodySchema);
+  if (!parsed.success) return parsed.error;
 
-  const result = await addMember(id, workspace.id, body);
+  const result = await addMember(id, workspace.id, parsed.data);
 
-  if ('error' in result) {
+  if ('error' in result && result.error) {
     const status = result.error.includes('overlap') ? 409 : 404;
     return apiError(result.error, status);
   }
 
-  return apiResponse(result.membership, 201);
+  return apiResponse('membership' in result ? result.membership : result, 201);
 }

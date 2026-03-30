@@ -37,11 +37,11 @@ export async function PATCH(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  const body = await parseBody(request, updateTeamBodySchema);
-  if (isErrorResponse(body)) return body;
+  const parsed = await parseBody(request, updateTeamBodySchema);
+  if (!parsed.success) return parsed.error;
 
   try {
-    const result = await updateTeam(id, workspace.id, body);
+    const result = await updateTeam(id, workspace.id, parsed.data);
     if (result.count === 0) {
       return apiError('Team not found', 404);
     }
