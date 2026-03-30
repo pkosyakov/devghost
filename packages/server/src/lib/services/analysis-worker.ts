@@ -17,6 +17,7 @@ import {
   cleanupCommitsFile,
   type GitCommit,
 } from './git-operations';
+import { projectContributorsFromOrder } from './contributor-identity';
 import {
   checkOllamaHealth,
   spawnPipeline,
@@ -873,6 +874,16 @@ export async function processAnalysisJob(
         where: { id: order.id },
         data: { status: 'COMPLETED', analyzedAt: new Date(), totalCommits: inScopeCount },
       });
+    }
+
+    // Best-effort contributor projection — does not affect analysis status
+    try {
+      await projectContributorsFromOrder(order.id);
+    } catch (projectionErr) {
+      analysisLogger.error(
+        { err: projectionErr, orderId: order.id },
+        'Contributor projection failed (non-blocking)'
+      );
     }
 
     // Release any unused reserved credits (idempotent)

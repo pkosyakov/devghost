@@ -4,6 +4,7 @@ import { hashPassword } from '@/lib/auth';
 import { auditLog } from '@/lib/audit';
 import { assignRegistrationCredits } from '@/lib/services/referral-service';
 import { billingLogger } from '@/lib/logger';
+import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { z } from 'zod';
 
@@ -60,6 +61,13 @@ export async function POST(request: NextRequest) {
         role,
       },
     });
+
+    // Best-effort workspace creation — must not break registration
+    try {
+      await ensureWorkspaceForUser(user.id);
+    } catch {
+      // Workspace will be created on first projection or API access
+    }
 
     await auditLog({
       userId: user.id,

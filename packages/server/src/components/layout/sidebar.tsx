@@ -33,6 +33,7 @@ import { LanguageSwitcher } from '@/components/language-switcher';
 const navigation = [
   { nameKey: 'dashboard', href: '/dashboard', icon: LayoutDashboard },
   { nameKey: 'orders', href: '/orders', icon: ClipboardList },
+  { nameKey: 'people', href: '/people', icon: Users },
   { nameKey: 'publications', href: '/publications', icon: Share2 },
 ];
 

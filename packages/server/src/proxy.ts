@@ -5,7 +5,7 @@ import { routing } from '@/i18n/routing';
 
 const intlMiddleware = createMiddleware(routing);
 
-/** Стриппит locale prefix для проверки protected paths */
+/** Strips locale prefix for protected path checks */
 function getPathnameWithoutLocale(pathname: string, locales: readonly string[]): string {
   const segments = pathname.split('/').filter(Boolean);
   if (segments.length > 0 && locales.includes(segments[0])) {
@@ -14,7 +14,7 @@ function getPathnameWithoutLocale(pathname: string, locales: readonly string[]):
   return pathname;
 }
 
-/** Извлекает текущий locale из pathname */
+/** Extracts current locale from pathname */
 function getLocaleFromPath(pathname: string, locales: readonly string[]): string {
   const segments = pathname.split('/').filter(Boolean);
   if (segments.length > 0 && locales.includes(segments[0])) {
@@ -23,7 +23,7 @@ function getLocaleFromPath(pathname: string, locales: readonly string[]): string
   return routing.defaultLocale;
 }
 
-/** Строит path с учётом localePrefix: as-needed (en без префикса, ru с /ru) */
+/** Builds path respecting localePrefix: as-needed (en without prefix, ru with /ru) */
 function buildLocalizedPath(path: string, locale: string): string {
   if (locale === routing.defaultLocale) return path;
   return `/${locale}${path}`;
@@ -38,6 +38,7 @@ const PROTECTED_PREFIXES = [
   '/billing',
   '/publications',
   '/profile',
+  '/people',
 ];
 
 function redirectWithIntlHeaders(
@@ -56,7 +57,11 @@ function redirectWithIntlHeaders(
   return res;
 }
 
-export default async function middleware(req: NextRequest) {
+export default async function proxy(req: NextRequest) {
+  // intlMiddleware handles locale detection and rewriting for all paths:
+  // /login → internal rewrite to /en/login (as-needed strips default prefix)
+  // /en/login → redirect to /login (as-needed)
+  // /ru/login → kept as-is
   const intlResponse = intlMiddleware(req);
   const pathnameWithoutLocale = getPathnameWithoutLocale(
     req.nextUrl.pathname,
