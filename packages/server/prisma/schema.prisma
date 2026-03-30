@@ -75,6 +75,7 @@ model Workspace {
 
   contributors Contributor[]
   aliases      ContributorAlias[]
+  repositories Repository[]
   auditLogs    CurationAuditLog[]
 
   createdAt    DateTime            @default(now())
@@ -147,6 +148,41 @@ model CurationAuditLog {
   @@index([workspaceId])
   @@index([contributorId])
   @@index([aliasId])
+}
+
+// ==================== REPOSITORY (Canonical) ====================
+
+model Repository {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  // Core identity
+  provider        String    @default("github")
+  fullName        String    // "owner/repo"
+  name            String    // "repo"
+  owner           String    // "owner"
+
+  // Provider metadata
+  externalId      String?   // GitHub repo ID
+  url             String?
+  cloneUrl        String?
+  defaultBranch   String?   @default("main")
+  language        String?
+  stars           Int       @default(0)
+  isPrivate       Boolean   @default(false)
+
+  // Freshness
+  lastAnalyzedAt  DateTime?
+  lastCommitAt    DateTime?
+  totalCommits    Int       @default(0)
+  contributorCount Int      @default(0)
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([workspaceId, provider, fullName])
+  @@index([workspaceId])
 }
 
 // ==================== REFRESH TOKEN (Mobile Auth) ====================

@@ -9,7 +9,13 @@ vi.mock('@/lib/logger', () => {
   const noop = () => {};
   const child = () => mockLogger;
   const mockLogger = { info: noop, warn: noop, error: noop, debug: noop, child };
-  return { analysisLogger: mockLogger };
+  return {
+    logger: mockLogger,
+    analysisLogger: mockLogger,
+    billingLogger: mockLogger,
+    pipelineLogger: mockLogger,
+    gitLogger: mockLogger,
+  };
 });
 vi.mock('@/lib/services/pipeline-bridge', () => ({
   spawnPipeline: vi.fn(),

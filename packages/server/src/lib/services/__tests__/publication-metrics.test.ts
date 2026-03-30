@@ -28,6 +28,7 @@ describe('computeRepoMetrics', () => {
     expect(mockedPrisma.commitAnalysis.findMany).toHaveBeenCalledWith({
       where: { orderId: 'order-1', repository: 'owner/repo' },
       select: {
+        commitHash: true,
         authorEmail: true,
         authorName: true,
         authorDate: true,
@@ -91,7 +92,7 @@ describe('computeRepoMetrics', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].developerEmail).toBe('alice@example.com');
-    // Share is still calculated against total effort (alice + bob = 5h)
-    expect(result[0].share).toBeCloseTo(2.0 / 5.0);
+    // Share is calculated against total commit count (alice 1 / total 2)
+    expect(result[0].share).toBeCloseTo(1 / 2);
   });
 });

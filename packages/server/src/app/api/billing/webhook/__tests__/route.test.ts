@@ -57,14 +57,18 @@ function makeStripeSub(overrides: Partial<Stripe.Subscription> = {}): Stripe.Sub
   } as unknown as Stripe.Subscription;
 }
 
-function makeInvoicePaidEvent(eventId = 'evt_test'): Stripe.Event {
+function makeInvoicePaidEvent(eventId = 'evt_test', subId = 'sub_new_123'): Stripe.Event {
   return {
     id: eventId,
     type: 'invoice.paid',
     data: {
       object: {
         id: 'inv_123',
-        subscription: 'sub_new_123',
+        parent: {
+          subscription_details: {
+            subscription: subId,
+          },
+        },
       },
     },
   } as unknown as Stripe.Event;
@@ -145,8 +149,8 @@ describe('handleInvoicePaid via POST', () => {
   });
 
   it('Path 2: re-subscription — cancelled record exists, updates with new Stripe sub ID', async () => {
-    const event = makeInvoicePaidEvent('evt_resub');
     const stripeSub = makeStripeSub({ id: 'sub_new_456' });
+    const event = makeInvoicePaidEvent('evt_resub', 'sub_new_456');
     setupCommonMocks(event, stripeSub);
     mockedStripe.subscriptions.retrieve.mockResolvedValue(stripeSub as any);
 
