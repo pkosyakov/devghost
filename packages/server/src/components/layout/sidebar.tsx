@@ -22,6 +22,7 @@ import {
   Share2,
   UserCircle,
   Globe,
+  FolderGit2,
 } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { useQuery } from '@tanstack/react-query';
@@ -34,6 +35,7 @@ const navigation = [
   { nameKey: 'dashboard', href: '/dashboard', icon: LayoutDashboard },
   { nameKey: 'orders', href: '/orders', icon: ClipboardList },
   { nameKey: 'people', href: '/people', icon: Users },
+  { nameKey: 'repositories', href: '/repositories', icon: FolderGit2 },
   { nameKey: 'publications', href: '/publications', icon: Share2 },
 ];
 

@@ -18,6 +18,7 @@ import {
   type GitCommit,
 } from './git-operations';
 import { projectContributorsFromOrder } from './contributor-identity';
+import { projectRepositoriesFromOrder } from './repository-projector';
 import {
   checkOllamaHealth,
   spawnPipeline,
@@ -883,6 +884,16 @@ export async function processAnalysisJob(
       analysisLogger.error(
         { err: projectionErr, orderId: order.id },
         'Contributor projection failed (non-blocking)'
+      );
+    }
+
+    // Best-effort repository projection — does not affect analysis status
+    try {
+      await projectRepositoriesFromOrder(order.id);
+    } catch (repoProjectionErr) {
+      analysisLogger.error(
+        { err: repoProjectionErr, orderId: order.id },
+        'Repository projection failed (non-blocking)'
       );
     }
 

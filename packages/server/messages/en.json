@@ -36,6 +36,7 @@
       "orders": "Orders",
       "publications": "Publications",
       "people": "People",
+      "repositories": "Repositories",
       "newOrder": "New order",
       "settings": "Settings",
       "profile": "Profile",
@@ -1165,6 +1166,87 @@
     "error": {
       "title": "Failed to load contributor",
       "notFound": "Contributor not found",
+      "retry": "Retry"
+    }
+  },
+  "repositories": {
+    "title": "Repositories",
+    "summary": {
+      "total": "Repositories",
+      "fresh": "Fresh",
+      "stale": "Stale",
+      "never": "Never Analyzed"
+    },
+    "filters": {
+      "searchPlaceholder": "Search repositories...",
+      "freshness": "Freshness",
+      "language": "Language",
+      "all": "All",
+      "fresh": "Fresh",
+      "stale": "Stale",
+      "never": "Never Analyzed"
+    },
+    "table": {
+      "repository": "Repository",
+      "language": "Language",
+      "commits": "Commits",
+      "contributors": "Contributors",
+      "freshness": "Freshness",
+      "lastAnalyzed": "Last Analyzed",
+      "neverAnalyzed": "Never",
+      "freshnessStatus": {
+        "fresh": "Fresh",
+        "stale": "Stale",
+        "never": "Never"
+      }
+    },
+    "empty": {
+      "title": "No repositories yet",
+      "description": "Run an analysis to populate your repository catalog."
+    },
+    "filteredEmpty": {
+      "title": "No repositories match your filters",
+      "reset": "Reset filters"
+    },
+    "error": {
+      "title": "Failed to load repositories",
+      "retry": "Retry"
+    }
+  },
+  "repositoryDetail": {
+    "backToList": "Back to Repositories",
+    "header": {
+      "freshness": {
+        "fresh": "Fresh",
+        "stale": "Stale",
+        "never": "Never Analyzed"
+      }
+    },
+    "kpi": {
+      "commits": "Commits",
+      "contributors": "Contributors",
+      "lastActivity": "Last Activity"
+    },
+    "contributors": {
+      "title": "Contributors",
+      "name": "Name",
+      "classification": "Classification",
+      "commits": "Commits",
+      "lastActivity": "Last Activity",
+      "empty": "No contributors found",
+      "unresolved": "Unresolved"
+    },
+    "activity": {
+      "title": "Recent Activity",
+      "commit": "Commit",
+      "author": "Author",
+      "category": "Category",
+      "effort": "Effort",
+      "date": "Date",
+      "empty": "No activity found"
+    },
+    "error": {
+      "title": "Failed to load repository",
       "retry": "Retry"
     }
   }

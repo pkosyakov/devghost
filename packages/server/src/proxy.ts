@@ -39,6 +39,7 @@ const PROTECTED_PREFIXES = [
   '/publications',
   '/profile',
   '/people',
+  '/repositories',
 ];
 
 function redirectWithIntlHeaders(

@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('@/lib/db', () => ({ default: {} }));
+vi.mock('@/lib/auth', () => ({ auth: vi.fn() }));
+
 import { GitHubClient, GitHubApiError } from '@/lib/github-client';
 
 describe('GitHubClient', () => {

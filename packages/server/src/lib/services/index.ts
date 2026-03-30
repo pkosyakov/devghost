@@ -35,3 +35,9 @@ export {
   type BenchmarkProfileId,
   type ResolvedBenchmarkProfile,
 } from './benchmark-profile';
+
+export {
+  projectRepositoriesFromOrder,
+  backfillAllRepositories,
+  extractReposFromOrder,
+} from './repository-projector';

@@ -36,6 +36,7 @@
       "orders": "Заказы",
       "publications": "Публикации",
       "people": "Разработчики",
+      "repositories": "Репозитории",
       "newOrder": "Новый заказ",
       "settings": "Настройки",
       "profile": "Профиль",
@@ -1165,6 +1166,87 @@
     "error": {
       "title": "Ошибка загрузки разработчика",
       "notFound": "Разработчик не найден",
+      "retry": "Повторить"
+    }
+  },
+  "repositories": {
+    "title": "Репозитории",
+    "summary": {
+      "total": "Репозитории",
+      "fresh": "Актуальные",
+      "stale": "Устаревшие",
+      "never": "Без анализа"
+    },
+    "filters": {
+      "searchPlaceholder": "Поиск репозиториев...",
+      "freshness": "Актуальность",
+      "language": "Язык",
+      "all": "Все",
+      "fresh": "Актуальные",
+      "stale": "Устаревшие",
+      "never": "Не анализировались"
+    },
+    "table": {
+      "repository": "Репозиторий",
+      "language": "Язык",
+      "commits": "Коммиты",
+      "contributors": "Разработчики",
+      "freshness": "Актуальность",
+      "lastAnalyzed": "Последний анализ",
+      "neverAnalyzed": "Нет",
+      "freshnessStatus": {
+        "fresh": "Актуально",
+        "stale": "Устарело",
+        "never": "Нет"
+      }
+    },
+    "empty": {
+      "title": "Нет репозиториев",
+      "description": "Запустите анализ для заполнения каталога репозиториев."
+    },
+    "filteredEmpty": {
+      "title": "Нет репозиториев по заданным фильтрам",
+      "reset": "Сбросить фильтры"
+    },
+    "error": {
+      "title": "Ошибка загрузки репозиториев",
+      "retry": "Повторить"
+    }
+  },
+  "repositoryDetail": {
+    "backToList": "Назад к репозиториям",
+    "header": {
+      "freshness": {
+        "fresh": "Актуально",
+        "stale": "Устарело",
+        "never": "Не анализировался"
+      }
+    },
+    "kpi": {
+      "commits": "Коммиты",
+      "contributors": "Разработчики",
+      "lastActivity": "Последняя активность"
+    },
+    "contributors": {
+      "title": "Разработчики",
+      "name": "Имя",
+      "classification": "Классификация",
+      "commits": "Коммиты",
+      "lastActivity": "Последняя активность",
+      "empty": "Разработчики не найдены",
+      "unresolved": "Не привязан"
+    },
+    "activity": {
+      "title": "Последняя активность",
+      "commit": "Коммит",
+      "author": "Автор",
+      "category": "Категория",
+      "effort": "Трудозатраты",
+      "date": "Дата",
+      "empty": "Активность не найдена"
+    },
+    "error": {
+      "title": "Ошибка загрузки репозитория",
       "retry": "Повторить"
     }
   }
