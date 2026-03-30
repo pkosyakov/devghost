@@ -17,7 +17,7 @@ import { useToast } from '@/hooks/use-toast';
 import { Trash2, Pencil, Star } from 'lucide-react';
 import { format } from 'date-fns';
 
-interface Membership {
+export interface Membership {
   membershipId: string;
   contributorId: string;
   displayName: string;
@@ -52,7 +52,7 @@ export function TeamContributors({ teamId, contributors, onEditMember }: TeamCon
       queryClient.invalidateQueries({ queryKey: ['team', teamId] });
     },
     onError: () => {
-      toast({ variant: 'destructive', description: 'Failed to remove member' });
+      toast({ variant: 'destructive', description: t('removeError') });
     },
   });
 

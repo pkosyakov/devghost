@@ -33,6 +33,7 @@ const mockPrisma = vi.hoisted(() => ({
   repository: {
     findMany: vi.fn(),
   },
+  $transaction: vi.fn((fn: any) => fn(mockPrisma)),
 }));
 
 vi.mock('@/lib/db', () => ({ prisma: mockPrisma }));
@@ -54,7 +55,8 @@ import {
 
 describe('team-service', () => {
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockPrisma.$transaction.mockImplementation((fn: any) => fn(mockPrisma));
   });
 
   describe('listTeams', () => {
@@ -74,9 +76,9 @@ describe('team-service', () => {
         },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
-        { authorEmail: 'alice@co.com', repository: 'org/frontend', authorDate: commitDate },
-        { authorEmail: 'alice@co.com', repository: 'org/shared', authorDate: new Date('2025-08-01') },
+      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
+        { authorEmail: 'alice@co.com', repository: 'org/frontend', _max: { authorDate: commitDate } },
+        { authorEmail: 'alice@co.com', repository: 'org/shared', _max: { authorDate: new Date('2025-08-01') } },
       ]);
       // Summary queries: activeTeamIds, memberedContributors
       mockPrisma.teamMembership.findMany
@@ -126,10 +128,10 @@ describe('team-service', () => {
           memberships: [{ contributorId: 'c3', effectiveFrom: new Date('2025-01-01'), effectiveTo: null, contributor: { aliases: [{ email: 'c@co.com' }] } }] },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
-        { authorEmail: 'a@co.com', repository: 'org/r1', authorDate: new Date('2025-03-01') },
-        { authorEmail: 'b@co.com', repository: 'org/r2', authorDate: new Date('2025-09-01') }, // most recent
-        { authorEmail: 'c@co.com', repository: 'org/r3', authorDate: new Date('2025-06-01') },
+      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([
+        { authorEmail: 'a@co.com', repository: 'org/r1', _max: { authorDate: new Date('2025-03-01') } },
+        { authorEmail: 'b@co.com', repository: 'org/r2', _max: { authorDate: new Date('2025-09-01') } }, // most recent
+        { authorEmail: 'c@co.com', repository: 'org/r3', _max: { authorDate: new Date('2025-06-01') } },
       ]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }, { teamId: 't2' }, { teamId: 't3' }])
@@ -165,7 +167,7 @@ describe('team-service', () => {
           ] },
       ]);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
-      mockPrisma.commitAnalysis.findMany.mockResolvedValue([]);
+      mockPrisma.commitAnalysis.groupBy.mockResolvedValue([]);
       mockPrisma.teamMembership.findMany
         .mockResolvedValueOnce([{ teamId: 't1' }, { teamId: 't2' }])
         .mockResolvedValueOnce([{ contributorId: 'c1' }, { contributorId: 'c2' }, { contributorId: 'c3' }]);
@@ -229,10 +231,8 @@ describe('team-service', () => {
           },
         ],
       };
-      // First call: getTeamDetail, second call: getTeamRepositories
-      mockPrisma.team.findFirst
-        .mockResolvedValueOnce(teamData)
-        .mockResolvedValueOnce(teamData);
+      // getTeamDetail calls findFirst once; computeTeamRepositories uses pre-loaded data
+      mockPrisma.team.findFirst.mockResolvedValueOnce(teamData);
       mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
       mockPrisma.commitAnalysis.findMany.mockResolvedValue([]);
       mockPrisma.repository.findMany.mockResolvedValue([]);
@@ -399,6 +399,49 @@ describe('team-service', () => {
         where: { id: { in: ['m-other'] } },
         data: { isPrimary: false },
       });
+    });
+  });
+
+  describe('updateTeam', () => {
+    it('updates team fields scoped to workspace', async () => {
+      mockPrisma.team.updateMany.mockResolvedValue({ count: 1 });
+
+      const result = await updateTeam('t1', 'ws-1', { name: 'Renamed', description: 'New desc' });
+
+      expect(result.count).toBe(1);
+      expect(mockPrisma.team.updateMany).toHaveBeenCalledWith({
+        where: { id: 't1', workspaceId: 'ws-1' },
+        data: { name: 'Renamed', description: 'New desc' },
+      });
+    });
+
+    it('returns count 0 when team not in workspace', async () => {
+      mockPrisma.team.updateMany.mockResolvedValue({ count: 0 });
+
+      const result = await updateTeam('t-missing', 'ws-1', { name: 'X' });
+
+      expect(result.count).toBe(0);
+    });
+  });
+
+  describe('deleteTeam', () => {
+    it('deletes team scoped to workspace', async () => {
+      mockPrisma.team.deleteMany.mockResolvedValue({ count: 1 });
+
+      const result = await deleteTeam('t1', 'ws-1');
+
+      expect(result.count).toBe(1);
+      expect(mockPrisma.team.deleteMany).toHaveBeenCalledWith({
+        where: { id: 't1', workspaceId: 'ws-1' },
+      });
+    });
+
+    it('returns count 0 when team not in workspace', async () => {
+      mockPrisma.team.deleteMany.mockResolvedValue({ count: 0 });
+
+      const result = await deleteTeam('t-missing', 'ws-1');
+
+      expect(result.count).toBe(0);
     });
   });
 

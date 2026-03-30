@@ -1318,7 +1318,8 @@
       "remove": "Remove",
       "edit": "Edit",
       "empty": "No members in this team",
-      "removeConfirm": "Remove this member from the team?"
+      "removeConfirm": "Remove this member from the team?",
+      "removeError": "Failed to remove member"
     },
     "repositories": {
       "title": "Active Repositories",

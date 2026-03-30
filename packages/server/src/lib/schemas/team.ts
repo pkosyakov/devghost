@@ -24,14 +24,20 @@ export const addMemberBodySchema = z.object({
   effectiveTo: z.coerce.date().nullable().optional(),
   isPrimary: z.boolean().optional().default(false),
   role: z.string().max(100).optional(),
-});
+}).refine(
+  (d) => !d.effectiveFrom || !d.effectiveTo || d.effectiveFrom < d.effectiveTo,
+  { message: 'effectiveFrom must be before effectiveTo', path: ['effectiveTo'] },
+);
 
 export const updateMemberBodySchema = z.object({
   effectiveFrom: z.coerce.date().optional(),
   effectiveTo: z.coerce.date().nullable().optional(),
   isPrimary: z.boolean().optional(),
   role: z.string().max(100).nullable().optional(),
-});
+}).refine(
+  (d) => !d.effectiveFrom || !d.effectiveTo || d.effectiveFrom < d.effectiveTo,
+  { message: 'effectiveFrom must be before effectiveTo', path: ['effectiveTo'] },
+);
 
 export const teamRepositoriesQuerySchema = z.object({
   from: z.coerce.date().optional(),

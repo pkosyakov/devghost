@@ -19,6 +19,7 @@ import { Plus } from 'lucide-react';
 
 export function CreateTeamDialog() {
   const t = useTranslations('teams.create');
+  const tCommon = useTranslations('common');
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -94,7 +95,7 @@ export function CreateTeamDialog() {
           </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
-              Cancel
+              {tCommon('cancel')}
             </Button>
             <Button type="submit" disabled={!name.trim() || mutation.isPending}>
               {t('submit')}

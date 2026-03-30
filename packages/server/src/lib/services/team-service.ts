@@ -6,13 +6,15 @@ const log = logger.child({ service: 'team' });
 
 // ── Helpers ──
 
-/** Check whether two date ranges overlap. Open-ended (null) effectiveTo = still active. */
+/** Check whether two date ranges overlap. Open-ended (null) effectiveTo = still active.
+ *  effectiveTo is treated as exclusive (the person is no longer a member ON that date),
+ *  so aTo === bFrom means the ranges are adjacent, not overlapping. */
 function rangesOverlap(
   aFrom: Date, aTo: Date | null,
   bFrom: Date, bTo: Date | null,
 ): boolean {
-  if (aTo && aTo < bFrom) return false;
-  if (bTo && bTo < aFrom) return false;
+  if (aTo && aTo <= bFrom) return false;
+  if (bTo && bTo <= aFrom) return false;
   return true;
 }
 
@@ -85,26 +87,30 @@ export async function listTeams(
     }
   }
 
-  // Fetch commit activity for all team members in one query
+  // Fetch commit activity aggregated by (authorEmail, repository) to avoid
+  // unbounded row fetch. Uses groupBy to return O(unique_email_repo_pairs)
+  // instead of O(total_commits).
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
-  let commitsByEmail = new Map<string, { repos: Set<string>; lastDate: Date | null }>();
+  const commitsByEmail = new Map<string, { repos: Set<string>; lastDate: Date | null }>();
 
   if (workspace && allEmails.size > 0) {
-    const commits = await prisma.commitAnalysis.findMany({
+    const grouped = await prisma.commitAnalysis.groupBy({
+      by: ['authorEmail', 'repository'],
       where: {
         authorEmail: { in: Array.from(allEmails) },
         order: { userId: workspace.ownerId },
       },
-      select: { authorEmail: true, repository: true, authorDate: true },
+      _max: { authorDate: true },
     });
 
-    for (const c of commits) {
-      const entry = commitsByEmail.get(c.authorEmail) ?? { repos: new Set(), lastDate: null };
-      entry.repos.add(c.repository);
-      if (c.authorDate && (!entry.lastDate || c.authorDate > entry.lastDate)) {
-        entry.lastDate = c.authorDate;
+    for (const g of grouped) {
+      const entry = commitsByEmail.get(g.authorEmail) ?? { repos: new Set(), lastDate: null };
+      entry.repos.add(g.repository);
+      const d = g._max.authorDate;
+      if (d && (!entry.lastDate || d > entry.lastDate)) {
+        entry.lastDate = d;
       }
-      commitsByEmail.set(c.authorEmail, entry);
+      commitsByEmail.set(g.authorEmail, entry);
     }
   }
 
@@ -241,6 +247,7 @@ export async function getTeamDetail(
               primaryEmail: true,
               classification: true,
               isExcluded: true,
+              aliases: { select: { email: true } },
             },
           },
         },
@@ -273,9 +280,16 @@ export async function getTeamDetail(
     },
   };
 
-  // summaryMetrics — compute from activity-derived data
-  const reposResult = await getTeamRepositories(teamId, workspaceId, scopeRange);
-  const repositories = reposResult?.repositories ?? [];
+  // summaryMetrics — reuse pre-loaded memberships to avoid redundant queries
+  const membershipsForRepos = team.memberships.map((m) => ({
+    contributorId: m.contributorId,
+    effectiveFrom: m.effectiveFrom,
+    effectiveTo: m.effectiveTo,
+    contributor: { aliases: m.contributor.aliases },
+  }));
+  const repositories = await computeTeamRepositories(
+    workspaceId, membershipsForRepos, scopeRange,
+  );
 
   const now = new Date();
   const activeContributorIds = new Set(
@@ -378,37 +392,39 @@ export async function addMember(
     return { error: 'Membership overlaps with an existing membership in this team' as const };
   }
 
-  // If isPrimary, only unset other primary memberships whose date ranges
-  // overlap with the new membership — preserve historical primary assignments.
-  if (data.isPrimary) {
-    const overlapping = await prisma.teamMembership.findMany({
-      where: { contributorId: data.contributorId, isPrimary: true },
-    });
-    const toUnset = overlapping
-      .filter((m) => rangesOverlap(m.effectiveFrom, m.effectiveTo, newFrom, newTo))
-      .map((m) => m.id);
-    if (toUnset.length > 0) {
-      await prisma.teamMembership.updateMany({
-        where: { id: { in: toUnset } },
-        data: { isPrimary: false },
+  // Wrap isPrimary unset + create in a transaction to prevent races
+  // where concurrent requests could leave zero or multiple primaries.
+  const membership = await prisma.$transaction(async (tx) => {
+    if (data.isPrimary) {
+      const overlapping = await tx.teamMembership.findMany({
+        where: { contributorId: data.contributorId, isPrimary: true },
       });
+      const toUnset = overlapping
+        .filter((m) => rangesOverlap(m.effectiveFrom, m.effectiveTo, newFrom, newTo))
+        .map((m) => m.id);
+      if (toUnset.length > 0) {
+        await tx.teamMembership.updateMany({
+          where: { id: { in: toUnset } },
+          data: { isPrimary: false },
+        });
+      }
     }
-  }
 
-  const membership = await prisma.teamMembership.create({
-    data: {
-      teamId,
-      contributorId: data.contributorId,
-      effectiveFrom: newFrom,
-      effectiveTo: newTo,
-      isPrimary: data.isPrimary ?? false,
-      role: data.role,
-    },
-    include: {
-      contributor: {
-        select: { id: true, displayName: true, primaryEmail: true },
+    return tx.teamMembership.create({
+      data: {
+        teamId,
+        contributorId: data.contributorId,
+        effectiveFrom: newFrom,
+        effectiveTo: newTo,
+        isPrimary: data.isPrimary ?? false,
+        role: data.role,
       },
-    },
+      include: {
+        contributor: {
+          select: { id: true, displayName: true, primaryEmail: true },
+        },
+      },
+    });
   });
 
   log.info(
@@ -458,29 +474,31 @@ export async function updateMembership(
     }
   }
 
-  // If setting isPrimary, only unset other overlapping primary memberships
-  if (data.isPrimary) {
-    const overlapping = await prisma.teamMembership.findMany({
-      where: {
-        contributorId: membership.contributorId,
-        isPrimary: true,
-        id: { not: membershipId },
-      },
-    });
-    const toUnset = overlapping
-      .filter((m) => rangesOverlap(m.effectiveFrom, m.effectiveTo, effectiveFrom, effectiveTo))
-      .map((m) => m.id);
-    if (toUnset.length > 0) {
-      await prisma.teamMembership.updateMany({
-        where: { id: { in: toUnset } },
-        data: { isPrimary: false },
+  // Wrap isPrimary unset + update in a transaction to prevent races.
+  const updated = await prisma.$transaction(async (tx) => {
+    if (data.isPrimary) {
+      const overlapping = await tx.teamMembership.findMany({
+        where: {
+          contributorId: membership.contributorId,
+          isPrimary: true,
+          id: { not: membershipId },
+        },
       });
+      const toUnset = overlapping
+        .filter((m) => rangesOverlap(m.effectiveFrom, m.effectiveTo, effectiveFrom, effectiveTo))
+        .map((m) => m.id);
+      if (toUnset.length > 0) {
+        await tx.teamMembership.updateMany({
+          where: { id: { in: toUnset } },
+          data: { isPrimary: false },
+        });
+      }
     }
-  }
 
-  const updated = await prisma.teamMembership.update({
-    where: { id: membershipId },
-    data,
+    return tx.teamMembership.update({
+      where: { id: membershipId },
+      data,
+    });
   });
 
   log.info({ membershipId, teamId }, 'Membership updated');
@@ -509,51 +527,42 @@ export async function removeMembership(
   return { success: true };
 }
 
-// ── Activity-derived repositories (point-in-time attribution) ──
+// ── Internal helper: compute activity-derived repos from pre-loaded memberships ──
 
-export async function getTeamRepositories(
-  teamId: string,
+type MembershipForRepos = {
+  contributorId: string;
+  effectiveFrom: Date;
+  effectiveTo: Date | null;
+  contributor: { aliases: { email: string }[] };
+};
+
+type RepoRow = {
+  repositoryId: string | null;
+  fullName: string;
+  language: string | null;
+  isPrivate: boolean;
+  activeCommitCount: number;
+  activeContributorCount: number;
+  lastActivityAt: Date | null;
+};
+
+async function computeTeamRepositories(
   workspaceId: string,
+  memberships: MembershipForRepos[],
   dateRange?: { from?: Date; to?: Date },
-) {
-  // Get team with memberships + contributor aliases
-  const team = await prisma.team.findFirst({
-    where: { id: teamId, workspaceId },
-    include: {
-      memberships: {
-        select: {
-          contributorId: true,
-          effectiveFrom: true,
-          effectiveTo: true,
-          contributor: {
-            select: {
-              aliases: { select: { email: true } },
-            },
-          },
-        },
-      },
-    },
-  });
-  if (!team) return null;
-
-  if (team.memberships.length === 0) {
-    return { repositories: [] };
-  }
+): Promise<RepoRow[]> {
+  if (memberships.length === 0) return [];
 
   // Filter memberships that overlap with the requested date range
-  const activeMemberships = team.memberships.filter((m) => {
+  const activeMemberships = memberships.filter((m) => {
     if (dateRange?.from && m.effectiveTo && m.effectiveTo < dateRange.from) return false;
     if (dateRange?.to && m.effectiveFrom > dateRange.to) return false;
     return true;
   });
 
-  if (activeMemberships.length === 0) {
-    return { repositories: [] };
-  }
+  if (activeMemberships.length === 0) return [];
 
   // Build per-email attribution windows.
-  // Each email gets the tightest window: intersection of (membership range) and (query range).
-  // A single email may appear in multiple memberships — take the union of windows.
   const emailWindows = new Map<string, { from: Date; to: Date | null }[]>();
 
   for (const m of activeMemberships) {
@@ -572,25 +581,20 @@ export async function getTeamRepositories(
   }
 
   const allEmails = Array.from(emailWindows.keys());
-  if (allEmails.length === 0) {
-    return { repositories: [] };
-  }
+  if (allEmails.length === 0) return [];
 
-  // Fetch qualifying commits — broad email+owner filter, then refine in-memory
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
-  if (!workspace) return { repositories: [] };
+  if (!workspace) return [];
+
+  const dateFilter: Prisma.DateTimeFilter = {};
+  if (dateRange?.from) dateFilter.gte = dateRange.from;
+  if (dateRange?.to) dateFilter.lte = dateRange.to;
 
   const broadWhere: Prisma.CommitAnalysisWhereInput = {
     authorEmail: { in: allEmails },
     order: { userId: workspace.ownerId },
+    ...(Object.keys(dateFilter).length > 0 ? { authorDate: dateFilter } : {}),
   };
-  // Apply the overall date range bounds to narrow the DB query
-  if (dateRange?.from) {
-    broadWhere.authorDate = { gte: dateRange.from };
-  }
-  if (dateRange?.to) {
-    broadWhere.authorDate = { ...broadWhere.authorDate as any, lte: dateRange.to };
-  }
 
   const commits = await prisma.commitAnalysis.findMany({
     where: broadWhere,
@@ -638,12 +642,14 @@ export async function getTeamRepositories(
 
   // Match against canonical Repository records
   const repoNames = Array.from(repoAgg.keys());
-  const canonicalRepos = await prisma.repository.findMany({
-    where: { workspaceId, fullName: { in: repoNames } },
-  });
+  const canonicalRepos = repoNames.length > 0
+    ? await prisma.repository.findMany({
+        where: { workspaceId, fullName: { in: repoNames } },
+      })
+    : [];
   const repoLookup = new Map(canonicalRepos.map((r) => [r.fullName, r]));
 
-  const repositories = Array.from(repoAgg.entries())
+  return Array.from(repoAgg.entries())
     .sort((a, b) => b[1].commitCount - a[1].commitCount)
     .map(([fullName, agg]) => {
       const canonical = repoLookup.get(fullName);
@@ -657,6 +663,34 @@ export async function getTeamRepositories(
         lastActivityAt: agg.lastDate,
       };
     });
+}
 
+// ── Activity-derived repositories (point-in-time attribution) ──
+
+export async function getTeamRepositories(
+  teamId: string,
+  workspaceId: string,
+  dateRange?: { from?: Date; to?: Date },
+) {
+  const team = await prisma.team.findFirst({
+    where: { id: teamId, workspaceId },
+    include: {
+      memberships: {
+        select: {
+          contributorId: true,
+          effectiveFrom: true,
+          effectiveTo: true,
+          contributor: {
+            select: {
+              aliases: { select: { email: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!team) return null;
+
+  const repositories = await computeTeamRepositories(workspaceId, team.memberships, dateRange);
   return { repositories };
 }

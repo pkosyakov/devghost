@@ -10,7 +10,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
 import { TeamHeader } from './components/team-header';
 import { TeamKpiSummary } from './components/team-kpi-summary';
-import { TeamContributors } from './components/team-contributors';
+import { TeamContributors, type Membership } from './components/team-contributors';
 import { TeamRepositories } from './components/team-repositories';
 import { AddMemberDialog } from './components/add-member-dialog';
 import { EditMembershipDialog } from './components/edit-membership-dialog';
@@ -18,7 +18,7 @@ import { EditMembershipDialog } from './components/edit-membership-dialog';
 export default function TeamDetailPage() {
   const t = useTranslations('teamDetail');
   const { id } = useParams<{ id: string }>();
-  const [editingMember, setEditingMember] = useState<any>(null);
+  const [editingMember, setEditingMember] = useState<Membership | null>(null);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['team', id],
@@ -77,7 +77,9 @@ export default function TeamDetailPage() {
           <h2 className="text-lg font-semibold">{t('members.title')}</h2>
           <AddMemberDialog
             teamId={id}
-            existingContributorIds={data.contributors.map((c: any) => c.contributorId)}
+            existingContributorIds={data.contributors
+              .filter((c: any) => !c.effectiveTo || new Date(c.effectiveTo) >= new Date())
+              .map((c: any) => c.contributorId)}
           />
         </div>
         <TeamContributors

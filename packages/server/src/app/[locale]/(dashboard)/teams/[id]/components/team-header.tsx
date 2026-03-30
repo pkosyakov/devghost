@@ -26,6 +26,7 @@ interface TeamHeaderProps {
 
 export function TeamHeader({ team }: TeamHeaderProps) {
   const t = useTranslations('teamDetail.settings');
+  const tCommon = useTranslations('common');
   const { toast } = useToast();
   const router = useRouter();
   const queryClient = useQueryClient();
@@ -73,10 +74,10 @@ export function TeamHeader({ team }: TeamHeaderProps) {
         <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={2} />
         <div className="flex gap-2">
           <Button size="sm" onClick={() => updateMutation.mutate()} disabled={!name.trim()}>
-            Save
+            {tCommon('save')}
           </Button>
           <Button size="sm" variant="outline" onClick={() => { setEditing(false); setName(team.name); setDescription(team.description ?? ''); }}>
-            Cancel
+            {tCommon('cancel')}
           </Button>
         </div>
       </div>

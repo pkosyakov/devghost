@@ -24,6 +24,7 @@ interface AddMemberDialogProps {
 
 export function AddMemberDialog({ teamId, existingContributorIds }: AddMemberDialogProps) {
   const t = useTranslations('teamDetail.addMember');
+  const tCommon = useTranslations('common');
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -149,7 +150,7 @@ export function AddMemberDialog({ teamId, existingContributorIds }: AddMemberDia
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={resetAndClose}>Cancel</Button>
+            <Button variant="outline" onClick={resetAndClose}>{tCommon('cancel')}</Button>
             <Button onClick={() => mutation.mutate()} disabled={!selectedId || mutation.isPending}>
               {t('submit')}
             </Button>

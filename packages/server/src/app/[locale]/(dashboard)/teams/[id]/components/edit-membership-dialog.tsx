@@ -35,6 +35,7 @@ interface EditMembershipDialogProps {
 export function EditMembershipDialog({ teamId, membership, open, onOpenChange }: EditMembershipDialogProps) {
   const t = useTranslations('teamDetail.editMember');
   const tAdd = useTranslations('teamDetail.addMember');
+  const tCommon = useTranslations('common');
   const { toast } = useToast();
   const queryClient = useQueryClient();
 
@@ -105,7 +106,7 @@ export function EditMembershipDialog({ teamId, membership, open, onOpenChange }:
           </div>
 
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>{tCommon('cancel')}</Button>
             <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
               {t('submit')}
             </Button>
