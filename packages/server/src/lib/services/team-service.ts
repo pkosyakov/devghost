@@ -379,22 +379,20 @@ export async function addMember(
   const newFrom = data.effectiveFrom ?? new Date();
   const newTo = data.effectiveTo ?? null;
 
-  // Reject overlapping memberships for same contributor in same team.
-  // This is a domain invariant: a contributor cannot have two active
-  // memberships in the same team at the same time.
-  const existingInTeam = await prisma.teamMembership.findMany({
-    where: { teamId, contributorId: data.contributorId },
-  });
-  const hasOverlap = existingInTeam.some((m) =>
-    rangesOverlap(m.effectiveFrom, m.effectiveTo, newFrom, newTo),
-  );
-  if (hasOverlap) {
-    return { error: 'Membership overlaps with an existing membership in this team' as const };
-  }
+  // All checks + write inside a single transaction to prevent TOCTOU races
+  // on both the overlap invariant and the isPrimary uniqueness constraint.
+  const result = await prisma.$transaction(async (tx) => {
+    // Reject overlapping memberships for same contributor in same team.
+    const existingInTeam = await tx.teamMembership.findMany({
+      where: { teamId, contributorId: data.contributorId },
+    });
+    const hasOverlap = existingInTeam.some((m) =>
+      rangesOverlap(m.effectiveFrom, m.effectiveTo, newFrom, newTo),
+    );
+    if (hasOverlap) {
+      return { error: 'Membership overlaps with an existing membership in this team' as const };
+    }
 
-  // Wrap isPrimary unset + create in a transaction to prevent races
-  // where concurrent requests could leave zero or multiple primaries.
-  const membership = await prisma.$transaction(async (tx) => {
     if (data.isPrimary) {
       const overlapping = await tx.teamMembership.findMany({
         where: { contributorId: data.contributorId, isPrimary: true },
@@ -410,7 +408,7 @@ export async function addMember(
       }
     }
 
-    return tx.teamMembership.create({
+    const membership = await tx.teamMembership.create({
       data: {
         teamId,
         contributorId: data.contributorId,
@@ -425,7 +423,11 @@ export async function addMember(
         },
       },
     });
+    return { membership };
   });
+
+  if ('error' in result) return result;
+  const { membership } = result;
 
   log.info(
     { teamId, contributorId: data.contributorId, membershipId: membership.id },
@@ -453,29 +455,30 @@ export async function updateMembership(
   });
   if (!team) return { error: 'Team not found' as const };
 
-  const membership = await prisma.teamMembership.findFirst({
-    where: { id: membershipId, teamId },
-  });
-  if (!membership) return { error: 'Membership not found' as const };
-
-  // If dates are changing, check for overlap with other memberships in the same team
-  const effectiveFrom = data.effectiveFrom ?? membership.effectiveFrom;
-  const effectiveTo = data.effectiveTo !== undefined ? data.effectiveTo : membership.effectiveTo;
-
-  if (data.effectiveFrom !== undefined || data.effectiveTo !== undefined) {
-    const siblings = await prisma.teamMembership.findMany({
-      where: { teamId, contributorId: membership.contributorId, id: { not: membershipId } },
+  // All checks + write inside a single transaction to prevent TOCTOU races
+  // on both the overlap invariant and the isPrimary uniqueness constraint.
+  const result = await prisma.$transaction(async (tx) => {
+    const membership = await tx.teamMembership.findFirst({
+      where: { id: membershipId, teamId },
     });
-    const hasOverlap = siblings.some((m) =>
-      rangesOverlap(m.effectiveFrom, m.effectiveTo, effectiveFrom, effectiveTo),
-    );
-    if (hasOverlap) {
-      return { error: 'Updated dates would overlap with another membership in this team' as const };
-    }
-  }
+    if (!membership) return { error: 'Membership not found' as const };
 
-  // Wrap isPrimary unset + update in a transaction to prevent races.
-  const updated = await prisma.$transaction(async (tx) => {
+    const effectiveFrom = data.effectiveFrom ?? membership.effectiveFrom;
+    const effectiveTo = data.effectiveTo !== undefined ? data.effectiveTo : membership.effectiveTo;
+
+    // If dates are changing, check for overlap with other memberships in the same team
+    if (data.effectiveFrom !== undefined || data.effectiveTo !== undefined) {
+      const siblings = await tx.teamMembership.findMany({
+        where: { teamId, contributorId: membership.contributorId, id: { not: membershipId } },
+      });
+      const hasOverlap = siblings.some((m) =>
+        rangesOverlap(m.effectiveFrom, m.effectiveTo, effectiveFrom, effectiveTo),
+      );
+      if (hasOverlap) {
+        return { error: 'Updated dates would overlap with another membership in this team' as const };
+      }
+    }
+
     if (data.isPrimary) {
       const overlapping = await tx.teamMembership.findMany({
         where: {
@@ -495,14 +498,12 @@ export async function updateMembership(
       }
     }
 
-    return tx.teamMembership.update({
-      where: { id: membershipId },
-      data,
-    });
+    return { membership: await tx.teamMembership.update({ where: { id: membershipId }, data }) };
   });
 
+  if ('error' in result) return result;
   log.info({ membershipId, teamId }, 'Membership updated');
-  return { membership: updated };
+  return result;
 }
 
 // ── Remove membership ──
@@ -555,7 +556,7 @@ async function computeTeamRepositories(
 
   // Filter memberships that overlap with the requested date range
   const activeMemberships = memberships.filter((m) => {
-    if (dateRange?.from && m.effectiveTo && m.effectiveTo < dateRange.from) return false;
+    if (dateRange?.from && m.effectiveTo && m.effectiveTo <= dateRange.from) return false;
     if (dateRange?.to && m.effectiveFrom > dateRange.to) return false;
     return true;
   });
