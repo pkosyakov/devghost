@@ -1069,7 +1069,7 @@
       "email": "Email",
       "classification": "Classification",
       "identity": "Identity",
-      "repos": "Repositories",
+      "aliases": "Aliases",
       "lastActivity": "Last Activity"
     },
     "actions": {
@@ -1083,6 +1083,10 @@
       "title": "Identity Queue",
       "description": "Unresolved aliases that need review",
       "resolve": "Resolve",
+      "cancel": "Cancel",
+      "searchContributor": "Search contributor...",
+      "noResults": "No contributors found",
+      "confirmResolve": "Attach to contributor",
       "empty": "No unresolved identities"
     },
     "empty": {

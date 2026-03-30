@@ -133,6 +133,32 @@ async function findContributorMatch(
   return null;
 }
 
+// ─── Safe email sync (handles unique constraint collisions) ───
+
+async function resolveEmailConflict(
+  aliasId: string,
+  workspaceId: string,
+  providerType: string,
+  newEmail: string,
+): Promise<string | null> {
+  const conflicting = await prisma.contributorAlias.findFirst({
+    where: { workspaceId, providerType, email: newEmail, id: { not: aliasId } },
+  });
+
+  if (!conflicting) return newEmail;
+
+  if (!conflicting.contributorId && conflicting.resolveStatus === 'UNRESOLVED') {
+    // Orphan unresolved alias — safe to absorb before updating email
+    await prisma.contributorAlias.delete({ where: { id: conflicting.id } });
+    log.info({ deletedAliasId: conflicting.id, email: newEmail }, 'Absorbed orphan alias during email sync');
+    return newEmail;
+  }
+
+  // Conflict with a resolved/attached alias — skip email update to avoid crash
+  log.warn({ aliasId, conflictingAliasId: conflicting.id, newEmail }, 'Email sync skipped — conflicting alias exists');
+  return null;
+}
+
 // ─── Project contributors from a single order ───
 
 export async function projectContributorsFromOrder(orderId: string): Promise<void> {
@@ -170,9 +196,17 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
     if (existingAlias) {
       if (existingAlias.resolveStatus === 'MANUAL') {
+        const manualData: any = {
+          lastSeenAt: new Date(),
+          username: raw.username || existingAlias.username,
+        };
+        if (raw.email !== existingAlias.email) {
+          const safeEmail = await resolveEmailConflict(existingAlias.id, workspace.id, raw.providerType, raw.email);
+          if (safeEmail) manualData.email = safeEmail;
+        }
         await prisma.contributorAlias.update({
           where: { id: existingAlias.id },
-          data: { lastSeenAt: new Date(), username: raw.username || existingAlias.username },
+          data: manualData,
         });
         continue;
       }
@@ -188,7 +222,8 @@ export async function projectContributorsFromOrder(orderId: string): Promise<voi
 
       // Sync email if alias was found by providerId and email changed
       if (raw.email !== existingAlias.email) {
-        updateData.email = raw.email;
+        const safeEmail = await resolveEmailConflict(existingAlias.id, workspace.id, raw.providerType, raw.email);
+        if (safeEmail) updateData.email = safeEmail;
       }
 
       if (existingAlias.contributorId) {

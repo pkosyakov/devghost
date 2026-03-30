@@ -45,7 +45,7 @@ export function PeopleTable({
           <SortHeader field="primaryEmail">{t('email')}</SortHeader>
           <TableHead>{t('classification')}</TableHead>
           <TableHead>{t('identity')}</TableHead>
-          <TableHead>{t('repos')}</TableHead>
+          <TableHead>{t('aliases')}</TableHead>
           <SortHeader field="lastActivityAt">{t('lastActivity')}</SortHeader>
           <TableHead />
         </TableRow>

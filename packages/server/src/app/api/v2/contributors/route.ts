@@ -50,7 +50,7 @@ export async function GET(request: NextRequest) {
     where,
     include: {
       aliases: {
-        select: { id: true, resolveStatus: true },
+        select: { id: true, resolveStatus: true, lastSeenAt: true },
       },
       _count: {
         select: { aliases: true },
@@ -75,6 +75,14 @@ export async function GET(request: NextRequest) {
     ).length;
     const health = computeIdentityHealth({ resolvedCount, unresolvedCount });
 
+    // Derive last activity from most recent alias lastSeenAt
+    const lastSeenDates = c.aliases
+      .map((a) => a.lastSeenAt)
+      .filter((d): d is Date => d !== null);
+    const lastActivityAt = lastSeenDates.length > 0
+      ? new Date(Math.max(...lastSeenDates.map((d) => d.getTime())))
+      : c.updatedAt;
+
     return {
       id: c.id,
       displayName: c.displayName,
@@ -83,7 +91,7 @@ export async function GET(request: NextRequest) {
       isExcluded: c.isExcluded,
       identityHealth: health,
       aliasCount: c._count.aliases,
-      lastActivityAt: c.updatedAt,
+      lastActivityAt,
     };
   });
 
