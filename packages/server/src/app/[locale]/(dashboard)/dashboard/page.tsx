@@ -187,6 +187,24 @@ function OperationalStage({
         <MetricCard title={t('metrics.commits')} value={data.summaryMetrics.totalCommits} />
       </div>
 
+      {data.onboarding?.needsFirstSavedView && (
+        <Card>
+          <CardContent className="flex flex-col gap-4 pt-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <p className="font-medium">{t('operational.firstSavedView.title')}</p>
+              <p className="text-sm text-muted-foreground">{t('operational.firstSavedView.description')}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {data.topTeams?.[0]?.teamId ? (
+                <Link href={`/teams/${data.topTeams[0].teamId}?scopeKind=team&scopeId=${data.topTeams[0].teamId}`}>
+                  <Button>{t('operational.firstSavedView.openTeam')}</Button>
+                </Link>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr]">
         <Card>
           <CardHeader>

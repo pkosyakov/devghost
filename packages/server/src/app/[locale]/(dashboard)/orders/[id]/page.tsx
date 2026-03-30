@@ -60,15 +60,15 @@ import { useToast } from '@/hooks/use-toast';
 
 type ExtractedDeveloper = Developer;
 
-// Fetch order details
+// Fetch analysis details
 async function fetchOrder(id: string) {
   const res = await fetch(`/api/orders/${id}`);
-  if (!res.ok) throw new Error('Failed to fetch order');
+  if (!res.ok) throw new Error('Failed to fetch analysis');
   const json = await res.json();
   return json.data;
 }
 
-// Fetch metrics for order with period filter
+// Fetch metrics for analysis with period filter
 async function fetchMetrics(id: string, period: GhostEligiblePeriod): Promise<GhostMetric[]> {
   const res = await fetch(`/api/orders/${id}/metrics?period=${period}`);
   if (!res.ok) return [];

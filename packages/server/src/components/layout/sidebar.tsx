@@ -6,7 +6,7 @@ import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import {
   LayoutDashboard,
-  ClipboardList,
+
   Settings,
   LogOut,
   Plus,
@@ -37,7 +37,7 @@ import { LanguageSwitcher } from '@/components/language-switcher';
 
 const navigation = [
   { nameKey: 'dashboard', href: '/dashboard', icon: LayoutDashboard },
-  { nameKey: 'orders', href: '/orders', icon: ClipboardList },
+  { nameKey: 'orders', href: '/orders', icon: Activity },
   { nameKey: 'people', href: '/people', icon: Users },
   { nameKey: 'repositories', href: '/repositories', icon: FolderGit2 },
   { nameKey: 'teams', href: '/teams', icon: UsersRound },
@@ -204,7 +204,7 @@ export function Sidebar() {
               {t(item.nameKey)}
             </Link>
 
-            {/* Recent orders under Orders nav item */}
+            {/* Recent analyses under Analyses nav item */}
             {item.nameKey === 'orders' && recentOrders && recentOrders.length > 0 && (
               <div className="ml-4 mt-1 space-y-0.5">
                 {recentOrders.map((order) => {
@@ -282,7 +282,7 @@ export function Sidebar() {
         </div>
       </Link>
 
-      {/* New Order Button */}
+      {/* New Analysis Button */}
       <div className="p-4">
         <Link href="/orders/new">
           <Button className="w-full gap-2">

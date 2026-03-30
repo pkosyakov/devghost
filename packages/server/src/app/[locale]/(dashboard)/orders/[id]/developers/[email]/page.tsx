@@ -290,7 +290,7 @@ export default function DeveloperDetailPage({
             onClick={() => router.push(`/orders/${id}`)}
           >
             <ChevronLeft className="h-4 w-4 mr-1" />
-            Back to Order
+            Back to Analysis
           </Button>
           <div>
             <h1 className="text-2xl font-bold">

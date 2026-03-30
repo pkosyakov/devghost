@@ -628,7 +628,7 @@ export default function NewOrderPage() {
         </div>
       </div>
 
-      {/* Order Name */}
+      {/* Analysis Name */}
       <Card>
         <CardHeader>
           <CardTitle>{t('analysisName')}</CardTitle>

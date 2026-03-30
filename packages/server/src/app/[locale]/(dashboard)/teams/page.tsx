@@ -3,6 +3,7 @@
 import { Suspense, useCallback } from 'react';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
+import { Link } from '@/i18n/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { pickActiveScopeParams } from '@/lib/active-scope';
@@ -102,7 +103,12 @@ function TeamsPage() {
       <div className="flex flex-col items-center justify-center p-12 space-y-4">
         <h2 className="text-xl font-semibold">{t('empty.title')}</h2>
         <p className="text-muted-foreground">{t('empty.description')}</p>
-        <CreateTeamDialog />
+        <div className="flex flex-wrap items-center justify-center gap-3">
+          <Link href="/repositories">
+            <Button>{t('empty.fromRepository')}</Button>
+          </Link>
+          <CreateTeamDialog triggerLabel={t('empty.manualCta')} />
+        </div>
       </div>
     );
   }

@@ -25,12 +25,18 @@ export async function getHomeDetail(
     return null;
   }
 
-  const [scopedEmails, scopedRepositoryNames, workspaceTeamCount, workspaceRepoCount, workspaceContributorCount] = await Promise.all([
+  const [scopedEmails, scopedRepositoryNames, workspaceTeamCount, workspaceRepoCount, workspaceContributorCount, savedViewCount] = await Promise.all([
     getContributorEmailsForScope(scope),
     getRepositoryNamesForScope(scope),
     prisma.team.count({ where: { workspaceId } }),
     prisma.repository.count({ where: { workspaceId } }),
     prisma.contributor.count({ where: { workspaceId } }),
+    prisma.savedView.count({
+      where: {
+        ...buildSavedViewReadableWhere(workspaceId, actorUserId),
+        isArchived: false,
+      },
+    }),
   ]);
 
   // Stage 3: at least one team exists
@@ -288,5 +294,9 @@ export async function getHomeDetail(
       })),
     freshnessSummary,
     saveViewState,
+    onboarding: {
+      needsFirstSavedView: workspaceTeamCount > 0 && savedViewCount === 0,
+      savedViewCount,
+    },
   };
 }

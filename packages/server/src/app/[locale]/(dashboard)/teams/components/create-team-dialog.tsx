@@ -17,7 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { Plus } from 'lucide-react';
 
-export function CreateTeamDialog() {
+export function CreateTeamDialog({ triggerLabel }: { triggerLabel?: string }) {
   const t = useTranslations('teams.create');
   const tCommon = useTranslations('common');
   const { toast } = useToast();
@@ -59,7 +59,7 @@ export function CreateTeamDialog() {
       <DialogTrigger asChild>
         <Button className="gap-2">
           <Plus className="h-4 w-4" />
-          {t('title')}
+          {triggerLabel ?? t('title')}
         </Button>
       </DialogTrigger>
       <DialogContent>

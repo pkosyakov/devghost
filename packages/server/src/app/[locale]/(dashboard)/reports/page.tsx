@@ -152,8 +152,13 @@ function ReportsPage() {
       <div className="grid gap-4">
         {data.savedViews.length === 0 ? (
           <Card>
-            <CardContent className="py-12 text-center text-muted-foreground">
-              {hasActiveFilters ? t('filteredEmpty') : t('empty')}
+            <CardContent className="flex flex-col items-center gap-4 py-12 text-center text-muted-foreground">
+              <p>{hasActiveFilters ? t('filteredEmpty') : t('empty')}</p>
+              {!hasActiveFilters && (
+                <Link href="/dashboard">
+                  <Button variant="outline">{t('emptyCta')}</Button>
+                </Link>
+              )}
             </CardContent>
           </Card>
         ) : (

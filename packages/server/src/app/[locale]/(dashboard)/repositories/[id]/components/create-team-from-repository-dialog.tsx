@@ -115,7 +115,7 @@ export function CreateTeamFromRepositoryDialog({
     onSuccess: (team) => {
       toast({ description: t('success') });
       setOpen(false);
-      router.push(`/teams/${team.id}`);
+      router.push(`/teams/${team.id}?scopeKind=team&scopeId=${team.id}&onboarding=first-team`);
     },
     onError: (err: Error) => {
       toast({

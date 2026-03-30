@@ -6,6 +6,7 @@ import { useParams, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
 import { pickActiveScopeParams } from '@/lib/active-scope';
@@ -23,6 +24,7 @@ export default function TeamDetailPage() {
   const searchParams = useSearchParams();
   const [editingMember, setEditingMember] = useState<Membership | null>(null);
   const scopeQs = useMemo(() => pickActiveScopeParams(searchParams).toString(), [searchParams]);
+  const isFirstTeamOnboarding = searchParams.get('onboarding') === 'first-team';
   const backHref = useMemo(() => {
     const serialized = pickActiveScopeParams(searchParams).toString();
     return serialized ? `/teams?${serialized}` : '/teams';
@@ -81,6 +83,22 @@ export default function TeamDetailPage() {
       </div>
 
       <TeamHeader team={data.team} />
+
+      {isFirstTeamOnboarding && (
+        <Card>
+          <CardContent className="flex flex-col gap-3 pt-6 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-1">
+              <p className="font-medium">{t('onboarding.title')}</p>
+              <p className="text-sm text-muted-foreground">{t('onboarding.description')}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Link href={`/dashboard?scopeKind=team&scopeId=${id}`}>
+                <Button>{t('onboarding.openHome')}</Button>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <TeamKpiSummary
         memberCount={data.summaryMetrics.memberCount}
