@@ -647,6 +647,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       eventCursorRef.current = null;
       setJobEvents([]);
       queryClient.invalidateQueries({ queryKey: ['progress', id] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
     }
   }, [order?.status, queryClient, id]);
 

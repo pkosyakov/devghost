@@ -71,6 +71,7 @@ function ReportsPage() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['saved-views'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
     },
   });
 

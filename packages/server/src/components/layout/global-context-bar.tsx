@@ -72,7 +72,7 @@ export function GlobalContextBar() {
 
   const teamsQuery = useQuery({
     queryKey: ['scope-teams'],
-    enabled: isAnalyticalPath,
+    enabled: isAnalyticalPath && !isEarlyStage,
     queryFn: async () => {
       const res = await fetch('/api/v2/teams?page=1&pageSize=100&sort=name&sortOrder=asc');
       const json = await res.json();
@@ -83,7 +83,7 @@ export function GlobalContextBar() {
 
   const savedViewsQuery = useQuery({
     queryKey: ['scope-saved-views'],
-    enabled: isAnalyticalPath,
+    enabled: isAnalyticalPath && !isEarlyStage,
     queryFn: async () => {
       const res = await fetch('/api/v2/saved-views?page=1&pageSize=100&sort=updatedAt&sortOrder=desc');
       const json = await res.json();
