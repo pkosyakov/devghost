@@ -594,5 +594,34 @@ describe('team-service', () => {
       expect(result!.repositories).toHaveLength(1);
       expect(result!.repositories[0].activeCommitCount).toBe(1); // only 'before', not 'boundary'
     });
+
+    it('same-day date range includes commits from that entire day', async () => {
+      mockPrisma.team.findFirst.mockResolvedValue({
+        id: 't1',
+        memberships: [{
+          contributorId: 'c1',
+          effectiveFrom: new Date('2025-01-01'),
+          effectiveTo: null,
+          contributor: { aliases: [{ email: 'alice@co.com' }] },
+        }],
+      });
+      mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
+      mockPrisma.commitAnalysis.findMany.mockResolvedValue([
+        // Commit at noon on July 1 — should be included in from=to=2025-07-01
+        { repository: 'org/repo', authorEmail: 'alice@co.com', authorDate: new Date('2025-07-01T12:00:00Z'), commitHash: 'noon' },
+        // Commit at 11pm — should also be included
+        { repository: 'org/repo', authorEmail: 'alice@co.com', authorDate: new Date('2025-07-01T23:30:00Z'), commitHash: 'late' },
+        // Commit on next day — should be excluded
+        { repository: 'org/repo', authorEmail: 'alice@co.com', authorDate: new Date('2025-07-02T01:00:00Z'), commitHash: 'next' },
+      ]);
+      mockPrisma.repository.findMany.mockResolvedValue([]);
+
+      // Same-day range: from=to="2025-07-01" (parses to midnight UTC)
+      const sameDay = new Date('2025-07-01');
+      const result = await getTeamRepositories('t1', 'ws-1', { from: sameDay, to: sameDay });
+
+      expect(result!.repositories).toHaveLength(1);
+      expect(result!.repositories[0].activeCommitCount).toBe(2); // noon + late, not next
+    });
   });
 });

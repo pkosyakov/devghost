@@ -557,6 +557,15 @@ async function computeTeamRepositories(
 ): Promise<RepoRow[]> {
   if (memberships.length === 0) return [];
 
+  // Normalize date-only `to` to end-of-day so the entire calendar day is included.
+  // Input like "2025-07-01" parses to midnight UTC; without this, commits on that
+  // day (except exactly at midnight) would be excluded from the range.
+  if (dateRange?.to) {
+    const eod = new Date(dateRange.to);
+    eod.setUTCHours(23, 59, 59, 999);
+    dateRange = { ...dateRange, to: eod };
+  }
+
   // Filter memberships that overlap with the requested date range
   const activeMemberships = memberships.filter((m) => {
     if (dateRange?.from && m.effectiveTo && m.effectiveTo <= dateRange.from) return false;
