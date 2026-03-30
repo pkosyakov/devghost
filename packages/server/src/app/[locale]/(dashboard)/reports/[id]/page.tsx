@@ -85,6 +85,7 @@ function ReportDetailPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['saved-view-detail', id] });
       queryClient.invalidateQueries({ queryKey: ['saved-views'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
       refetch();
     },
   });
