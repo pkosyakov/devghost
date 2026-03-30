@@ -21,6 +21,7 @@ import {
 import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { SaveViewDialog } from '@/components/layout/save-view-dialog';
 import { pickActiveScopeParams } from '@/lib/active-scope';
+import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 
 function isPrimaryAnalyticalPath(pathname: string): boolean {
   return pathname === '/dashboard'
@@ -39,6 +40,10 @@ export function GlobalContextBar() {
   const params = useParams<{ id?: string }>();
   const t = useTranslations('scope.bar');
   const isAnalyticalPath = isPrimaryAnalyticalPath(pathname);
+
+  // undefined = data not yet loaded → default to showing chrome (avoids regressing mature users)
+  const { data: stageData } = useWorkspaceStage();
+  const isEarlyStage = stageData?.workspaceStage === 'empty' || stageData?.workspaceStage === 'first_data';
 
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
 
@@ -199,7 +204,7 @@ export function GlobalContextBar() {
     replaceScope(nextParams);
   };
 
-  if (!isAnalyticalPath) {
+  if (!isAnalyticalPath || isEarlyStage) {
     return null;
   }
 
