@@ -5,11 +5,13 @@ import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { pickActiveScopeParams } from '@/lib/active-scope';
 import { RepositorySummaryStrip } from './components/repository-summary-strip';
 import { RepositoryFilters } from './components/repository-filters';
 import { RepositoryTable } from './components/repository-table';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 
 export default function RepositoriesPageWrapper() {
   return (
@@ -57,6 +59,8 @@ function RepositoriesPage() {
   if (freshness !== 'all') queryParams.set('freshness', freshness);
   if (language !== 'all') queryParams.set('language', language);
   if (search) queryParams.set('search', search);
+  const activeScopeParams = pickActiveScopeParams(searchParams);
+  activeScopeParams.forEach((value, key) => queryParams.set(key, value));
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['repositories', queryParams.toString()],
@@ -115,7 +119,14 @@ function RepositoriesPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="text-2xl font-bold">{t('title')}</h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">{t('title')}</h1>
+        <ScreenHelpTrigger
+          screenTitle={t('title')}
+          what={t('help.what')}
+          how={t('help.how')}
+        />
+      </div>
 
       <RepositorySummaryStrip
         totalRepositories={data?.summary?.totalRepositories ?? 0}

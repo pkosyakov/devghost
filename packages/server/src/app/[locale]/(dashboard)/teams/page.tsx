@@ -5,12 +5,14 @@ import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { pickActiveScopeParams } from '@/lib/active-scope';
 import { TeamSummaryStrip } from './components/team-summary-strip';
 import { TeamTable } from './components/team-table';
 import { CreateTeamDialog } from './components/create-team-dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 
 export default function TeamsPageWrapper() {
   return (
@@ -54,6 +56,8 @@ function TeamsPage() {
   queryParams.set('sort', sort);
   queryParams.set('sortOrder', sortOrder);
   if (search) queryParams.set('search', search);
+  const activeScopeParams = pickActiveScopeParams(searchParams);
+  activeScopeParams.forEach((value, key) => queryParams.set(key, value));
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['teams', queryParams.toString()],
@@ -106,7 +110,14 @@ function TeamsPage() {
   return (
     <div className="space-y-6 p-6">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{t('title')}</h1>
+        <div className="flex items-center gap-2">
+          <h1 className="text-2xl font-bold">{t('title')}</h1>
+          <ScreenHelpTrigger
+            screenTitle={t('title')}
+            what={t('help.what')}
+            how={t('help.how')}
+          />
+        </div>
         <CreateTeamDialog />
       </div>
 

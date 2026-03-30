@@ -59,6 +59,12 @@ Rules:
 - activating a saved view populates this shape;
 - unsaved ad hoc state can also populate this shape.
 
+Slice 4 note:
+
+- until `Organization` exists in production, `organizationId` is represented by the authenticated user's `workspaceId`;
+- in Slice 4 v1, unsaved `ActiveScope` is URL-backed rather than stored in a separate server-side session-scope object;
+- the scope bar may still use server reads for available teams/saved views, but the currently active unsaved scope lives in shared route/query state.
+
 ### 2. Summary read models
 
 Purpose:
@@ -123,6 +129,26 @@ Suggested fields:
 - `activePrCount` (optional / nullable in Slice 2 if canonical PR data is not available yet)
 - `activeCommitCount` (allowed in Slice 2 as a supporting activity field)
 - `healthStatus`
+
+#### Saved view summary row
+
+Use for:
+
+- reports library
+- saved view switchers
+- home/report quick access
+
+Suggested fields:
+
+- `savedViewId`
+- `name`
+- `visibility`
+- `scopeKind`
+- `teamCount`
+- `repositoryCount`
+- `contributorCount`
+- `owner`
+- `updatedAt`
 
 ### 3. Detail read models
 
@@ -192,6 +218,24 @@ Slice 2 note:
 - `pullRequests` may be omitted, empty, or explicitly marked unavailable;
 - commit-backed evidence must not be labeled or grouped as canonical PRs.
 
+#### Home detail
+
+Should include:
+
+- `resolvedScope`
+- `summaryMetrics`
+- `topTeams` (optional / empty when current scope is already one team)
+- `topContributors`
+- `topRepositories`
+- `freshnessSummary`
+- `saveViewState`
+
+Slice 4 note:
+
+- existing `/dashboard` becomes the scope-aware `Home` surface in Slice 4;
+- the payload may be commit/repository/team-backed and does not need canonical PR sections yet;
+- the payload must be resolved from `ActiveScope`, not from legacy order counts.
+
 #### Saved view detail
 
 Should include:
@@ -202,6 +246,12 @@ Should include:
 - `shareMetadata`
 - `linkedSchedules`
 - `linkedDashboards`
+
+Slice 4 note:
+
+- `SavedViewDetail` is workspace-scoped in production until `Organization` exists;
+- `linkedSchedules` and `linkedDashboards` may be empty in Slice 4 if schedules/dashboard objects are deferred;
+- `resolvedScope` is required because users must understand what activating the view will actually do.
 
 #### Data health detail
 
@@ -263,6 +313,16 @@ Required actions:
 - share
 - archive / restore
 
+Slice 4 minimum:
+
+- create saved view from current scope
+- update scope definition
+- update filter definition
+- set visibility (`private` / `workspace`)
+- archive / restore
+
+Public sharing beyond the authenticated app and schedule management may remain deferred.
+
 ### Schedule actions
 
 Required actions:
@@ -319,6 +379,14 @@ Avoid leaking legacy storage concepts like:
 - `selectedRepos`
 - `selectedDevelopers`
 - snapshot-local mapping blobs
+
+### Shared scope semantics
+
+Rules:
+
+- Home, Teams, People, Repositories, and Reports must accept the same `ActiveScope` semantics even if each page uses only part of the scope;
+- entity-detail routes may use route identity as the primary object while still accepting shared date-range and secondary-filter refinements;
+- no page may maintain a duplicate unsynced date-range state once it participates in the global context bar.
 
 ## Freshness and data health contract
 
@@ -468,6 +536,25 @@ For Slice 3, `TeamDetail` is considered valid without a populated `topPullReques
 - canonical contributors are present in team-local context;
 - repositories are derived from member activity rather than static assignment only;
 - the UI does not fake PRs or imply that global scope/saved-view behavior already exists.
+
+## Minimum contracts needed for Slice 4
+
+To start `Global Scope and Saved Views`, the minimum contracts that must exist are:
+
+- `ActiveScope` resolution contract for primary analytical surfaces
+- URL-backed shared scope behavior across at least `Home`, `Teams`, `People`, and `Repositories`
+- workspace-scoped `SavedView` identity in schema and app code
+- `SavedViewSummaryRow[]`
+- `SavedViewDetail`
+- scope-aware `HomeDetail`
+- saved-view create/update/archive actions
+
+For Slice 4, the scope layer is considered valid without schedules or a separate dashboard object if:
+
+- activating a saved view updates the global context bar and the receiving screen(s);
+- `SavedView` is independent from `Team` and can represent multi-team or repo-refined scope;
+- `/dashboard` behaves as a scope-aware `Home` surface rather than an order-centric page;
+- Slice 3 local date-range controls are replaced or synchronized where the global context bar is introduced.
 
 ## Readiness rule for builder-AI
 

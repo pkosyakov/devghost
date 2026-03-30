@@ -5,12 +5,14 @@ import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
 import { useQuery } from '@tanstack/react-query';
+import { pickActiveScopeParams } from '@/lib/active-scope';
 import { PeopleSummaryStrip } from './components/people-summary-strip';
 import { PeopleFilters } from './components/people-filters';
 import { PeopleIdentityQueue } from './components/people-identity-queue';
 import { PeopleTable } from './components/people-table';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 
 export default function PeoplePageWrapper() {
   return (
@@ -60,6 +62,8 @@ function PeoplePage() {
   if (classification !== 'all') queryParams.set('classification', classification);
   if (identityHealth !== 'all') queryParams.set('identityHealth', identityHealth);
   if (search) queryParams.set('search', search);
+  const activeScopeParams = pickActiveScopeParams(searchParams);
+  activeScopeParams.forEach((value, key) => queryParams.set(key, value));
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['contributors', queryParams.toString()],
@@ -123,7 +127,14 @@ function PeoplePage() {
 
   return (
     <div className="space-y-6 p-6">
-      <h1 className="text-2xl font-bold">{t('title')}</h1>
+      <div className="flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold">{t('title')}</h1>
+        <ScreenHelpTrigger
+          screenTitle={t('title')}
+          what={t('help.what')}
+          how={t('help.how')}
+        />
+      </div>
 
       <PeopleSummaryStrip
         totalContributors={data?.totalContributors ?? 0}
@@ -143,6 +154,7 @@ function PeoplePage() {
 
       <PeopleIdentityQueue
         unresolvedCount={data?.identityQueueSummary?.unresolvedCount ?? 0}
+        activeScopeQuery={activeScopeParams.toString()}
       />
 
       {data?.contributors?.length ? (

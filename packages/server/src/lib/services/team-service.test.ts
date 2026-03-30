@@ -11,6 +11,7 @@ const mockPrisma = vi.hoisted(() => ({
   },
   teamMembership: {
     create: vi.fn(),
+    createMany: vi.fn(),
     findFirst: vi.fn(),
     findMany: vi.fn(),
     update: vi.fn(),
@@ -32,6 +33,7 @@ const mockPrisma = vi.hoisted(() => ({
   },
   repository: {
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
   $transaction: vi.fn((fn: any) => fn(mockPrisma)),
 }));
@@ -44,6 +46,7 @@ vi.mock('@/lib/logger', () => ({
 import {
   listTeams,
   createTeam,
+  createTeamFromRepository,
   getTeamDetail,
   updateTeam,
   deleteTeam,
@@ -253,6 +256,45 @@ describe('team-service', () => {
       expect(result).toEqual(created);
       expect(mockPrisma.team.create).toHaveBeenCalledWith({
         data: { workspaceId: 'ws-1', name: 'Frontend', description: undefined },
+      });
+    });
+  });
+
+  describe('createTeamFromRepository', () => {
+    it('uses first known repository activity as membership effectiveFrom', async () => {
+      const createdTeam = { id: 't-repo', workspaceId: 'ws-1', name: 'Core API', description: null };
+      mockPrisma.workspace.findUnique.mockResolvedValue({ id: 'ws-1', ownerId: 'u1' });
+      mockPrisma.repository.findFirst.mockResolvedValue({ id: 'r1', fullName: 'org/core-api' });
+      mockPrisma.commitAnalysis.findMany
+        .mockResolvedValueOnce([
+          { authorEmail: 'alice@work.com' },
+          { authorEmail: 'alice@home.com' },
+        ])
+        .mockResolvedValueOnce([
+          { authorEmail: 'alice@work.com', authorDate: new Date('2025-01-15T10:00:00Z') },
+          { authorEmail: 'alice@home.com', authorDate: new Date('2025-03-01T10:00:00Z') },
+        ]);
+      mockPrisma.contributorAlias.findMany.mockResolvedValue([
+        { contributorId: 'c1', email: 'alice@work.com' },
+        { contributorId: 'c1', email: 'alice@home.com' },
+      ]);
+      mockPrisma.team.create.mockResolvedValue(createdTeam);
+      mockPrisma.teamMembership.createMany.mockResolvedValue({ count: 1 });
+
+      const result = await createTeamFromRepository('ws-1', 'r1', {
+        name: 'Core API',
+        contributorIds: ['c1'],
+      });
+
+      expect(result).toEqual({ team: createdTeam });
+      expect(mockPrisma.teamMembership.createMany).toHaveBeenCalledWith({
+        data: [
+          expect.objectContaining({
+            teamId: 't-repo',
+            contributorId: 'c1',
+            effectiveFrom: new Date('2025-01-15T10:00:00Z'),
+          }),
+        ],
       });
     });
   });

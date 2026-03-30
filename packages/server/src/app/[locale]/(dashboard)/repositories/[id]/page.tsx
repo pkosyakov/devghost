@@ -7,10 +7,12 @@ import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 import { RepositoryHeader } from './components/repository-header';
 import { RepositoryKpiSummary } from './components/repository-kpi-summary';
 import { RepositoryContributors } from './components/repository-contributors';
 import { RepositoryActivity } from './components/repository-activity';
+import { CreateTeamFromRepositoryDialog } from './components/create-team-from-repository-dialog';
 
 export default function RepositoryDetailPage() {
   const t = useTranslations('repositoryDetail');
@@ -53,15 +55,30 @@ export default function RepositoryDetailPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <Link
-        href="/repositories"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {t('backToList')}
-      </Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link
+          href="/repositories"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {t('backToList')}
+        </Link>
+        <ScreenHelpTrigger
+          screenTitle={t('help.title')}
+          what={t('help.what')}
+          how={t('help.how')}
+        />
+      </div>
 
       <RepositoryHeader repository={data.repository} />
+
+      <div className="flex justify-end">
+        <CreateTeamFromRepositoryDialog
+          repositoryId={data.repository.id}
+          repositoryName={data.repository.fullName}
+          contributors={data.contributors}
+        />
+      </div>
 
       <RepositoryKpiSummary
         totalCommits={data.summaryMetrics.totalCommits}

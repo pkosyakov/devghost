@@ -1,284 +1,314 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Link } from '@/i18n/navigation';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import {
-  Plus,
-  Loader2,
-  ClipboardList,
-  GitBranch,
-  Users,
-  TrendingUp,
-  ArrowRight,
-} from 'lucide-react';
+import { Suspense } from 'react';
 import { useTranslations } from 'next-intl';
-import { ghostColor } from '@devghost/shared';
-import { ghostTextColors } from '@/lib/utils';
+import { useSearchParams } from 'next/navigation';
+import { useQuery } from '@tanstack/react-query';
+import { Link } from '@/i18n/navigation';
+import { pickActiveScopeParams } from '@/lib/active-scope';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 
-interface DashboardStats {
-  totalOrders: number;
-  completedOrders: number;
-  totalRepos: number;
-  totalDevelopers: number;
-  avgGhostPercent: number | null;
-  recentOrders: {
-    id: string;
-    name: string;
-    status: string;
-    repoCount: number;
-    developerCount: number;
-    createdAt: string;
-    metrics: { avgGhostPercent: number; totalEffortHours: number; totalCommitsAnalyzed: number } | null;
-  }[];
+export default function DashboardPageWrapper() {
+  return (
+    <Suspense fallback={<div className="space-y-6"><Skeleton className="h-10 w-48" /><Skeleton className="h-64 w-full" /></div>}>
+      <DashboardPage />
+    </Suspense>
+  );
 }
 
-const statusColors: Record<string, string> = {
-  DRAFT: 'bg-gray-100 text-gray-700',
-  DEVELOPERS_LOADED: 'bg-blue-100 text-blue-700',
-  READY_FOR_ANALYSIS: 'bg-yellow-100 text-yellow-700',
-  PROCESSING: 'bg-purple-100 text-purple-700',
-  COMPLETED: 'bg-green-100 text-green-700',
-  FAILED: 'bg-red-100 text-red-700',
-};
+function DashboardPage() {
+  const t = useTranslations('home');
+  const searchParams = useSearchParams();
+  const scopeQs = pickActiveScopeParams(searchParams).toString();
 
-export default function DashboardPage() {
-  const t = useTranslations('dashboard');
-  const tStatus = useTranslations('status');
-  const tOrders = useTranslations('orders');
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data, isLoading, isError, refetch } = useQuery({
+    queryKey: ['home', scopeQs],
+    queryFn: async () => {
+      const res = await fetch(`/api/v2/home${scopeQs ? `?${scopeQs}` : ''}`);
+      const json = await res.json();
+      if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
+      return json.data;
+    },
+  });
 
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
-  const fetchStats = async () => {
-    try {
-      const response = await fetch('/api/orders');
-      const data = await response.json();
-
-      if (response.ok) {
-        const orders = data.data || [];
-
-        // Calculate stats
-        const completedOrders = orders.filter((o: { status: string }) => o.status === 'COMPLETED');
-        const totalRepos = orders.reduce((sum: number, o: { repoCount: number }) => sum + (o.repoCount || 0), 0);
-        const totalDevelopers = orders.reduce((sum: number, o: { developerCount: number }) => sum + (o.developerCount || 0), 0);
-
-        const completedWithMetrics = orders.filter(
-          (o: any) => o.status === 'COMPLETED' && o.metrics?.avgGhostPercent != null
-        );
-        const avgGhostPercent = completedWithMetrics.length > 0
-          ? completedWithMetrics.reduce((sum: number, o: any) => sum + o.metrics.avgGhostPercent, 0) / completedWithMetrics.length
-          : null;
-
-        setStats({
-          totalOrders: orders.length,
-          completedOrders: completedOrders.length,
-          totalRepos,
-          totalDevelopers,
-          avgGhostPercent,
-          recentOrders: orders.slice(0, 5),
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch stats:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      <div className="space-y-6">
+        <Skeleton className="h-10 w-48" />
+        <div className="grid gap-4 md:grid-cols-4">
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+          <Skeleton className="h-28" />
+        </div>
+        <Skeleton className="h-80 w-full" />
       </div>
     );
   }
 
+  if (isError || !data) {
+    return (
+      <div className="flex flex-col items-center justify-center p-12 space-y-4">
+        <p className="text-destructive">{t('error.title')}</p>
+        <Button onClick={() => refetch()}>{t('error.retry')}</Button>
+      </div>
+    );
+  }
+
+  if (data.workspaceStage === 'empty') {
+    return <EmptyStage t={t} />;
+  }
+
+  if (data.workspaceStage === 'first_data') {
+    return <FirstDataStage t={t} data={data} scopeQs={scopeQs} />;
+  }
+
+  return <OperationalStage t={t} data={data} scopeQs={scopeQs} />;
+}
+
+function EmptyStage({ t }: { t: (key: string) => string }) {
+  const steps = ['empty.step1', 'empty.step2', 'empty.step3'] as const;
+  return (
+    <div className="flex flex-col items-center justify-center py-24 space-y-8 text-center">
+      <div className="space-y-2">
+        <h1 className="text-3xl font-bold">{t('empty.title')}</h1>
+        <p className="text-lg text-muted-foreground max-w-md">{t('empty.description')}</p>
+      </div>
+      <ol className="space-y-3 text-left max-w-sm w-full">
+        {steps.map((key, i) => (
+          <li key={key} className="flex items-start gap-3">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-xs font-semibold">
+              {i + 1}
+            </span>
+            <span className="text-sm text-muted-foreground pt-0.5">{t(key)}</span>
+          </li>
+        ))}
+      </ol>
+      <Link href="/orders/new">
+        <Button size="lg">{t('empty.cta')}</Button>
+      </Link>
+    </div>
+  );
+}
+
+function FirstDataStage({
+  t,
+  data,
+  scopeQs,
+}: {
+  t: (key: string) => string;
+  data: any;
+  scopeQs: string;
+}) {
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">{t('title')}</h1>
-          <p className="text-muted-foreground">
-            {t('description')}
-          </p>
-        </div>
-        <Link href="/orders/new">
-          <Button>
-            <Plus className="h-4 w-4 mr-2" />
-            {t('newAnalysis')}
-          </Button>
+      <div>
+        <h1 className="text-2xl font-bold">{t('firstData.title')}</h1>
+        <p className="text-muted-foreground">{t('firstData.description')}</p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <MetricCard title={t('metrics.activeContributors')} value={data.summaryMetrics.activeContributorCount} />
+        <MetricCard title={t('metrics.activeRepositories')} value={data.summaryMetrics.activeRepositoryCount} />
+        <MetricCard title={t('metrics.commits')} value={data.summaryMetrics.totalCommits} />
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <Link href={`/people${scopeQs ? `?${scopeQs}` : ''}`}>
+          <Button>{t('firstData.peopleCta')}</Button>
+        </Link>
+        <Link href={`/repositories${scopeQs ? `?${scopeQs}` : ''}`}>
+          <Button variant="outline">{t('firstData.repositoriesCta')}</Button>
         </Link>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-4 gap-4">
+      {data.topRepositories.length > 0 && (() => {
+        const topRepo = data.topRepositories.find((r: any) => r.repositoryId) ?? data.topRepositories[0];
+        return topRepo?.repositoryId ? (
+          <Card>
+            <CardContent className="flex items-center justify-between gap-4 pt-6">
+              <div className="space-y-1">
+                <p className="font-medium">{t('firstData.teamCtaTitle')}</p>
+                <p className="text-sm text-muted-foreground">{t('firstData.teamHint')}</p>
+              </div>
+              <Link href={`/repositories/${topRepo.repositoryId}${scopeQs ? `?${scopeQs}` : ''}`}>
+                <Button variant="default">{t('firstData.teamCta')}</Button>
+              </Link>
+            </CardContent>
+          </Card>
+        ) : (
+          <Card>
+            <CardContent className="pt-6">
+              <p className="text-sm text-muted-foreground">{t('firstData.teamHint')}</p>
+            </CardContent>
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}
+
+function OperationalStage({
+  t,
+  data,
+  scopeQs,
+}: {
+  t: (key: string) => string;
+  data: any;
+  scopeQs: string;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-start gap-2">
+          <div>
+            <h1 className="text-2xl font-bold">{t('title')}</h1>
+            <p className="text-muted-foreground">{t('description')}</p>
+          </div>
+          <ScreenHelpTrigger
+            screenTitle={t('title')}
+            what={t('help.what')}
+            how={t('help.how')}
+            className="mt-1"
+          />
+        </div>
+        <Link href="/reports">
+          <Button variant="outline">{t('reportsCta')}</Button>
+        </Link>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-4">
+        <MetricCard title={t('metrics.activeTeams')} value={data.summaryMetrics.activeTeamCount} />
+        <MetricCard title={t('metrics.activeContributors')} value={data.summaryMetrics.activeContributorCount} />
+        <MetricCard title={t('metrics.activeRepositories')} value={data.summaryMetrics.activeRepositoryCount} />
+        <MetricCard title={t('metrics.commits')} value={data.summaryMetrics.totalCommits} />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.3fr_1fr]">
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <ClipboardList className="h-4 w-4" />
-              {t('stats.totalOrders')}
-            </CardDescription>
-            <CardTitle className="text-3xl">{stats?.totalOrders || 0}</CardTitle>
+          <CardHeader>
+            <CardTitle>{t('highlights.title')}</CardTitle>
+            <CardDescription>{t('highlights.description')}</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {t('stats.totalOrdersSub', { count: stats?.completedOrders || 0 })}
-            </p>
+          <CardContent className="grid gap-6 lg:grid-cols-3">
+            <ListCard
+              title={t('sections.teams')}
+              emptyLabel={t('sections.empty')}
+              items={data.topTeams.map((team: any) => ({
+                key: team.teamId,
+                label: team.name,
+                meta: `${team.memberCount} ${t('labels.members')}`,
+                href: `/teams/${team.teamId}${scopeQs ? `?${scopeQs}` : ''}`,
+              }))}
+            />
+            <ListCard
+              title={t('sections.contributors')}
+              emptyLabel={t('sections.empty')}
+              items={data.topContributors.map((contributor: any) => ({
+                key: contributor.contributorId ?? contributor.primaryEmail,
+                label: contributor.displayName,
+                meta: `${contributor.commitCount} ${t('labels.commits')}`,
+                href: contributor.contributorId
+                  ? `/people/${contributor.contributorId}${scopeQs ? `?${scopeQs}` : ''}`
+                  : undefined,
+              }))}
+            />
+            <ListCard
+              title={t('sections.repositories')}
+              emptyLabel={t('sections.empty')}
+              items={data.topRepositories.map((repository: any) => ({
+                key: repository.repositoryId ?? repository.fullName,
+                label: repository.fullName,
+                meta: `${repository.commitCount} ${t('labels.commits')}`,
+                href: repository.repositoryId
+                  ? `/repositories/${repository.repositoryId}${scopeQs ? `?${scopeQs}` : ''}`
+                  : undefined,
+              }))}
+            />
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <GitBranch className="h-4 w-4" />
-              {t('stats.repositories')}
-            </CardDescription>
-            <CardTitle className="text-3xl">{stats?.totalRepos || 0}</CardTitle>
+          <CardHeader>
+            <CardTitle>{t('freshness.title')}</CardTitle>
+            <CardDescription>{t('freshness.description')}</CardDescription>
           </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {t('stats.repositoriesSub')}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              {t('stats.developers')}
-            </CardDescription>
-            <CardTitle className="text-3xl">{stats?.totalDevelopers || 0}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {t('stats.developersSub')}
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-2">
-            <CardDescription className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4" />
-              {t('stats.avgGhost')}
-            </CardDescription>
-            <CardTitle className={`text-3xl ${ghostTextColors[ghostColor(stats?.avgGhostPercent ?? null)] ?? ''}`}>
-              {stats?.avgGhostPercent != null
-                ? `${Math.round(stats.avgGhostPercent)}%`
-                : '—'}
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              {t('stats.avgGhostSub')}
-            </p>
+          <CardContent className="grid gap-3">
+            <FreshnessRow label={t('freshness.fresh')} value={data.freshnessSummary.fresh} />
+            <FreshnessRow label={t('freshness.stale')} value={data.freshnessSummary.stale} />
+            <FreshnessRow label={t('freshness.never')} value={data.freshnessSummary.never} />
+            <div className="pt-2 text-sm text-muted-foreground">
+              {data.saveViewState.activeSavedViewId
+                ? (data.saveViewState.isDirty ? t('saveState.dirty') : t('saveState.saved'))
+                : t('saveState.adhoc')}
+            </div>
           </CardContent>
         </Card>
       </div>
+    </div>
+  );
+}
 
-      {/* Getting Started / Recent Orders */}
-      {stats?.totalOrders === 0 ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t('getStarted.title')}</CardTitle>
-            <CardDescription>
-              {t('getStarted.description')}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold">
-                1
-              </div>
-              <div>
-                <h4 className="font-medium">{t('getStarted.step1')}</h4>
-                <Link href="/settings">
-                  <Button variant="link" className="px-0 text-primary">
-                    Go to Settings <ArrowRight className="h-4 w-4 ml-1" />
-                  </Button>
-                </Link>
-              </div>
-            </div>
+function MetricCard({ title, value }: { title: string; value: number }) {
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardDescription>{title}</CardDescription>
+        <CardTitle className="text-3xl">{value}</CardTitle>
+      </CardHeader>
+    </Card>
+  );
+}
 
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold">
-                2
-              </div>
-              <div>
-                <h4 className="font-medium">{t('getStarted.step2')}</h4>
-              </div>
-            </div>
+function FreshnessRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+      <span className="text-sm text-muted-foreground">{label}</span>
+      <span className="font-semibold">{value}</span>
+    </div>
+  );
+}
 
-            <div className="flex items-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center text-primary-foreground font-bold">
-                3
-              </div>
-              <div>
-                <h4 className="font-medium">{t('getStarted.step3')}</h4>
-              </div>
-            </div>
-
-            <Link href="/orders/new">
-              <Button className="w-full mt-4">
-                <Plus className="h-4 w-4 mr-2" />
-                {t('getStarted.cta')}
-              </Button>
-            </Link>
-          </CardContent>
-        </Card>
+function ListCard({
+  title,
+  emptyLabel,
+  items,
+}: {
+  title: string;
+  emptyLabel: string;
+  items: { key: string; label: string; meta: string; href?: string }[];
+}) {
+  return (
+    <div className="space-y-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>
+      {items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">{emptyLabel}</p>
       ) : (
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle>{t('recentOrders.title')}</CardTitle>
-              <CardDescription>{t('recentOrders.description')}</CardDescription>
-            </div>
-            <Link href="/orders">
-              <Button variant="outline" size="sm">
-                {t('recentOrders.viewAll')}
-              </Button>
-            </Link>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {stats?.recentOrders.map((order) => (
-                <Link
-                  key={order.id}
-                  href={`/orders/${order.id}`}
-                  className="flex items-center justify-between p-3 rounded-lg hover:bg-muted/50 transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <ClipboardList className="h-5 w-5 text-muted-foreground" />
-                    <div>
-                      <span className="font-medium">{order.name}</span>
-                      <p className="text-sm text-muted-foreground">
-                        {tOrders('repos', { count: order.repoCount })} · {tOrders('developers', { count: order.developerCount })}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <Badge className={statusColors[order.status] || ''}>
-                      {tStatus(order.status)}
-                    </Badge>
-                    {order.metrics && (
-                      <span className={`text-sm font-medium ${ghostTextColors[ghostColor(order.metrics.avgGhostPercent)] ?? ''}`}>
-                        {t('recentOrders.ghost', { percent: Math.round(order.metrics.avgGhostPercent * 10) / 10 })}
-                      </span>
-                    )}
-                    <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+        <div className="space-y-2">
+          {items.map((item) => {
+            const content = (
+              <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+                <span className="min-w-0 flex-1 truncate font-medium" title={item.label}>
+                  {item.label}
+                </span>
+                <span className="shrink-0 whitespace-nowrap text-sm text-muted-foreground">
+                  {item.meta}
+                </span>
+              </div>
+            );
+
+            return item.href ? (
+              <Link key={item.key} href={item.href} className="block hover:opacity-90">
+                {content}
+              </Link>
+            ) : (
+              <div key={item.key}>{content}</div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

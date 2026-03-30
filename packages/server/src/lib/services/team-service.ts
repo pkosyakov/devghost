@@ -28,9 +28,15 @@ export async function listTeams(
     sort: string;
     sortOrder: 'asc' | 'desc';
     search?: string;
+    teamIds?: string[];
+    dateRange?: { from?: Date; to?: Date };
   },
 ) {
   const where: Prisma.TeamWhereInput = { workspaceId };
+
+  if (opts.teamIds?.length) {
+    where.id = { in: opts.teamIds };
+  }
 
   if (opts.search) {
     where.OR = [
@@ -93,12 +99,20 @@ export async function listTeams(
   const workspace = await prisma.workspace.findUnique({ where: { id: workspaceId } });
   type CommitRow = { repository: string; authorEmail: string; authorDate: Date | null };
   let allCommits: CommitRow[] = [];
+  const dateWhere: Prisma.DateTimeFilter = {};
+  if (opts.dateRange?.from) dateWhere.gte = opts.dateRange.from;
+  if (opts.dateRange?.to) {
+    const eod = new Date(opts.dateRange.to);
+    eod.setUTCHours(23, 59, 59, 999);
+    dateWhere.lte = eod;
+  }
 
   if (workspace && allEmails.size > 0) {
     allCommits = await prisma.commitAnalysis.findMany({
       where: {
         authorEmail: { in: Array.from(allEmails) },
         order: { userId: workspace.ownerId },
+        ...(Object.keys(dateWhere).length > 0 ? { authorDate: dateWhere } : {}),
       },
       select: { repository: true, authorEmail: true, authorDate: true },
     });
@@ -114,6 +128,15 @@ export async function listTeams(
 
   // Build enriched rows
   const now = new Date();
+  const scopeFrom = opts.dateRange?.from;
+  const scopeTo = opts.dateRange?.to
+    ? (() => {
+        const eod = new Date(opts.dateRange!.to!);
+        eod.setUTCHours(23, 59, 59, 999);
+        return eod;
+      })()
+    : undefined;
+
   const rows = teams.map((t) => {
     const activeMemberships = t.memberships.filter(
       (m) => m.effectiveFrom <= now && (!m.effectiveTo || m.effectiveTo > now),
@@ -130,6 +153,8 @@ export async function listTeams(
         if (!commits) continue;
         for (const c of commits) {
           if (!c.authorDate) continue;
+          if (scopeFrom && c.authorDate < scopeFrom) continue;
+          if (scopeTo && c.authorDate > scopeTo) continue;
           if (c.authorDate < m.effectiveFrom) continue;
           if (m.effectiveTo && c.authorDate >= m.effectiveTo) continue;
           teamRepos.add(c.repository);
@@ -184,15 +209,24 @@ export async function listTeams(
   // Compute workspace-wide summary — all three values use workspace scope,
   // not the search-filtered `where`, so the summary strip stays consistent
   // regardless of active search/filter state.
+  const summaryTeamWhere: Prisma.TeamWhereInput = {
+    workspaceId,
+    ...(opts.teamIds?.length ? { id: { in: opts.teamIds } } : {}),
+  };
+
   const [wsTeamCount, activeTeamIds, allMemberedContributors] = await Promise.all([
-    prisma.team.count({ where: { workspaceId } }),
+    prisma.team.count({ where: summaryTeamWhere }),
     prisma.teamMembership.findMany({
-      where: { team: { workspaceId }, effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }] },
+      where: {
+        team: summaryTeamWhere,
+        effectiveFrom: { lte: now },
+        OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }],
+      },
       select: { teamId: true },
       distinct: ['teamId'],
     }),
     prisma.teamMembership.findMany({
-      where: { team: { workspaceId } },
+      where: { team: summaryTeamWhere },
       select: { contributorId: true },
       distinct: ['contributorId'],
     }),
@@ -229,6 +263,140 @@ export async function createTeam(
   });
   log.info({ teamId: team.id, workspaceId }, 'Team created');
   return team;
+}
+
+export async function createTeamFromRepository(
+  workspaceId: string,
+  repositoryId: string,
+  data: {
+    name: string;
+    description?: string;
+    contributorIds: string[];
+  },
+) {
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { id: true, ownerId: true },
+  });
+  if (!workspace) return { error: 'Workspace not found' as const };
+
+  const repository = await prisma.repository.findFirst({
+    where: { id: repositoryId, workspaceId },
+    select: { id: true, fullName: true },
+  });
+  if (!repository) return { error: 'Repository not found' as const };
+
+  const requestedContributorIds = Array.from(new Set(data.contributorIds));
+  let requestedAliases: { contributorId: string; email: string }[] = [];
+  if (requestedContributorIds.length > 0) {
+    const authorEmails = await prisma.commitAnalysis.findMany({
+      where: {
+        repository: repository.fullName,
+        order: { userId: workspace.ownerId },
+      },
+      select: { authorEmail: true },
+      distinct: ['authorEmail'],
+    });
+
+    const repositoryEmailSet = new Set(authorEmails.map((row) => row.authorEmail));
+    const rawRequestedAliases = repositoryEmailSet.size > 0
+      ? await prisma.contributorAlias.findMany({
+          where: {
+            workspaceId,
+            email: { in: Array.from(repositoryEmailSet) },
+            contributorId: { in: requestedContributorIds },
+          },
+          select: { contributorId: true, email: true },
+        })
+      : [];
+    requestedAliases = rawRequestedAliases.filter(
+      (alias): alias is { contributorId: string; email: string } => !!alias.contributorId,
+    );
+
+    const allowedContributorIds = new Set(
+      requestedAliases.map((a) => a.contributorId),
+    );
+
+    const invalid = requestedContributorIds.filter((id) => !allowedContributorIds.has(id));
+    if (invalid.length > 0) {
+      return { error: 'One or more contributors are not associated with this repository' as const };
+    }
+  }
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const team = await tx.team.create({
+        data: {
+          workspaceId,
+          name: data.name,
+          description: data.description,
+        },
+      });
+
+      if (requestedContributorIds.length > 0) {
+        const aliasEmails = Array.from(new Set(requestedAliases.map((alias) => alias.email)));
+        const aliasToContributorId = new Map(
+          requestedAliases.map((alias) => [alias.email, alias.contributorId]),
+        );
+        const earliestActivityByContributor = new Map<string, Date>();
+
+        if (aliasEmails.length > 0) {
+          const repositoryCommits = await tx.commitAnalysis.findMany({
+            where: {
+              repository: repository.fullName,
+              order: { userId: workspace.ownerId },
+              authorEmail: { in: aliasEmails },
+            },
+            select: {
+              authorEmail: true,
+              authorDate: true,
+            },
+          });
+
+          for (const commit of repositoryCommits) {
+            if (!commit.authorDate) continue;
+            const contributorId = aliasToContributorId.get(commit.authorEmail);
+            if (!contributorId) continue;
+            const existing = earliestActivityByContributor.get(contributorId);
+            if (!existing || commit.authorDate < existing) {
+              earliestActivityByContributor.set(contributorId, commit.authorDate);
+            }
+          }
+        }
+
+        const now = new Date();
+        await tx.teamMembership.createMany({
+          data: requestedContributorIds.map((contributorId) => ({
+            teamId: team.id,
+            contributorId,
+            effectiveFrom: earliestActivityByContributor.get(contributorId) ?? now,
+            effectiveTo: null,
+            isPrimary: false,
+            role: null,
+          })),
+        });
+      }
+
+      return team;
+    });
+
+    log.info(
+      {
+        workspaceId,
+        repositoryId,
+        teamId: result.id,
+        memberCount: requestedContributorIds.length,
+      },
+      'Team created from repository bootstrap',
+    );
+
+    return { team: result };
+  } catch (err: any) {
+    if (err?.code === 'P2002') {
+      return { error: 'A team with this name already exists' as const };
+    }
+    throw err;
+  }
 }
 
 // ── Get team detail (contract: TeamDetail) ──
@@ -715,4 +883,194 @@ export async function getTeamRepositories(
 
   const repositories = await computeTeamRepositories(workspaceId, team.memberships, dateRange);
   return { repositories };
+}
+
+export async function getTeamMemberCandidates(
+  teamId: string,
+  workspaceId: string,
+  opts: {
+    search?: string;
+    repository?: string;
+    classification?: 'INTERNAL' | 'EXTERNAL' | 'BOT' | 'FORMER_EMPLOYEE';
+    sort: 'activity' | 'commits' | 'name' | 'repositories';
+    dateRange?: { from?: Date; to?: Date };
+  },
+) {
+  const team = await prisma.team.findFirst({
+    where: { id: teamId, workspaceId },
+    include: {
+      memberships: {
+        select: {
+          contributorId: true,
+          effectiveFrom: true,
+          effectiveTo: true,
+          contributor: {
+            select: {
+              aliases: { select: { email: true } },
+            },
+          },
+        },
+      },
+    },
+  });
+  if (!team) return null;
+
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { ownerId: true },
+  });
+  if (!workspace) return { candidates: [] };
+
+  let dateRange = opts.dateRange;
+  if (dateRange?.to) {
+    const eod = new Date(dateRange.to);
+    eod.setUTCHours(23, 59, 59, 999);
+    dateRange = { ...dateRange, to: eod };
+  }
+
+  const teamRepositories = await computeTeamRepositories(workspaceId, team.memberships, dateRange);
+  const scopedRepositoryNames = opts.repository
+    ? [opts.repository]
+    : teamRepositories.length > 0
+      ? teamRepositories.map((repo) => repo.fullName)
+      : null;
+
+  const authorDateWhere: Prisma.DateTimeFilter = {};
+  if (dateRange?.from) authorDateWhere.gte = dateRange.from;
+  if (dateRange?.to) authorDateWhere.lte = dateRange.to;
+
+  const commits = await prisma.commitAnalysis.findMany({
+    where: {
+      order: { userId: workspace.ownerId },
+      ...(scopedRepositoryNames ? { repository: { in: scopedRepositoryNames } } : {}),
+      ...(Object.keys(authorDateWhere).length > 0 ? { authorDate: authorDateWhere } : {}),
+    },
+    select: {
+      repository: true,
+      authorEmail: true,
+      authorDate: true,
+      commitHash: true,
+    },
+  });
+
+  const seenCommits = new Set<string>();
+  const uniqueCommits = commits.filter((commit) => {
+    const key = `${commit.repository}:${commit.commitHash}`;
+    if (seenCommits.has(key)) return false;
+    seenCommits.add(key);
+    return true;
+  });
+
+  const uniqueEmails = Array.from(new Set(uniqueCommits.map((commit) => commit.authorEmail)));
+  if (uniqueEmails.length === 0) {
+    return { candidates: [] };
+  }
+
+  const aliases = await prisma.contributorAlias.findMany({
+    where: {
+      workspaceId,
+      email: { in: uniqueEmails },
+      contributorId: { not: null },
+    },
+    select: {
+      email: true,
+      contributorId: true,
+      contributor: {
+        select: {
+          id: true,
+          displayName: true,
+          primaryEmail: true,
+          classification: true,
+          isExcluded: true,
+        },
+      },
+    },
+  });
+
+  const aliasByEmail = new Map(aliases.map((alias) => [alias.email, alias]));
+  const contributorAgg = new Map<string, {
+    contributorId: string;
+    displayName: string;
+    primaryEmail: string;
+    classification: 'INTERNAL' | 'EXTERNAL' | 'BOT' | 'FORMER_EMPLOYEE';
+    isExcluded: boolean;
+    commitCount: number;
+    repositoryNames: Set<string>;
+    firstActivityAt: Date | null;
+    lastActivityAt: Date | null;
+  }>();
+
+  for (const commit of uniqueCommits) {
+    const alias = aliasByEmail.get(commit.authorEmail);
+    if (!alias?.contributorId || !alias.contributor) continue;
+
+    const existing = contributorAgg.get(alias.contributorId) ?? {
+      contributorId: alias.contributorId,
+      displayName: alias.contributor.displayName,
+      primaryEmail: alias.contributor.primaryEmail,
+      classification: alias.contributor.classification as 'INTERNAL' | 'EXTERNAL' | 'BOT' | 'FORMER_EMPLOYEE',
+      isExcluded: alias.contributor.isExcluded,
+      commitCount: 0,
+      repositoryNames: new Set<string>(),
+      firstActivityAt: null,
+      lastActivityAt: null,
+    };
+
+    existing.commitCount += 1;
+    existing.repositoryNames.add(commit.repository);
+    if (commit.authorDate && (!existing.firstActivityAt || commit.authorDate < existing.firstActivityAt)) {
+      existing.firstActivityAt = commit.authorDate;
+    }
+    if (commit.authorDate && (!existing.lastActivityAt || commit.authorDate > existing.lastActivityAt)) {
+      existing.lastActivityAt = commit.authorDate;
+    }
+    contributorAgg.set(alias.contributorId, existing);
+  }
+
+  const searchNeedle = opts.search?.trim().toLowerCase();
+  let rows = Array.from(contributorAgg.values())
+    .filter((candidate) => {
+      if (opts.classification && candidate.classification !== opts.classification) {
+        return false;
+      }
+      if (!searchNeedle) return true;
+      return candidate.displayName.toLowerCase().includes(searchNeedle)
+        || candidate.primaryEmail.toLowerCase().includes(searchNeedle)
+        || Array.from(candidate.repositoryNames).some((name) => name.toLowerCase().includes(searchNeedle));
+    })
+    .map((candidate) => ({
+      contributorId: candidate.contributorId,
+      displayName: candidate.displayName,
+      primaryEmail: candidate.primaryEmail,
+      classification: candidate.classification,
+      isExcluded: candidate.isExcluded,
+      commitCount: candidate.commitCount,
+      activeRepositoryCount: candidate.repositoryNames.size,
+      repositoryNames: Array.from(candidate.repositoryNames).sort(),
+      firstActivityAt: candidate.firstActivityAt,
+      lastActivityAt: candidate.lastActivityAt,
+    }));
+
+  rows.sort((a, b) => {
+    if (opts.sort === 'name') {
+      return a.displayName.localeCompare(b.displayName);
+    }
+    if (opts.sort === 'repositories') {
+      return b.activeRepositoryCount - a.activeRepositoryCount
+        || b.commitCount - a.commitCount
+        || a.displayName.localeCompare(b.displayName);
+    }
+    if (opts.sort === 'commits') {
+      return b.commitCount - a.commitCount
+        || b.activeRepositoryCount - a.activeRepositoryCount
+        || a.displayName.localeCompare(b.displayName);
+    }
+    return (b.lastActivityAt?.getTime() ?? 0) - (a.lastActivityAt?.getTime() ?? 0)
+      || b.commitCount - a.commitCount
+      || a.displayName.localeCompare(b.displayName);
+  });
+
+  return {
+    candidates: rows.slice(0, 100),
+  };
 }

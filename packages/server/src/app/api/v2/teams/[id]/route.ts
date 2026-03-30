@@ -1,8 +1,10 @@
 import { NextRequest } from 'next/server';
 import { apiResponse, apiError, requireUserSession, isErrorResponse, parseBody } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
-import { updateTeamBodySchema, teamRepositoriesQuerySchema } from '@/lib/schemas/team';
+import { updateTeamBodySchema } from '@/lib/schemas/team';
+import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { getTeamDetail, updateTeam, deleteTeam } from '@/lib/services/team-service';
+import { resolveActiveScope, scopeDateRangeToDates } from '@/lib/services/active-scope-service';
 
 export async function GET(
   request: NextRequest,
@@ -14,15 +16,17 @@ export async function GET(
   const { id } = await params;
   const workspace = await ensureWorkspaceForUser(session.user.id);
 
-  // Optional scope date range from query params (Slice 3 local scope)
   const qp = Object.fromEntries(request.nextUrl.searchParams);
-  const scopeParsed = teamRepositoriesQuerySchema.safeParse(qp);
+  const scopeParsed = activeScopeQuerySchema.safeParse(qp);
   if (!scopeParsed.success) {
     return apiError(scopeParsed.error.errors[0].message, 400);
   }
-  const scopeRange = scopeParsed.data;
+  const scopeRange = await resolveActiveScope(workspace.id, scopeParsed.data, {
+    routeTeamId: id,
+    actorUserId: session.user.id,
+  });
 
-  const detail = await getTeamDetail(id, workspace.id, scopeRange);
+  const detail = await getTeamDetail(id, workspace.id, scopeDateRangeToDates(scopeRange.dateRange));
   if (!detail) {
     return apiError('Team not found', 404);
   }

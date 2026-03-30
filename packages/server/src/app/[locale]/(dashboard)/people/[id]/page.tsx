@@ -8,6 +8,7 @@ import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 import { ContributorHeader } from './components/contributor-header';
 import { ContributorKpiSummary } from './components/contributor-kpi-summary';
 import { ContributorAliasesPanel } from './components/contributor-aliases-panel';
@@ -72,13 +73,20 @@ function ContributorDetailPage() {
   return (
     <div className="space-y-6 p-6">
       {/* Back link preserving list state */}
-      <Link
-        href={`/people${fromParams ? `?${fromParams}` : ''}`}
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {t('backToList')}
-      </Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link
+          href={`/people${fromParams ? `?${fromParams}` : ''}`}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {t('backToList')}
+        </Link>
+        <ScreenHelpTrigger
+          screenTitle={t('help.title')}
+          what={t('help.what')}
+          how={t('help.how')}
+        />
+      </div>
 
       <ContributorHeader
         contributor={data.contributor}

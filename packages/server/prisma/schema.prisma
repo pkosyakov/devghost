@@ -63,6 +63,7 @@ model User {
   deviceTokens          DeviceToken[]
   workspace            Workspace?
   curationAuditLogs    CurationAuditLog[]
+  savedViewsOwned      SavedView[] @relation("SavedViewOwner")
 }
 
 // ==================== CONTRIBUTOR FOUNDATION ====================
@@ -78,6 +79,7 @@ model Workspace {
   repositories Repository[]
   teams        Team[]
   auditLogs    CurationAuditLog[]
+  savedViews   SavedView[]
 
   createdAt    DateTime            @default(now())
   updatedAt    DateTime            @updatedAt
@@ -226,6 +228,31 @@ model TeamMembership {
   @@index([teamId])
   @@index([contributorId])
   @@index([teamId, effectiveFrom, effectiveTo])
+}
+
+// ==================== SAVED VIEW ====================
+
+model SavedView {
+  id               String              @id @default(cuid())
+  workspaceId      String
+  workspace        Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  ownerUserId      String
+  ownerUser        User                @relation("SavedViewOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  name             String
+  visibility       SavedViewVisibility @default(PRIVATE)
+  scopeDefinition  Json
+  filterDefinition Json                @default("{}")
+  isArchived       Boolean             @default(false)
+  archivedAt       DateTime?
+
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  @@index([workspaceId, isArchived])
+  @@index([ownerUserId])
+  @@index([workspaceId, updatedAt])
 }
 
 // ==================== REFRESH TOKEN (Mobile Auth) ====================
@@ -661,6 +688,11 @@ enum CurationAction {
   EXCLUDE
   INCLUDE
   CLASSIFY
+}
+
+enum SavedViewVisibility {
+  PRIVATE
+  WORKSPACE
 }
 
 // ==================== BILLING ====================

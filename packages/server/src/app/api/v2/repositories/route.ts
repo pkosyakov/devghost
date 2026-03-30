@@ -3,6 +3,8 @@ import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { repositoryListQuerySchema } from '@/lib/schemas/repository';
+import { activeScopeQuerySchema } from '@/lib/schemas/scope';
+import { getRepositoryNamesForScope, resolveActiveScope } from '@/lib/services/active-scope-service';
 import type { Prisma } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
@@ -16,11 +18,27 @@ export async function GET(request: NextRequest) {
   if (!parsed.success) {
     return apiError(parsed.error.errors[0].message, 400);
   }
+  const parsedScope = activeScopeQuerySchema.safeParse(params);
+  if (!parsedScope.success) {
+    return apiError(parsedScope.error.errors[0].message, 400);
+  }
 
   const { page, pageSize, sort, sortOrder, language, search, freshness } = parsed.data;
+  const resolvedScope = await resolveActiveScope(workspace.id, parsedScope.data, {
+    actorUserId: session.user.id,
+  });
+  const scopedRepositoryNames = await getRepositoryNamesForScope(resolvedScope);
+
+  const scopeWhere: Prisma.RepositoryWhereInput = {
+    workspaceId: workspace.id,
+  };
+
+  if (scopedRepositoryNames) {
+    scopeWhere.fullName = { in: scopedRepositoryNames };
+  }
 
   const where: Prisma.RepositoryWhereInput = {
-    workspaceId: workspace.id,
+    ...scopeWhere,
   };
 
   if (language) {
@@ -91,14 +109,17 @@ export async function GET(request: NextRequest) {
   });
 
   // Summary stats — counts across entire workspace, not just current page
-  const wsWhere = { workspaceId: workspace.id };
+  const summaryWhere = {
+    workspaceId: workspace.id,
+    ...(scopeWhere.fullName ? { fullName: scopeWhere.fullName } : {}),
+  };
   const [totalAll, freshCount, neverCount, languageCounts] = await Promise.all([
-    prisma.repository.count({ where: wsWhere }),
-    prisma.repository.count({ where: { ...wsWhere, lastAnalyzedAt: { gte: thirtyDaysAgo } } }),
-    prisma.repository.count({ where: { ...wsWhere, lastAnalyzedAt: null } }),
+    prisma.repository.count({ where: summaryWhere }),
+    prisma.repository.count({ where: { ...summaryWhere, lastAnalyzedAt: { gte: thirtyDaysAgo } } }),
+    prisma.repository.count({ where: { ...summaryWhere, lastAnalyzedAt: null } }),
     prisma.repository.groupBy({
       by: ['language'],
-      where: { ...wsWhere, language: { not: null } },
+      where: { ...summaryWhere, language: { not: null } },
       _count: { id: true },
       orderBy: { _count: { id: 'desc' } },
       take: 10,

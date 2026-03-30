@@ -10,7 +10,12 @@
     "retry": "Retry",
     "previous": "Previous",
     "next": "Next",
-    "totalCount": "{count} total"
+    "totalCount": "{count} total",
+    "screenHelp": {
+      "buttonLabel": "How to use {screen}",
+      "purposeTitle": "Purpose",
+      "howToUseTitle": "How to use"
+    }
   },
   "layout": {
     "header": {
@@ -38,6 +43,7 @@
       "people": "People",
       "repositories": "Repositories",
       "teams": "Teams",
+      "reports": "Reports",
       "newOrder": "New order",
       "settings": "Settings",
       "profile": "Profile",
@@ -185,6 +191,162 @@
       "step2": "Run AI-powered effort analysis",
       "step3": "Review Ghost % productivity metrics",
       "cta": "Create First Analysis"
+    }
+  },
+  "home": {
+    "title": "Home",
+    "description": "Scope-aware engineering activity overview",
+    "help": {
+      "what": "This screen gives you a high-level overview of teams, contributors, repositories, and freshness for the current scope.",
+      "how": "Use the global scope bar first, then scan highlights and freshness to decide where to drill down next."
+    },
+    "reportsCta": "Open Reports",
+    "metrics": {
+      "activeTeams": "Active Teams",
+      "activeContributors": "Active Contributors",
+      "activeRepositories": "Active Repositories",
+      "commits": "Commits"
+    },
+    "highlights": {
+      "title": "Highlights",
+      "description": "The most relevant teams, contributors, and repositories in the current scope"
+    },
+    "sections": {
+      "teams": "Teams",
+      "contributors": "Contributors",
+      "repositories": "Repositories",
+      "empty": "No data in this scope"
+    },
+    "labels": {
+      "members": "members",
+      "commits": "commits"
+    },
+    "freshness": {
+      "title": "Freshness",
+      "description": "How fresh the visible repository set is",
+      "fresh": "Fresh",
+      "stale": "Stale",
+      "never": "Never analyzed"
+    },
+    "saveState": {
+      "saved": "This scope matches the active saved view.",
+      "dirty": "This scope differs from the active saved view.",
+      "adhoc": "This is an ad hoc scope. Save it if you want to reuse it."
+    },
+    "empty": {
+      "title": "Welcome to DevGhost",
+      "description": "Start by analyzing a repository to see your engineering activity.",
+      "step1": "Run your first analysis to import commits and contributors",
+      "step2": "Review contributors and repositories to confirm identity",
+      "step3": "Create your first team to unlock the full dashboard",
+      "cta": "Run first analysis"
+    },
+    "firstData": {
+      "title": "Your workspace has data",
+      "description": "Review your contributors and repositories, then create your first team to unlock the full dashboard.",
+      "peopleCta": "Review contributors",
+      "repositoriesCta": "Check repositories",
+      "teamCtaTitle": "Ready to create your first team?",
+      "teamCta": "Create first team from repository",
+      "teamHint": "Start from your most active repository — the system will suggest team members from its contributors."
+    },
+    "error": {
+      "title": "Failed to load Home",
+      "retry": "Retry"
+    }
+  },
+  "scope": {
+    "bar": {
+      "scope": "Scope",
+      "allTeams": "All Teams",
+      "teams": "Teams",
+      "savedViews": "Saved Views",
+      "from": "From",
+      "to": "To",
+      "apply": "Apply",
+      "saveView": "Save View",
+      "savedView": "Saved View",
+      "savedViewUnavailable": "Saved View Unavailable",
+      "unsavedChanges": "Unsaved Changes",
+      "loading": "Loading..."
+    },
+    "saveView": {
+      "title": "Save current scope",
+      "description": "Store this scope as a reusable saved view.",
+      "name": "Name",
+      "namePlaceholder": "e.g. Backend weekly review",
+      "visibility": "Visibility",
+      "private": "Private",
+      "workspace": "Workspace",
+      "cancel": "Cancel",
+      "submit": "Save View",
+      "saving": "Saving..."
+    }
+  },
+  "reports": {
+    "title": "Reports",
+    "description": "Saved views you can reopen and reuse",
+    "help": {
+      "what": "This screen lists saved views that capture reusable scopes for teams, repositories, contributors, and dates.",
+      "how": "Search for a saved view, open it to inspect details, or activate it to apply that scope across analytics screens."
+    },
+    "searchPlaceholder": "Search saved views...",
+    "activate": "Activate",
+    "open": "Open",
+    "archive": "Archive",
+    "restore": "Restore",
+    "includeArchived": "Include archived",
+    "empty": "No saved views yet. Save a scope from the dashboard to create your first report.",
+    "filteredEmpty": "No saved views match the current filters.",
+    "archivedBadge": "Archived",
+    "scopeKind": "{kind, select, all_teams {All teams} team {Single team} custom {Custom scope} other {Scope}}",
+    "visibility": "{value, select, private {Private} workspace {Workspace} other {Unknown}}",
+    "teamsCount": "{count} teams",
+    "repositoriesCount": "{count} repositories",
+    "contributorsCount": "{count} contributors",
+    "error": {
+      "title": "Failed to load reports",
+      "retry": "Retry"
+    }
+  },
+  "reportDetail": {
+    "description": "Inspect and manage this saved view",
+    "help": {
+      "title": "Saved View",
+      "what": "This screen shows exactly what a saved view contains: scope, filters, visibility, and whether your current URL-backed scope matches it.",
+      "how": "Use it to verify the saved scope, update its name or visibility, and activate it when you want to work inside that saved context."
+    },
+    "activate": "Activate View",
+    "back": "Back to Reports",
+    "archivedBadge": "Archived",
+    "notFound": "This saved view does not exist or you do not have access to it.",
+    "archive": "Archive",
+    "restore": "Restore",
+    "settings": {
+      "title": "Settings",
+      "description": "Basic saved view metadata",
+      "name": "Name",
+      "visibility": "Visibility",
+      "private": "Private",
+      "workspace": "Workspace",
+      "save": "Save",
+      "saving": "Saving..."
+    },
+    "scope": {
+      "title": "Resolved Scope",
+      "description": "What this view activates",
+      "kind": "Scope kind: {value}",
+      "teams": "Teams: {count}",
+      "repositories": "Repositories: {count}",
+      "contributors": "Contributors: {count}",
+      "range": "Date range: {start} -> {end}",
+      "none": "none",
+      "dirty": "Current URL-backed scope differs from this saved view.",
+      "synced": "Current URL-backed scope matches this saved view."
+    },
+    "error": {
+      "title": "Failed to load report",
+      "retry": "Retry"
     }
   },
   "orders": {
@@ -1049,6 +1211,10 @@
   },
   "people": {
     "title": "People",
+    "help": {
+      "what": "This screen shows the canonical contributor catalog for the current scope, including identity health and exclusions.",
+      "how": "Use filters to narrow the table, review the identity queue for unresolved aliases, and open contributor detail when you need to inspect one person."
+    },
     "search": {
       "placeholder": "Search contributors..."
     },
@@ -1112,6 +1278,11 @@
   },
   "contributorDetail": {
     "backToList": "Back to People",
+    "help": {
+      "title": "Contributor Detail",
+      "what": "This screen shows one contributor across aliases, repositories, and commit evidence so you can understand their canonical identity and activity.",
+      "how": "Review aliases first, then inspect repository breakdown and commit evidence before merging, classifying, or excluding the contributor."
+    },
     "header": {
       "excluded": "Excluded",
       "actions": "Actions"
@@ -1172,6 +1343,10 @@
   },
   "repositories": {
     "title": "Repositories",
+    "help": {
+      "what": "This screen is the repository catalog for the current scope, with freshness, contributor counts, and activity summaries.",
+      "how": "Use search and filters to find the repository you care about, then open detail to inspect contributors and recent activity."
+    },
     "summary": {
       "total": "Repositories",
       "fresh": "Fresh",
@@ -1216,6 +1391,27 @@
   },
   "repositoryDetail": {
     "backToList": "Back to Repositories",
+    "help": {
+      "title": "Repository Detail",
+      "what": "This screen explains one canonical repository through activity, contributors, and recent commits in the current scope.",
+      "how": "Use it to see who is active in the repository, what work is recent, and whether unresolved contributors still need identity cleanup."
+    },
+    "createTeam": {
+      "cta": "Create team from repository",
+      "title": "Create Team from Repository",
+      "name": "Team name",
+      "namePlaceholder": "e.g. Backend Core",
+    "contributors": "Suggested contributors",
+    "recentHint": "Preselected from the most recent repository activity.",
+    "selectAll": "Select all",
+      "clearAll": "Clear",
+      "commits": "{count} commits",
+      "emptyContributors": "No canonical contributors found for this repository.",
+      "submit": "Create Team",
+      "creating": "Creating...",
+      "success": "Team created from repository",
+      "error": "Failed to create team from repository"
+    },
     "header": {
       "freshness": {
         "fresh": "Fresh",
@@ -1253,6 +1449,10 @@
   },
   "teams": {
     "title": "Teams",
+    "help": {
+      "what": "This screen lists canonical teams and summarizes their member counts, repository activity, and recent work.",
+      "how": "Use it to discover the team you want, sort by recent activity or size, and open team detail to manage membership and review team-level output."
+    },
     "summary": {
       "total": "Teams",
       "active": "Active Teams",
@@ -1294,6 +1494,11 @@
   },
   "teamDetail": {
     "backToList": "Back to Teams",
+    "help": {
+      "title": "Team Detail",
+      "what": "This screen is the management view for a single team, combining membership history with repositories derived from team activity.",
+      "how": "Use it to review who belongs to the team, adjust memberships when needed, and check which repositories the team was active in for the selected period."
+    },
     "tabs": {
       "overview": "Overview",
       "members": "Members",
@@ -1337,7 +1542,33 @@
     "addMember": {
       "title": "Add Team Member",
       "contributor": "Contributor",
-      "contributorPlaceholder": "Search contributors...",
+      "contributorPlaceholder": "Search contributors, email, or repository...",
+      "candidateList": "Candidate contributors",
+      "emptyCandidates": "No contributors match the current filters.",
+      "suggestedStartDate": "Start date will be set to first known activity: {date}",
+      "advanced": {
+        "toggle": "Advanced settings"
+      },
+      "filters": {
+        "repository": "Repository",
+        "allRepositories": "All repositories",
+        "classification": "Classification",
+        "allClassifications": "All classifications",
+        "internal": "Internal",
+        "external": "External",
+        "bot": "Bot",
+        "formerEmployee": "Former employee",
+        "sort": "Sort",
+        "sortActivity": "Recent activity",
+        "sortCommits": "Most commits",
+        "sortRepositories": "Most repositories",
+        "sortName": "Name"
+      },
+      "stats": {
+        "commits": "{count} commits",
+        "repositories": "{count} repos",
+        "excluded": "Excluded"
+      },
       "effectiveFrom": "Effective from",
       "effectiveTo": "Effective to (optional)",
       "isPrimary": "Set as primary team",

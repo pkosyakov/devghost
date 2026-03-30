@@ -13,6 +13,12 @@ export const createTeamBodySchema = z.object({
   description: z.string().max(500).optional(),
 });
 
+export const createTeamFromRepositoryBodySchema = z.object({
+  name: z.string().min(1).max(100).trim(),
+  description: z.string().max(500).optional(),
+  contributorIds: z.array(z.string().min(1)).max(200).default([]),
+});
+
 export const updateTeamBodySchema = z.object({
   name: z.string().min(1).max(100).trim().optional(),
   description: z.string().max(500).nullable().optional(),
@@ -46,3 +52,10 @@ export const teamRepositoriesQuerySchema = z.object({
   (d) => !d.from || !d.to || d.from <= d.to,
   { message: 'from must be before or equal to to', path: ['to'] },
 );
+
+export const teamMemberCandidatesQuerySchema = z.object({
+  search: z.string().optional(),
+  repository: z.string().optional(),
+  classification: z.enum(['INTERNAL', 'EXTERNAL', 'BOT', 'FORMER_EMPLOYEE']).optional(),
+  sort: z.enum(['activity', 'commits', 'name', 'repositories']).default('activity'),
+});

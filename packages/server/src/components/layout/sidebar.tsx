@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
 import {
@@ -24,10 +25,12 @@ import {
   Globe,
   FolderGit2,
   UsersRound,
+  FileStack,
 } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { useQuery } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
+import { buildHrefWithActiveScope } from '@/lib/active-scope';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { LanguageSwitcher } from '@/components/language-switcher';
@@ -38,6 +41,7 @@ const navigation = [
   { nameKey: 'people', href: '/people', icon: Users },
   { nameKey: 'repositories', href: '/repositories', icon: FolderGit2 },
   { nameKey: 'teams', href: '/teams', icon: UsersRound },
+  { nameKey: 'reports', href: '/reports', icon: FileStack },
   { nameKey: 'publications', href: '/publications', icon: Share2 },
 ];
 
@@ -75,6 +79,7 @@ const MIN_ADMIN_SECTION_HEIGHT = 120;
 export function Sidebar() {
   const t = useTranslations('layout.sidebar');
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { data: session } = useSession();
   const isAdmin = session?.user?.role === 'ADMIN';
   const splitContainerRef = useRef<HTMLDivElement | null>(null);
@@ -174,15 +179,20 @@ export function Sidebar() {
     window.addEventListener('mouseup', handleMouseUp);
   }, [clampUserSectionHeight, isAdmin, userSectionHeight]);
 
+  const analyticalPaths = new Set(['/dashboard', '/people', '/repositories', '/teams', '/reports']);
+
   const primaryNavigation = (
     <nav className="h-full space-y-1 overflow-y-auto pr-1">
       {navigation.map((item) => {
         const isActive =
           pathname === item.href || pathname.startsWith(`${item.href}/`);
+        const itemHref = analyticalPaths.has(item.href)
+          ? buildHrefWithActiveScope(item.href, searchParams)
+          : item.href;
         return (
           <div key={item.nameKey}>
             <Link
-              href={item.href}
+              href={itemHref}
               className={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                 isActive

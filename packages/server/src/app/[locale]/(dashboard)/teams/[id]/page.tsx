@@ -1,13 +1,15 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslations } from 'next-intl';
-import { useParams } from 'next/navigation';
+import { useParams, useSearchParams } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@/i18n/navigation';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft } from 'lucide-react';
+import { pickActiveScopeParams } from '@/lib/active-scope';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 import { TeamHeader } from './components/team-header';
 import { TeamKpiSummary } from './components/team-kpi-summary';
 import { TeamContributors, type Membership } from './components/team-contributors';
@@ -18,20 +20,16 @@ import { EditMembershipDialog } from './components/edit-membership-dialog';
 export default function TeamDetailPage() {
   const t = useTranslations('teamDetail');
   const { id } = useParams<{ id: string }>();
+  const searchParams = useSearchParams();
   const [editingMember, setEditingMember] = useState<Membership | null>(null);
-
-  // Unified analytical scope — shared between KPI summary and repositories.
-  // Both queries use the same from/to so metrics stay consistent with the table.
-  const [scopeFrom, setScopeFrom] = useState('');
-  const [scopeTo, setScopeTo] = useState('');
-
-  const scopeParams = new URLSearchParams();
-  if (scopeFrom) scopeParams.set('from', scopeFrom);
-  if (scopeTo) scopeParams.set('to', scopeTo);
-  const scopeQs = scopeParams.toString();
+  const scopeQs = useMemo(() => pickActiveScopeParams(searchParams).toString(), [searchParams]);
+  const backHref = useMemo(() => {
+    const serialized = pickActiveScopeParams(searchParams).toString();
+    return serialized ? `/teams?${serialized}` : '/teams';
+  }, [searchParams]);
 
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['team', id, scopeFrom, scopeTo],
+    queryKey: ['team', id, scopeQs],
     queryFn: async () => {
       const url = `/api/v2/teams/${id}${scopeQs ? '?' + scopeQs : ''}`;
       const res = await fetch(url);
@@ -67,13 +65,20 @@ export default function TeamDetailPage() {
 
   return (
     <div className="space-y-6 p-6">
-      <Link
-        href="/teams"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {t('backToList')}
-      </Link>
+      <div className="flex items-center justify-between gap-3">
+        <Link
+          href={backHref}
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {t('backToList')}
+        </Link>
+        <ScreenHelpTrigger
+          screenTitle={t('help.title')}
+          what={t('help.what')}
+          how={t('help.how')}
+        />
+      </div>
 
       <TeamHeader team={data.team} />
 
@@ -88,6 +93,8 @@ export default function TeamDetailPage() {
           <h2 className="text-lg font-semibold">{t('members.title')}</h2>
           <AddMemberDialog
             teamId={id}
+            scopeQueryString={scopeQs}
+            repositoryOptions={data.repositories.map((repository: any) => repository.fullName)}
             existingContributorIds={data.contributors
               .filter((c: any) => new Date(c.effectiveFrom) <= new Date() && (!c.effectiveTo || new Date(c.effectiveTo) > new Date()))
               .map((c: any) => c.contributorId)}
@@ -103,12 +110,7 @@ export default function TeamDetailPage() {
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">{t('repositories.title')}</h2>
         <p className="text-sm text-muted-foreground">{t('repositories.description')}</p>
-        <TeamRepositories
-          teamId={id}
-          scopeFrom={scopeFrom}
-          scopeTo={scopeTo}
-          onScopeChange={(from, to) => { setScopeFrom(from); setScopeTo(to); }}
-        />
+        <TeamRepositories repositories={data.repositories} />
       </div>
 
       <EditMembershipDialog

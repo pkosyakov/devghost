@@ -14,9 +14,10 @@ import { Link } from '@/i18n/navigation';
 
 interface PeopleIdentityQueueProps {
   unresolvedCount: number;
+  activeScopeQuery: string;
 }
 
-export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProps) {
+export function PeopleIdentityQueue({ unresolvedCount, activeScopeQuery }: PeopleIdentityQueueProps) {
   const t = useTranslations('people.identityQueue');
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -26,9 +27,11 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
   const [selectedContributorId, setSelectedContributorId] = useState<string | null>(null);
 
   const { data } = useQuery({
-    queryKey: ['identity-queue'],
+    queryKey: ['identity-queue', activeScopeQuery],
     queryFn: async () => {
-      const res = await fetch('/api/v2/contributors/identity-queue?pageSize=5');
+      const query = new URLSearchParams(activeScopeQuery);
+      query.set('pageSize', '5');
+      const res = await fetch(`/api/v2/contributors/identity-queue?${query.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
@@ -37,9 +40,12 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
   });
 
   const { data: searchResults } = useQuery({
-    queryKey: ['resolve-search', search],
+    queryKey: ['resolve-search', search, activeScopeQuery],
     queryFn: async () => {
-      const res = await fetch(`/api/v2/contributors?search=${encodeURIComponent(search)}&pageSize=5`);
+      const query = new URLSearchParams(activeScopeQuery);
+      query.set('search', search);
+      query.set('pageSize', '5');
+      const res = await fetch(`/api/v2/contributors?${query.toString()}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data?.contributors ?? [];
@@ -174,7 +180,12 @@ export function PeopleIdentityQueue({ unresolvedCount }: PeopleIdentityQueueProp
               ))}
               {unresolvedCount > 5 && (
                 <Link
-                  href="/people?identityHealth=unresolved"
+                  href={`/people?${new URLSearchParams({
+                    ...(activeScopeQuery
+                      ? Object.fromEntries(new URLSearchParams(activeScopeQuery).entries())
+                      : {}),
+                    identityHealth: 'unresolved',
+                  }).toString()}`}
                   className="block text-center text-sm text-primary hover:underline mt-2"
                 >
                   {t('viewAll')}

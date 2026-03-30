@@ -4,6 +4,8 @@ import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/li
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
 import { computeIdentityHealth } from '@/lib/services/contributor-identity';
 import { contributorListQuerySchema } from '@/lib/schemas/contributor';
+import { activeScopeQuerySchema } from '@/lib/schemas/scope';
+import { getContributorIdsForScope, resolveActiveScope } from '@/lib/services/active-scope-service';
 import type { Prisma } from '@prisma/client';
 
 export async function GET(request: NextRequest) {
@@ -17,13 +19,25 @@ export async function GET(request: NextRequest) {
   if (!parsed.success) {
     return apiError(parsed.error.errors[0].message, 400);
   }
+  const parsedScope = activeScopeQuerySchema.safeParse(params);
+  if (!parsedScope.success) {
+    return apiError(parsedScope.error.errors[0].message, 400);
+  }
 
   const { page, pageSize, sort, sortOrder, classification, identityHealth, search } = parsed.data;
+  const resolvedScope = await resolveActiveScope(workspace.id, parsedScope.data, {
+    actorUserId: session.user.id,
+  });
+  const allowedContributorIds = await getContributorIdsForScope(resolvedScope);
 
   // Build where clause
   const where: Prisma.ContributorWhereInput = {
     workspaceId: workspace.id,
   };
+
+  if (allowedContributorIds) {
+    where.id = { in: allowedContributorIds };
+  }
 
   if (classification) {
     const values = classification.split(',').map((v) => v.trim());
@@ -109,16 +123,31 @@ export async function GET(request: NextRequest) {
     };
   });
 
+  const summaryWhere: Prisma.ContributorWhereInput = {
+    workspaceId: workspace.id,
+  };
+  if (allowedContributorIds !== null) {
+    summaryWhere.id = { in: allowedContributorIds };
+  }
+
   // Identity queue summary
+  const identityQueueWhere: Prisma.ContributorAliasWhereInput = {
+    workspaceId: workspace.id,
+  };
+  if (allowedContributorIds) {
+    identityQueueWhere.contributorId = { in: allowedContributorIds };
+  }
+
   const unresolvedCount = await prisma.contributorAlias.count({
-    where: { workspaceId: workspace.id, resolveStatus: 'UNRESOLVED' },
+    where: { ...identityQueueWhere, resolveStatus: 'UNRESOLVED' },
   });
   const suggestedCount = await prisma.contributorAlias.count({
-    where: { workspaceId: workspace.id, resolveStatus: 'SUGGESTED' },
+    where: { ...identityQueueWhere, resolveStatus: 'SUGGESTED' },
   });
   const excludedCount = await prisma.contributor.count({
-    where: { workspaceId: workspace.id, isExcluded: true },
+    where: { ...summaryWhere, isExcluded: true },
   });
+  const totalContributors = await prisma.contributor.count({ where: summaryWhere });
 
   return apiResponse({
     contributors: rows,
@@ -129,7 +158,7 @@ export async function GET(request: NextRequest) {
       totalPages: Math.ceil(total / pageSize),
     },
     identityQueueSummary: { unresolvedCount, suggestedCount },
-    totalContributors: total,
+    totalContributors,
     excludedCount,
   });
 }
