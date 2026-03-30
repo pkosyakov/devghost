@@ -120,7 +120,8 @@ Suggested fields:
 - `lastUpdatedAt`
 - `freshnessStatus`
 - `activeContributorCount`
-- `activePrCount`
+- `activePrCount` (optional / nullable in Slice 2 if canonical PR data is not available yet)
+- `activeCommitCount` (allowed in Slice 2 as a supporting activity field)
 - `healthStatus`
 
 ### 3. Detail read models
@@ -141,6 +142,13 @@ Should include:
 - `repositories`
 - `healthPanels`
 - `reportLinks`
+
+Slice 3 note:
+
+- until `Organization`, `SavedView`, and the global context bar exist in production, team routes are resolved inside the authenticated user's `Workspace`;
+- `scopeInfo` may be local route/query-param scope rather than global shared scope in Slice 3;
+- if canonical PR data is not yet available, `topPullRequests` may be omitted, empty, or explicitly unavailable;
+- `summaryMetrics`, `contributors`, and activity-derived `repositories` are required for a valid Slice 3 team detail payload.
 
 #### Contributor detail
 
@@ -171,10 +179,18 @@ Should include:
 - `repository`
 - `freshness`
 - `summaryMetrics`
-- `pullRequests`
+- `pullRequests` (target-state; optional or empty in Slice 2)
 - `contributors`
+- `recentCommitEvidence` (allowed in Slice 2 when PR modeling is not ready yet)
 - `anomalies`
 - `rulesAndExclusions`
+
+Slice 2 note:
+
+- `RepositoryDetail` may ship before canonical PR/work-item modeling exists;
+- in that case, `freshness`, `summaryMetrics`, `contributors`, and repository-local activity evidence are required;
+- `pullRequests` may be omitted, empty, or explicitly marked unavailable;
+- commit-backed evidence must not be labeled or grouped as canonical PRs.
 
 #### Saved view detail
 
@@ -225,6 +241,16 @@ Required actions:
 - set membership effective dates
 - set/unset primary team
 - pin/exclude repository for team
+
+Slice 3 minimum:
+
+- create team
+- update team metadata
+- add/remove contributor membership
+- set membership effective dates
+- set/unset primary team
+
+Repository pin/exclude may be deferred if repository lists are already derived from member activity and the UI does not pretend manual scope controls exist yet.
 
 ### Saved view actions
 
@@ -379,7 +405,8 @@ This is guidance, not a final route lock, but the separation of concerns is mand
 
 - derive repository freshness from latest legacy snapshot;
 - derive contributor activity from legacy commit analysis rows through a facade;
-- translate legacy mapping into canonical contributor/alias relations during migration.
+- translate legacy mapping into canonical contributor/alias relations during migration;
+- derive workspace-scoped repository catalog data from legacy orders while preserving stable canonical repository identity.
 
 ### Not allowed
 
@@ -404,6 +431,43 @@ For Slice 1, `ContributorDetail` is considered valid without a populated `pullRe
 - commit evidence is available via the separate paginated endpoint (`GET /api/v2/contributors/:id/commits`);
 - identity health is visible;
 - the UI does not pretend commit groups are canonical PRs.
+
+## Minimum contracts needed for Slice 2
+
+To start `Repository Read Model`, the minimum contracts that must exist are:
+
+- canonical `Repository` identity in schema and app code
+- workspace-scoped repository projector / backfill / best-effort sync
+- `RepositorySummaryRow[]`
+- `RepositoryDetail`
+- freshness derivation contract
+- canonical contributor reuse in repository-local read models
+
+For Slice 2, `RepositoryDetail` is considered valid without a populated `pullRequests` section if:
+
+- canonical repository identity is used in routes and read models;
+- `freshness` is visible in business terms;
+- repository-local contributors are canonical contributors rather than raw emails;
+- recent activity evidence is available without pretending commit groups are PRs.
+
+## Minimum contracts needed for Slice 3
+
+To start `Team Pivot`, the minimum contracts that must exist are:
+
+- workspace-scoped `Team` identity in schema and app code
+- workspace-scoped `TeamMembership` with effective dates and primary-team support
+- `TeamSummaryRow[]`
+- `TeamDetail`
+- minimal create/update team write actions
+- minimal membership management write actions
+- activity-derived repository list for a team
+
+For Slice 3, `TeamDetail` is considered valid without a populated `topPullRequests` section if:
+
+- `summaryMetrics` is present;
+- canonical contributors are present in team-local context;
+- repositories are derived from member activity rather than static assignment only;
+- the UI does not fake PRs or imply that global scope/saved-view behavior already exists.
 
 ## Readiness rule for builder-AI
 

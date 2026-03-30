@@ -23,6 +23,7 @@ import {
   UserCircle,
   Globe,
   FolderGit2,
+  UsersRound,
 } from 'lucide-react';
 import { signOut, useSession } from 'next-auth/react';
 import { useQuery } from '@tanstack/react-query';
@@ -36,6 +37,7 @@ const navigation = [
   { nameKey: 'orders', href: '/orders', icon: ClipboardList },
   { nameKey: 'people', href: '/people', icon: Users },
   { nameKey: 'repositories', href: '/repositories', icon: FolderGit2 },
+  { nameKey: 'teams', href: '/teams', icon: UsersRound },
   { nameKey: 'publications', href: '/publications', icon: Share2 },
 ];
 
