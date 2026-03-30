@@ -17,7 +17,10 @@ export async function GET(
   // Optional scope date range from query params (Slice 3 local scope)
   const qp = Object.fromEntries(request.nextUrl.searchParams);
   const scopeParsed = teamRepositoriesQuerySchema.safeParse(qp);
-  const scopeRange = scopeParsed.success ? scopeParsed.data : undefined;
+  if (!scopeParsed.success) {
+    return apiError(scopeParsed.error.errors[0].message, 400);
+  }
+  const scopeRange = scopeParsed.data;
 
   const detail = await getTeamDetail(id, workspace.id, scopeRange);
   if (!detail) {

@@ -125,8 +125,11 @@ export async function listTeams(
     );
     const activeContributorIds = new Set(activeMemberships.map((m) => m.contributorId));
 
-    // Derive repos and lastActivity — apply point-in-time attribution by checking
-    // whether the commit date range for (email, repo) overlaps with the membership window.
+    // Derive repos and lastActivity — approximate point-in-time attribution.
+    // Uses groupBy min/max dates to check whether the commit date range [minDate, maxDate]
+    // for (email, repo) overlaps with the membership window. This can produce false positives
+    // when all real commits fall outside the window but the range spans it. The detail view
+    // (computeTeamRepositories) applies per-commit attribution for exact results.
     const teamRepos = new Set<string>();
     let lastActivityAt: Date | null = null;
     for (const m of t.memberships) {

@@ -20,21 +20,23 @@ import { formatDistanceToNow } from 'date-fns';
 
 interface TeamRepositoriesProps {
   teamId: string;
+  scopeFrom: string;
+  scopeTo: string;
+  onScopeChange: (from: string, to: string) => void;
 }
 
-export function TeamRepositories({ teamId }: TeamRepositoriesProps) {
+export function TeamRepositories({ teamId, scopeFrom, scopeTo, onScopeChange }: TeamRepositoriesProps) {
   const t = useTranslations('teamDetail.repositories');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [appliedFrom, setAppliedFrom] = useState('');
-  const [appliedTo, setAppliedTo] = useState('');
+  // Local draft state for the date inputs; applied on button click
+  const [draftFrom, setDraftFrom] = useState(scopeFrom);
+  const [draftTo, setDraftTo] = useState(scopeTo);
 
   const queryParams = new URLSearchParams();
-  if (appliedFrom) queryParams.set('from', appliedFrom);
-  if (appliedTo) queryParams.set('to', appliedTo);
+  if (scopeFrom) queryParams.set('from', scopeFrom);
+  if (scopeTo) queryParams.set('to', scopeTo);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['team-repositories', teamId, appliedFrom, appliedTo],
+    queryKey: ['team-repositories', teamId, scopeFrom, scopeTo],
     queryFn: async () => {
       const res = await fetch(`/api/v2/teams/${teamId}/repositories?${queryParams.toString()}`);
       const json = await res.json();
@@ -50,8 +52,8 @@ export function TeamRepositories({ teamId }: TeamRepositoriesProps) {
           <Label className="text-xs">{t('from')}</Label>
           <Input
             type="date"
-            value={from}
-            onChange={(e) => setFrom(e.target.value)}
+            value={draftFrom}
+            onChange={(e) => setDraftFrom(e.target.value)}
             className="w-40"
           />
         </div>
@@ -59,18 +61,15 @@ export function TeamRepositories({ teamId }: TeamRepositoriesProps) {
           <Label className="text-xs">{t('to')}</Label>
           <Input
             type="date"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
+            value={draftTo}
+            onChange={(e) => setDraftTo(e.target.value)}
             className="w-40"
           />
         </div>
         <Button
           size="sm"
           variant="outline"
-          onClick={() => {
-            setAppliedFrom(from);
-            setAppliedTo(to);
-          }}
+          onClick={() => onScopeChange(draftFrom, draftTo)}
         >
           {t('apply')}
         </Button>

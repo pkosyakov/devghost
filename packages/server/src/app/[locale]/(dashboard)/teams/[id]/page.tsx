@@ -20,10 +20,21 @@ export default function TeamDetailPage() {
   const { id } = useParams<{ id: string }>();
   const [editingMember, setEditingMember] = useState<Membership | null>(null);
 
+  // Unified analytical scope — shared between KPI summary and repositories.
+  // Both queries use the same from/to so metrics stay consistent with the table.
+  const [scopeFrom, setScopeFrom] = useState('');
+  const [scopeTo, setScopeTo] = useState('');
+
+  const scopeParams = new URLSearchParams();
+  if (scopeFrom) scopeParams.set('from', scopeFrom);
+  if (scopeTo) scopeParams.set('to', scopeTo);
+  const scopeQs = scopeParams.toString();
+
   const { data, isLoading, isError, refetch } = useQuery({
-    queryKey: ['team', id],
+    queryKey: ['team', id, scopeFrom, scopeTo],
     queryFn: async () => {
-      const res = await fetch(`/api/v2/teams/${id}`);
+      const url = `/api/v2/teams/${id}${scopeQs ? '?' + scopeQs : ''}`;
+      const res = await fetch(url);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || 'Request failed');
       return json.data;
@@ -92,7 +103,12 @@ export default function TeamDetailPage() {
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">{t('repositories.title')}</h2>
         <p className="text-sm text-muted-foreground">{t('repositories.description')}</p>
-        <TeamRepositories teamId={id} />
+        <TeamRepositories
+          teamId={id}
+          scopeFrom={scopeFrom}
+          scopeTo={scopeTo}
+          onScopeChange={(from, to) => { setScopeFrom(from); setScopeTo(to); }}
+        />
       </div>
 
       <EditMembershipDialog

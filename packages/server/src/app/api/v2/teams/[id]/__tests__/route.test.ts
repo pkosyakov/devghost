@@ -40,8 +40,8 @@ vi.mock('@/lib/logger', () => ({
 
 const params = Promise.resolve({ id: 't1' });
 
-function makeRequest(method: string): NextRequest {
-  return new NextRequest(new URL('http://localhost/api/v2/teams/t1'), {
+function makeRequest(method: string, query = ''): NextRequest {
+  return new NextRequest(new URL(`http://localhost/api/v2/teams/t1${query ? '?' + query : ''}`), {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: method !== 'GET' && method !== 'DELETE' ? JSON.stringify({}) : undefined,
@@ -77,6 +77,14 @@ describe('GET /api/v2/teams/:id', () => {
 
     const res = await GET(makeRequest('GET'), { params });
     expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for invalid scope params (from > to)', async () => {
+    const { GET } = await import('../route');
+
+    const res = await GET(makeRequest('GET', 'from=2026-12-31&to=2025-01-01'), { params });
+    expect(res.status).toBe(400);
+    expect(mockGetTeamDetail).not.toHaveBeenCalled();
   });
 });
 
