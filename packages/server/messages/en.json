@@ -376,6 +376,13 @@
     "networkError": "Network error while deleting analysis",
     "deleteTitle": "Delete Analysis",
     "deleteConfirm": "Are you sure you want to delete this analysis?",
+    "onboardingHandoff": {
+      "title": "What's next?",
+      "description": "Your analysis is complete. Here's what to do with the results:",
+      "peopleCta": "Review contributors",
+      "repositoriesCta": "Check repositories",
+      "teamCta": "Create first team from repository"
+    },
     "detail": {
       "back": "Back",
       "analysisCost": "Analysis cost: {cost} ({tokens} tokens, {calls} calls, {model})",

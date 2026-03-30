@@ -52,11 +52,14 @@ import {
   Coins,
   AlertTriangle,
   Share2,
+  FolderGit2,
+  UsersRound,
 } from 'lucide-react';
 import { PublishModal } from '@/components/publish-modal';
 import { ShareLinkCard } from '@/components/share-link-card';
 import { useTranslations, useLocale } from 'next-intl';
 import { useToast } from '@/hooks/use-toast';
+import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 
 type ExtractedDeveloper = Developer;
 
@@ -312,6 +315,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const { data: session } = useSession();
   const { toast } = useToast();
   const t = useTranslations('orders');
+  const { data: stageData } = useWorkspaceStage();
+  const isFirstRun = stageData?.workspaceStage === 'first_data';
   const tStatus = useTranslations('status');
   const locale = useLocale();
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
@@ -1686,6 +1691,38 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {order.status === 'COMPLETED' && !analysisStarted && (
         <>
+          {isFirstRun && (
+            <Card className="border-primary/20 bg-primary/5">
+              <CardContent className="pt-6">
+                <div className="space-y-3">
+                  <div>
+                    <p className="font-medium">{t('onboardingHandoff.title')}</p>
+                    <p className="text-sm text-muted-foreground">{t('onboardingHandoff.description')}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Link href="/people">
+                      <Button variant="default" size="sm">
+                        <Users className="h-4 w-4 mr-2" />
+                        {t('onboardingHandoff.peopleCta')}
+                      </Button>
+                    </Link>
+                    <Link href="/repositories">
+                      <Button variant="outline" size="sm">
+                        <FolderGit2 className="h-4 w-4 mr-2" />
+                        {t('onboardingHandoff.repositoriesCta')}
+                      </Button>
+                    </Link>
+                    <Link href="/repositories">
+                      <Button variant="outline" size="sm">
+                        <UsersRound className="h-4 w-4 mr-2" />
+                        {t('onboardingHandoff.teamCta')}
+                      </Button>
+                    </Link>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
           <div className="flex items-center justify-between">
             {progress?.totalCostUsd != null && progress.totalCostUsd > 0 ? (
               <p className="text-sm text-muted-foreground">
