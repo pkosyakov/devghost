@@ -37,6 +37,7 @@
       "publications": "Publications",
       "people": "People",
       "repositories": "Repositories",
+      "teams": "Teams",
       "newOrder": "New order",
       "settings": "Settings",
       "profile": "Profile",
@@ -1248,6 +1249,123 @@
     "error": {
       "title": "Failed to load repository",
       "retry": "Retry"
+    }
+  },
+  "teams": {
+    "title": "Teams",
+    "summary": {
+      "total": "Teams",
+      "active": "Active Teams",
+      "members": "Members"
+    },
+    "filters": {
+      "searchPlaceholder": "Search teams..."
+    },
+    "table": {
+      "name": "Team",
+      "members": "Members",
+      "repositories": "Repositories",
+      "lastActivity": "Last Activity",
+      "created": "Created"
+    },
+    "empty": {
+      "title": "No teams yet",
+      "description": "Create your first team to start organizing contributors."
+    },
+    "filteredEmpty": {
+      "title": "No teams match your search",
+      "reset": "Reset filters"
+    },
+    "error": {
+      "title": "Failed to load teams",
+      "retry": "Retry"
+    },
+    "create": {
+      "title": "Create Team",
+      "name": "Team name",
+      "namePlaceholder": "e.g. Frontend Platform",
+      "description": "Description (optional)",
+      "descriptionPlaceholder": "What does this team work on?",
+      "submit": "Create",
+      "success": "Team created",
+      "error": "Failed to create team",
+      "duplicate": "A team with this name already exists"
+    }
+  },
+  "teamDetail": {
+    "backToList": "Back to Teams",
+    "tabs": {
+      "overview": "Overview",
+      "members": "Members",
+      "repositories": "Repositories"
+    },
+    "kpi": {
+      "members": "Members",
+      "repositories": "Repositories",
+      "lastActivity": "Last Activity"
+    },
+    "members": {
+      "title": "Team Members",
+      "name": "Name",
+      "email": "Email",
+      "role": "Role",
+      "primaryTeam": "Primary",
+      "effectiveFrom": "From",
+      "effectiveTo": "To",
+      "actions": "Actions",
+      "active": "Active",
+      "add": "Add Member",
+      "remove": "Remove",
+      "edit": "Edit",
+      "empty": "No members in this team",
+      "removeConfirm": "Remove this member from the team?"
+    },
+    "repositories": {
+      "title": "Active Repositories",
+      "description": "Repositories where team members have committed in the selected period.",
+      "name": "Repository",
+      "commits": "Commits",
+      "contributors": "Contributors",
+      "lastActivity": "Last Activity",
+      "empty": "No repository activity found for this team",
+      "dateRange": "Date Range",
+      "from": "From",
+      "to": "To",
+      "apply": "Apply"
+    },
+    "addMember": {
+      "title": "Add Team Member",
+      "contributor": "Contributor",
+      "contributorPlaceholder": "Search contributors...",
+      "effectiveFrom": "Effective from",
+      "effectiveTo": "Effective to (optional)",
+      "isPrimary": "Set as primary team",
+      "role": "Role (optional)",
+      "rolePlaceholder": "e.g. Tech Lead",
+      "submit": "Add",
+      "success": "Member added",
+      "error": "Failed to add member",
+      "alreadyMember": "This contributor is already a member"
+    },
+    "editMember": {
+      "title": "Edit Membership",
+      "submit": "Save",
+      "success": "Membership updated",
+      "error": "Failed to update membership"
+    },
+    "error": {
+      "title": "Failed to load team",
+      "notFound": "Team not found",
+      "retry": "Retry"
+    },
+    "settings": {
+      "edit": "Edit Team",
+      "delete": "Delete Team",
+      "deleteConfirm": "Are you sure? This will remove the team and all memberships.",
+      "deleteSuccess": "Team deleted",
+      "deleteError": "Failed to delete team",
+      "editSuccess": "Team updated",
+      "editError": "Failed to update team"
     }
   }
 }
