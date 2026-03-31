@@ -99,7 +99,7 @@ function FirstDataStage({
   data,
   scopeQs,
 }: {
-  t: (key: string) => string;
+  t: ReturnType<typeof useTranslations>;
   data: any;
   scopeQs: string;
 }) {
@@ -115,6 +115,26 @@ function FirstDataStage({
         <MetricCard title={t('metrics.activeRepositories')} value={data.summaryMetrics.activeRepositoryCount} />
         <MetricCard title={t('metrics.commits')} value={data.summaryMetrics.totalCommits} />
       </div>
+
+      {data.latestCompletedAnalysis && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex items-center justify-between gap-4 pt-6">
+            <div className="space-y-1">
+              <p className="font-medium">{t('firstData.latestAnalysis.title')}</p>
+              <p className="text-sm text-muted-foreground">
+                {t('firstData.latestAnalysis.subtitle', {
+                  repoCount: data.latestCompletedAnalysis.repoCount,
+                  contributorCount: data.latestCompletedAnalysis.contributorCount,
+                  commitCount: data.latestCompletedAnalysis.commitCount,
+                })}
+              </p>
+            </div>
+            <Link href={`/orders/${data.latestCompletedAnalysis.id}`}>
+              <Button>{t('firstData.latestAnalysis.cta')}</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex flex-wrap gap-3">
         <Link href={`/people${scopeQs ? `?${scopeQs}` : ''}`}>
@@ -156,7 +176,7 @@ function OperationalStage({
   data,
   scopeQs,
 }: {
-  t: (key: string) => string;
+  t: ReturnType<typeof useTranslations>;
   data: any;
   scopeQs: string;
 }) {
@@ -265,6 +285,20 @@ function OperationalStage({
             </div>
           </CardContent>
         </Card>
+
+        {data.latestCompletedAnalysis && (
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+            <span className="text-sm text-muted-foreground">
+              {t('operational.latestAnalysis.label')}
+            </span>
+            <Link
+              href={`/orders/${data.latestCompletedAnalysis.id}`}
+              className="text-sm font-medium text-primary hover:underline"
+            >
+              {data.latestCompletedAnalysis.name}
+            </Link>
+          </div>
+        )}
       </div>
     </div>
   );
