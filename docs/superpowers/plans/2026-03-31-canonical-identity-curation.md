@@ -665,14 +665,18 @@ const totalEstimate = developers
   .filter(d => !d.email || !excludedEmails.has(d.email))
   .reduce((sum, d) => sum + (d.commit_count ?? 0), 0);
 
-// After:
-const developers = (order.selectedDevelopers ?? []) as Array<{ email?: string; commitCount?: number }>;
+// After — dual fallback for legacy orders that may have either field name:
+const developers = (order.selectedDevelopers ?? []) as Array<{
+  email?: string;
+  commitCount?: number;
+  commit_count?: number;
+}>;
 const totalEstimate = developers
   .filter(d => d.email && !excludedEmails.has(d.email))
-  .reduce((sum, d) => sum + (d.commitCount ?? 0), 0);
+  .reduce((sum, d) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
 ```
 
-Note: also changed `!d.email ||` to `d.email &&` — skip devs without email instead of including them.
+Note: also changed `!d.email ||` to `d.email &&` — skip devs without email instead of including them. The `commitCount ?? commit_count` fallback ensures backward compatibility with existing persisted orders until a data migration normalizes the field name.
 
 - [ ] **Step 4: Run existing analyze tests + new test**
 
@@ -853,19 +857,115 @@ Replace lines ~1102-1262 with:
       })}
     </div>
 
-    {/* Estimated credits + Start Analysis */}
-    <div className="flex items-center justify-between pt-4 border-t">
-      <div className="text-sm text-muted-foreground">
-        {t('contributorSelector.estimated', { count: estimatedCredits })}
-      </div>
-      <Button
-        onClick={handleStartAnalysis}
-        disabled={includedCount === 0 || analyzeMutation.isPending}
-      >
-        {analyzeMutation.isPending
-          ? t('common.processing')
-          : t('contributorSelector.startAnalysis')}
-      </Button>
+    {/* Billing preflight — reuse existing balance/credit UX from READY_FOR_ANALYSIS */}
+    <div className="space-y-3 pt-4 border-t">
+      {/* LLM provider + cost info */}
+      {llmInfo && estimatedCredits > 0 && (
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Badge variant="outline" className={
+            llmInfo.provider === 'openrouter'
+              ? 'border-blue-300 text-blue-700 bg-blue-50'
+              : 'border-green-300 text-green-700 bg-green-50'
+          }>
+            {llmInfo.provider === 'openrouter' ? 'OpenRouter' : 'Ollama'}
+          </Badge>
+          <span>
+            {llmInfo.provider === 'openrouter' ? (
+              <>
+                ~<span className="font-medium text-foreground">
+                  ${(estimatedCredits * (llmInfo.costPerCommitUsd ?? 0)).toFixed(4)}
+                </span>{' '}
+                {t('detail.costForCommits', { count: estimatedCredits })}
+              </>
+            ) : (
+              <>{t('detail.freeLocalProcessing', { count: estimatedCredits })}</>
+            )}
+          </span>
+          <span className="text-xs text-muted-foreground/70">{llmInfo.model}</span>
+        </div>
+      )}
+
+      {/* Credit balance check */}
+      {balanceData && (
+        <div className={`flex items-center gap-2 text-sm rounded-md border px-3 py-2 ${
+          hasEnoughCredits
+            ? 'border-blue-200 bg-blue-50/50 text-blue-800'
+            : 'border-amber-200 bg-amber-50/50 text-amber-800'
+        }`}>
+          <Coins className="h-4 w-4 flex-shrink-0" />
+          <span>
+            {t('detail.creditsWillBeUsed', { estimated: estimatedCredits })}
+            {' '}{t('detail.creditsAvailable', { count: availableCredits })}
+          </span>
+          {!hasEnoughCredits && (
+            <span className="ml-auto text-amber-700 font-medium flex items-center gap-1">
+              <AlertTriangle className="h-3.5 w-3.5" />
+              {t('detail.deficit', { count: estimatedCredits - availableCredits })}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Start Analysis / Insufficient credits */}
+      {!canStartAnalysis && balanceData ? (
+        <div className="space-y-2">
+          <Button disabled>
+            <Play className="h-4 w-4 mr-2" />
+            {t('contributorSelector.startAnalysis')}
+          </Button>
+          <p className="text-sm text-amber-700">
+            {t('detail.notEnoughCredits')}{' '}
+            <Link href={`/${locale}/billing`} className="underline font-medium hover:text-amber-900">
+              {t('detail.buyCreditsLink')}
+            </Link>{' '}
+            {t('detail.buyCreditsToProceed')}
+          </p>
+          {isAdmin && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button
+                variant="secondary"
+                onClick={() => quickTopUpMutation.mutate(creditDeficit)}
+                disabled={quickTopUpMutation.isPending || creditDeficit <= 0 || !session?.user?.id}
+              >
+                {quickTopUpMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Coins className="h-4 w-4 mr-2" />
+                )}
+                {t('detail.adminQuickTopUp', { count: creditDeficit })}
+              </Button>
+              <span className="text-xs text-muted-foreground">
+                {t('detail.adminQuickTopUpHint')}
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {isAdmin && !hasEnoughCredits && (
+            <p className="text-xs text-amber-700">
+              {t('detail.adminCreditBypassHint')}
+            </p>
+          )}
+          <Button
+            onClick={handleStartAnalysis}
+            disabled={includedCount === 0 || analyzeMutation.isPending}
+          >
+            {analyzeMutation.isPending ? (
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            ) : (
+              <Play className="h-4 w-4 mr-2" />
+            )}
+            {t('contributorSelector.startAnalysis')}
+          </Button>
+        </div>
+      )}
+
+      {analyzeMutation.isError && (
+        <p className="text-sm text-red-600">
+          {analyzeMutation.error instanceof Error ? analyzeMutation.error.message : t('detail.analysisFailed')}
+        </p>
+      )}
     </div>
   </div>
 )}
@@ -894,7 +994,7 @@ const includedCount = allDevelopers.length - excludedDevelopers.size;
 const estimatedCredits = useMemo(() => {
   return allDevelopers
     .filter((d: any) => !excludedDevelopers.has(d.email))
-    .reduce((sum: number, d: any) => sum + (d.commitCount ?? 0), 0);
+    .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
 }, [allDevelopers, excludedDevelopers]);
 ```
 
@@ -909,6 +1009,8 @@ const handleStartAnalysis = useCallback(async () => {
 ```
 
 Update `analyzeMutation` to pass `excludedDevelopers` in the request body (find the existing mutation and add the field).
+
+The billing guardrail variables (`balanceData`, `availableCredits`, `hasEnoughCredits`, `canStartAnalysis`, `creditDeficit`, `llmInfo`, `isAdmin`, `quickTopUpMutation`) already exist in the current page component — they are used by the READY_FOR_ANALYSIS section. Reuse them in the contributor selector. If any are gated behind `order.status === 'READY_FOR_ANALYSIS'`, update the gate to also include `'DEVELOPERS_LOADED'`.
 
 - [ ] **Step 5: Remove the READY_FOR_ANALYSIS section**
 
@@ -974,14 +1076,18 @@ In `packages/server/messages/ru.json`:
 In the COMPLETED section of the order detail page, add a query for unresolved alias count and a banner:
 
 ```tsx
-// Add query near other queries in the component
+// Add query near other queries in the component.
+// Use the identity-queue endpoint — it returns the summary directly.
+// apiResponse wraps data under { data: { ... } }, so read json.data.
 const { data: identityHealth } = useQuery({
   queryKey: ['identity-health', order?.id],
   queryFn: async () => {
-    const res = await fetch('/api/v2/contributors?identityHealth=unresolved&pageSize=1');
+    const res = await fetch('/api/v2/contributors/identity-queue?pageSize=0');
     if (!res.ok) return { unresolvedCount: 0 };
-    const data = await res.json();
-    return { unresolvedCount: data.identityQueueSummary?.unresolvedCount ?? 0 };
+    const json = await res.json();
+    return {
+      unresolvedCount: json.data?.summary?.unresolvedCount ?? 0,
+    };
   },
   enabled: order?.status === 'COMPLETED',
 });
