@@ -39,8 +39,35 @@ export async function GET(
 
     const { order } = result;
 
+    // Resolve first canonical repository for handoff CTA (workspace-scoped)
+    let topCanonicalRepoId: string | null = null;
+    if (order.status === 'COMPLETED') {
+      const repoFullNames = Array.isArray(order.selectedRepos)
+        ? (order.selectedRepos as Array<{ full_name?: string; fullName?: string }>)
+            .map((r) => r.full_name ?? r.fullName)
+            .filter((n): n is string => !!n)
+        : [];
+      if (repoFullNames.length > 0) {
+        const workspace = await prisma.workspace.findUnique({
+          where: { ownerId: order.userId },
+          select: { id: true },
+        });
+        if (workspace) {
+          const match = await prisma.repository.findFirst({
+            where: {
+              workspaceId: workspace.id,
+              fullName: { in: repoFullNames },
+            },
+            select: { id: true },
+          });
+          topCanonicalRepoId = match?.id ?? null;
+        }
+      }
+    }
+
     return apiResponse({
       ...order,
+      topCanonicalRepoId,
       metrics: order.metrics.map((m) => ({
         ...m,
         totalEffortHours: Number(m.totalEffortHours ?? 0),
