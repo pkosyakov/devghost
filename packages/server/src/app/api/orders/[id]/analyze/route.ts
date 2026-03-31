@@ -209,12 +209,27 @@ export async function POST(
 
   const hasScopeUpdate = body.analysisPeriodMode !== undefined;
 
+  // If excludedDevelopers provided in request body, persist to order
+  if (body.excludedDevelopers) {
+    await prisma.order.update({
+      where: { id },
+      data: { excludedDevelopers: body.excludedDevelopers },
+    });
+  }
+
   // ── Credit estimation: estimate billable commits before reserving ──
-  const excludedEmails = new Set((order.excludedDevelopers ?? []) as string[]);
-  const developers = (order.selectedDevelopers ?? []) as Array<{ email?: string; commit_count?: number }>;
+  // Read excludedDevelopers: prefer request body, fall back to persisted order value
+  const excludedEmails = new Set(
+    (body.excludedDevelopers ?? (order.excludedDevelopers as string[]) ?? [])
+  );
+  const developers = (order.selectedDevelopers ?? []) as Array<{
+    email?: string;
+    commitCount?: number;
+    commit_count?: number;
+  }>;
   const totalEstimate = developers
-    .filter(d => !d.email || !excludedEmails.has(d.email))
-    .reduce((sum, d) => sum + (d.commit_count ?? 0), 0);
+    .filter(d => d.email && !excludedEmails.has(d.email))
+    .reduce((sum, d) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
 
   const effectivePeriodMode = (body.analysisPeriodMode ?? order.analysisPeriodMode) as EffectiveScope['mode'];
   const effectiveScope: EffectiveScope = {

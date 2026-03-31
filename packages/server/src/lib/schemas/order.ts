@@ -68,6 +68,7 @@ export const analyzeOrderSchema = z.object({
   analysisEndDate: z.string().optional(),
   analysisCommitLimit: z.number().int().positive().nullable().optional(),
   analysisYears: z.array(z.number().int()).optional(),
+  excludedDevelopers: z.array(z.string()).optional(),
 }).refine(
   (data) => {
     if (data.analysisPeriodMode === 'DATE_RANGE') {
