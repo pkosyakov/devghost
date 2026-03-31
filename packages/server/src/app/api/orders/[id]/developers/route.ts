@@ -7,6 +7,7 @@ import {
   orderAuthError,
 } from '@/lib/api-utils';
 import { analysisLogger } from '@/lib/logger';
+import { groupCommitAuthors, type CommitAuthorInput, type ExtractedDeveloper } from './grouping';
 
 interface GitHubCommit {
   sha: string;
@@ -22,17 +23,6 @@ interface GitHubCommit {
     login: string;
     avatar_url: string;
   } | null;
-}
-
-interface ExtractedDeveloper {
-  email: string;
-  name: string;
-  login: string | null;
-  avatarUrl: string | null;
-  commitCount: number;
-  repositories: string[];
-  firstCommitAt: string;
-  lastCommitAt: string;
 }
 
 interface SelectedRepo {
@@ -88,85 +78,6 @@ async function fetchRepoCommits(
   }
 
   return commits;
-}
-
-/**
- * Extract unique developers from commits using multi-strategy matching
- */
-function extractDevelopers(
-  commits: GitHubCommit[],
-  repoName: string,
-  existingDevs: Map<string, ExtractedDeveloper>
-): Map<string, ExtractedDeveloper> {
-  for (const commit of commits) {
-    const email = commit.commit.author.email?.toLowerCase() || '';
-    const name = commit.commit.author.name || '';
-    const login = commit.author?.login || null;
-    const avatarUrl = commit.author?.avatar_url || null;
-    const commitDate = commit.commit.author.date;
-
-    if (!email && !name) continue;
-
-    // Multi-strategy matching for deduplication
-    let matchKey: string | null = null;
-
-    // Strategy 1: GitHub login (most reliable)
-    if (login) {
-      for (const [key, dev] of existingDevs.entries()) {
-        if (dev.login === login) {
-          matchKey = key;
-          break;
-        }
-      }
-    }
-
-    // Strategy 2: Exact email match
-    if (!matchKey && email) {
-      if (existingDevs.has(email)) {
-        matchKey = email;
-      }
-    }
-
-    // Strategy 3: Exact name match (fallback)
-    if (!matchKey && name) {
-      for (const [key, dev] of existingDevs.entries()) {
-        if (dev.name.toLowerCase() === name.toLowerCase()) {
-          matchKey = key;
-          break;
-        }
-      }
-    }
-
-    if (matchKey) {
-      // Update existing developer
-      const dev = existingDevs.get(matchKey)!;
-      dev.commitCount++;
-      if (!dev.repositories.includes(repoName)) {
-        dev.repositories.push(repoName);
-      }
-      // Update login/avatar if we found it
-      if (login && !dev.login) dev.login = login;
-      if (avatarUrl && !dev.avatarUrl) dev.avatarUrl = avatarUrl;
-      // Update date range
-      if (commitDate < dev.firstCommitAt) dev.firstCommitAt = commitDate;
-      if (commitDate > dev.lastCommitAt) dev.lastCommitAt = commitDate;
-    } else {
-      // Create new developer entry
-      const key = email || name.toLowerCase();
-      existingDevs.set(key, {
-        email,
-        name,
-        login,
-        avatarUrl,
-        commitCount: 1,
-        repositories: [repoName],
-        firstCommitAt: commitDate,
-        lastCommitAt: commitDate,
-      });
-    }
-  }
-
-  return existingDevs;
 }
 
 /**
@@ -292,11 +203,10 @@ export async function POST(
     }
     // For ALL_TIME mode, since/until/maxCommits remain undefined (fetch all commits)
 
-    // Extract developers from all repos (parallel fetching)
-    const developersMap = new Map<string, ExtractedDeveloper>();
-    let totalCommits = 0;
-
     // Fetch all repos in parallel for better performance
+    let totalCommits = 0;
+    const allAuthors: CommitAuthorInput[] = [];
+
     const repoResults = await Promise.all(
       selectedRepos.map(async (repo) => {
         try {
@@ -316,13 +226,22 @@ export async function POST(
       })
     );
 
-    // Process results sequentially (extractDevelopers mutates the map)
+    // Flatten commits into CommitAuthorInput records
     for (const result of repoResults) {
       totalCommits += result.commits.length;
-      extractDevelopers(result.commits, result.repoName, developersMap);
+      for (const commit of result.commits) {
+        allAuthors.push({
+          email: commit.commit.author.email?.toLowerCase() || '',
+          name: commit.commit.author.name || '',
+          login: commit.author?.login || null,
+          avatarUrl: commit.author?.avatar_url || null,
+          date: commit.commit.author.date,
+          repoName: result.repoName,
+        });
+      }
     }
 
-    const developers = Array.from(developersMap.values());
+    const developers = groupCommitAuthors(allAuthors);
     developers.sort((a, b) => b.commitCount - a.commitCount);
 
     // Calculate available date range from all developers
