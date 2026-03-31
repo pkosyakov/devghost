@@ -41,3 +41,10 @@ export {
   backfillAllRepositories,
   extractReposFromOrder,
 } from './repository-projector';
+
+export {
+  computeBillingPreview,
+  type BillingPreviewScope,
+  type BillingPreviewInput,
+  type BillingPreviewResult,
+} from './analysis-billing-preview';
