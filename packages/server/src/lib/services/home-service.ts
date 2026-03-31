@@ -10,6 +10,50 @@ import {
 import { listTeams } from '@/lib/services/team-service';
 import type { ActiveScopeQuery } from '@/lib/schemas/scope';
 
+export async function getLatestCompletedAnalysis(userId: string) {
+  const order = await prisma.order.findFirst({
+    where: { userId, status: 'COMPLETED' },
+    orderBy: { completedAt: 'desc' },
+    select: {
+      id: true,
+      name: true,
+      completedAt: true,
+    },
+  });
+
+  if (!order || !order.completedAt) return null;
+
+  // contributorCount: distinct emails from completed ALL_TIME metrics
+  const metricRows = await prisma.orderMetric.findMany({
+    where: { orderId: order.id, periodType: 'ALL_TIME' },
+    select: { developerEmail: true },
+  });
+  const distinctContributors = new Set(metricRows.map((r) => r.developerEmail));
+
+  // commitCount and repoCount: from base analysis rows only (jobId: null excludes benchmarks)
+  const baseWhere = { orderId: order.id, jobId: null };
+
+  const commitCount = await prisma.commitAnalysis.count({
+    where: baseWhere,
+  });
+
+  const repoRows = await prisma.commitAnalysis.findMany({
+    where: baseWhere,
+    select: { repository: true },
+    distinct: ['repository'],
+  });
+  const repoCount = repoRows.length;
+
+  return {
+    id: order.id,
+    name: order.name,
+    completedAt: order.completedAt.toISOString(),
+    repoCount,
+    contributorCount: distinctContributors.size,
+    commitCount,
+  };
+}
+
 export async function getHomeDetail(
   workspaceId: string,
   actorUserId: string,
@@ -258,6 +302,8 @@ export async function getHomeDetail(
     }
   }
 
+  const latestCompletedAnalysis = await getLatestCompletedAnalysis(workspace.ownerId);
+
   return {
     workspaceStage,
     resolvedScope: serializeResolvedScope(scope),
@@ -298,5 +344,6 @@ export async function getHomeDetail(
       needsFirstSavedView: workspaceTeamCount > 0 && savedViewCount === 0,
       savedViewCount,
     },
+    latestCompletedAnalysis,
   };
 }
