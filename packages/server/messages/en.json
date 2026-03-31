@@ -473,6 +473,7 @@
       "commitTimelineHideChildren": "Hide FD children",
       "commitTimelineLegendCommit": "Commit run",
       "commitTimelineLegendFdChild": "FD child run",
+      "cancel": "Cancel",
       "cancelling": "Cancelling...",
       "preparing": "Preparing...",
       "commitsProgress": "{current} / {total} commits",

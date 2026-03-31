@@ -473,6 +473,7 @@
       "commitTimelineHideChildren": "Скрыть FD-дочерние",
       "commitTimelineLegendCommit": "Запуск коммита",
       "commitTimelineLegendFdChild": "FD-дочерний запуск",
+      "cancel": "Отмена",
       "cancelling": "Отмена...",
       "preparing": "Подготовка...",
       "commitsProgress": "{current} / {total} коммитов",
