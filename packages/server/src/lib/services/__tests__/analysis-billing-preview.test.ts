@@ -103,8 +103,10 @@ describe('computeBillingPreview — first-run path', () => {
     expect(result.estimatedCredits).toBe(13);
   });
 
-  it('subtracts cross-order cache from total', async () => {
-    mockedPrisma.$queryRaw.mockResolvedValue([{ count: 3 }]);
+  it('does not subtract cross-order cache (no hash-level join possible)', async () => {
+    // Even if cross-order cache exists, first-run cannot verify hash overlap
+    // with the current order's actual commit set. Subtracting would risk
+    // under-reservation → CREDIT_EXHAUSTED. billable = total always.
     const input = makeInput({
       selectedDevelopers: [{ email: 'a@x.com', commitCount: 10 }],
     });
@@ -112,26 +114,11 @@ describe('computeBillingPreview — first-run path', () => {
     const result = await computeBillingPreview(input);
 
     expect(result.totalScopedCommits).toBe(10);
-    expect(result.reusableCachedCommits).toBe(3);
-    expect(result.billableCommits).toBe(7);
-    expect(result.estimatedCredits).toBe(7);
-  });
-
-  it('keeps 1-credit safety margin when cross-order cache covers all commits (no hash-level join)', async () => {
-    mockedPrisma.$queryRaw.mockResolvedValue([{ count: 15 }]);
-    const input = makeInput({
-      selectedDevelopers: [{ email: 'a@x.com', commitCount: 10 }],
-    });
-
-    const result = await computeBillingPreview(input);
-
-    expect(result.totalScopedCommits).toBe(10);
-    // Cache is capped at total
-    expect(result.reusableCachedCommits).toBe(10);
-    // First-run safety: billable stays 1 because we cannot hash-join cache
-    // against the current order's actual commit set
-    expect(result.billableCommits).toBe(1);
-    expect(result.estimatedCredits).toBe(1);
+    expect(result.reusableCachedCommits).toBe(0);
+    expect(result.billableCommits).toBe(10);
+    expect(result.estimatedCredits).toBe(10);
+    // $queryRaw should NOT be called for cross-order cache on first-run
+    expect(mockedPrisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('excludes specified emails', async () => {
@@ -189,7 +176,7 @@ describe('computeBillingPreview — first-run path', () => {
     expect(result.totalScopedCommits).toBe(20);
   });
 
-  it('returns zero cache when cacheMode is off', async () => {
+  it('cacheMode off still returns full total (first-run never subtracts cache)', async () => {
     const input = makeInput({
       cacheMode: 'off',
       selectedDevelopers: [{ email: 'a@x.com', commitCount: 10 }],
@@ -199,8 +186,6 @@ describe('computeBillingPreview — first-run path', () => {
 
     expect(result.reusableCachedCommits).toBe(0);
     expect(result.billableCommits).toBe(10);
-    // $queryRaw should NOT be called for cross-order cache when cacheMode is off
-    expect(mockedPrisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it('returns zero for empty selectedDevelopers', async () => {

@@ -134,62 +134,6 @@ function computeFirstRunTotal(
   return total;
 }
 
-async function queryCrossOrderCache(
-  userId: string,
-  orderId: string,
-  repoNames: string[],
-  excludedEmails: string[],
-  cacheMode: 'any' | 'model' | 'off',
-  llmModel: string | null,
-  scope: BillingPreviewScope,
-): Promise<number> {
-  if (cacheMode === 'off' || repoNames.length === 0) return 0;
-
-  const scopeFilter = buildScopeFilter(scope);
-  const excludedFilter = buildExcludedFilter(excludedEmails);
-  const cacheFilter = buildCacheFilter(cacheMode, orderId, llmModel);
-
-  const baseWhere = Prisma.sql`
-    ca."jobId" IS NULL
-    AND ca.method != 'error'
-    AND ca.repository IN (${Prisma.join(repoNames)})
-    AND ca."orderId" != ${orderId}
-    AND o."userId" = ${userId}
-    AND o.status = 'COMPLETED'
-    ${cacheFilter}
-    ${scopeFilter}
-    ${excludedFilter}
-  `;
-
-  if (scope.mode === 'LAST_N_COMMITS' && scope.commitLimit && scope.commitLimit > 0) {
-    const rows = await prisma.$queryRaw<{ count: number }[]>`
-      WITH candidate AS (
-        SELECT ca."commitHash", MAX(ca."authorDate") AS "authorDate"
-        FROM "CommitAnalysis" ca
-        JOIN "Order" o ON o.id = ca."orderId"
-        WHERE ${baseWhere}
-        GROUP BY ca."commitHash"
-      ),
-      ranked AS (
-        SELECT "commitHash"
-        FROM candidate
-        ORDER BY "authorDate" DESC
-        LIMIT ${scope.commitLimit}
-      )
-      SELECT COUNT(*)::int AS count FROM ranked
-    `;
-    return rows[0]?.count ?? 0;
-  }
-
-  const rows = await prisma.$queryRaw<{ count: number }[]>`
-    SELECT COUNT(DISTINCT ca."commitHash")::int AS count
-    FROM "CommitAnalysis" ca
-    JOIN "Order" o ON o.id = ca."orderId"
-    WHERE ${baseWhere}
-  `;
-  return rows[0]?.count ?? 0;
-}
-
 // ── Re-run path ────────────────────────────────────────────
 
 async function computeRerunPreview(
@@ -327,54 +271,28 @@ export async function computeBillingPreview(
 
   if (existingRows === 0) {
     // ── First-run path ──
+    // On first-run there are no CommitAnalysis rows for this order, so we
+    // cannot hash-join cross-order cache against the actual commit set.
+    // Subtracting a cross-order cache count from the flat aggregate would be
+    // speculation — if the cache is overstated the analyze route under-reserves
+    // and the worker can fail mid-run with CREDIT_EXHAUSTED.
+    //
+    // Conservative strategy: reserve the full total from the selectedDevelopers
+    // aggregate. The worker releases unused reservation after the run completes.
+    // Re-run path (below) has authoritative hash-level data and subtracts cache
+    // precisely.
     const total = computeFirstRunTotal(selectedDevelopers, excludedEmails, scope);
 
-    if (total === 0) {
-      return {
-        totalScopedCommits: 0,
-        reusableCachedCommits: 0,
-        billableCommits: 0,
-        estimatedCredits: 0,
-        isFirstRunEstimate: true,
-      };
-    }
-
-    const cached = cacheMode === 'off'
-      ? 0
-      : await queryCrossOrderCache(
-          userId, orderId, repoNames, excludedEmails,
-          cacheMode, llmModel, scope,
-        );
-
-    const cappedCache = Math.min(cached, total);
-    let billable = Math.max(0, total - cappedCache);
-
-    // First-run safety: cross-order cache counts hashes from other orders but
-    // we cannot hash-join them against the current order's actual commit set
-    // (which doesn't exist yet). If cache subtraction drives billable to 0 but
-    // total > 0, keep a 1-credit safety margin so the analyze route still
-    // reserves credits. This avoids CREDIT_EXHAUSTED when the worker encounters
-    // commits that weren't in the cross-order cache after all.
-    // This is NOT the old universal Math.max(1) — it only applies to first-run
-    // where hash-level verification is impossible.
-    if (total > 0 && billable === 0) {
-      billable = 1;
-      log.debug(
-        { total, cached: cappedCache },
-        'First-run safety: cache >= total but no hash-level join — keeping 1-credit floor',
-      );
-    }
-
     log.info(
-      { total, cached: cappedCache, billable, isFirstRun: true },
-      'Billing preview computed (first-run)',
+      { total, billable: total, isFirstRun: true },
+      'Billing preview computed (first-run, no cache subtraction)',
     );
 
     return {
       totalScopedCommits: total,
-      reusableCachedCommits: cappedCache,
-      billableCommits: billable,
-      estimatedCredits: billable,
+      reusableCachedCommits: 0,
+      billableCommits: total,
+      estimatedCredits: total,
       isFirstRunEstimate: true,
     };
   }
