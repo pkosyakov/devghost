@@ -7,20 +7,13 @@ import { getAvailableBalance, isBillingEnabled, runExpiryGuard } from '@/lib/ser
 import { getLlmConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext } from '@/lib/services/model-context';
+import { computeBillingPreview, type BillingPreviewScope } from '@/lib/services/analysis-billing-preview';
 import { analysisLogger, billingLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { analyzeOrderSchema } from '@/lib/schemas';
 import { z } from 'zod';
 
 type AnalyzeRequestBody = z.infer<typeof analyzeOrderSchema>;
-
-type EffectiveScope = {
-  mode: 'ALL_TIME' | 'SELECTED_YEARS' | 'DATE_RANGE' | 'LAST_N_COMMITS';
-  years: number[];
-  startDate: Date | null;
-  endDate: Date | null;
-  commitLimit: number | null;
-};
 
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -29,134 +22,6 @@ function toFiniteNumber(value: unknown): number | null {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
-}
-
-function parseRepoNames(raw: unknown): string[] {
-  if (!Array.isArray(raw)) return [];
-  const names = new Set<string>();
-  for (const item of raw) {
-    if (!item || typeof item !== 'object') continue;
-    const obj = item as Record<string, unknown>;
-    const fullName = obj.fullName ?? obj.full_name;
-    if (typeof fullName === 'string' && fullName.trim()) {
-      names.add(fullName.trim());
-    }
-  }
-  return [...names];
-}
-
-function parseYears(raw: unknown): number[] {
-  if (!Array.isArray(raw)) return [];
-  const years = new Set<number>();
-  for (const item of raw) {
-    const n = toFiniteNumber(item);
-    if (n == null) continue;
-    const year = Math.trunc(n);
-    if (year > 0) years.add(year);
-  }
-  return [...years].sort((a, b) => a - b);
-}
-
-function toDateOrNull(value: unknown): Date | null {
-  if (!value) return null;
-  const date = value instanceof Date ? value : new Date(String(value));
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-async function estimateReusableCachedCommits(params: {
-  userId: string;
-  currentOrderId: string;
-  selectedRepos: unknown;
-  excludedEmails: string[];
-  cacheMode: 'any' | 'model' | 'off';
-  llmModel: string | null;
-  scope: EffectiveScope;
-}): Promise<number> {
-  const {
-    userId,
-    currentOrderId,
-    selectedRepos,
-    excludedEmails,
-    cacheMode,
-    llmModel,
-    scope,
-  } = params;
-
-  if (cacheMode === 'off') return 0;
-
-  const repoNames = parseRepoNames(selectedRepos);
-  if (repoNames.length === 0) return 0;
-
-  const scopeFilter = (() => {
-    if (scope.mode === 'DATE_RANGE' && scope.startDate && scope.endDate) {
-      return Prisma.sql`AND ca."authorDate" >= ${scope.startDate} AND ca."authorDate" <= ${scope.endDate}`;
-    }
-    if (scope.mode === 'SELECTED_YEARS' && scope.years.length > 0) {
-      const yearPredicates = scope.years.map((year) => Prisma.sql`
-        (ca."authorDate" >= ${new Date(`${year}-01-01T00:00:00.000Z`)}
-         AND ca."authorDate" < ${new Date(`${year + 1}-01-01T00:00:00.000Z`)})
-      `);
-      return Prisma.sql`AND (${Prisma.join(yearPredicates, ' OR ')})`;
-    }
-    return Prisma.empty;
-  })();
-
-  const excludedEmailsFilter = excludedEmails.length > 0
-    ? Prisma.sql`AND ca."authorEmail" NOT IN (${Prisma.join(excludedEmails)})`
-    : Prisma.empty;
-
-  const crossOrderModelFilter = cacheMode === 'model'
-    ? (
-        llmModel
-          ? Prisma.sql`AND (ca."orderId" = ${currentOrderId} OR ca."llmModel" = ${llmModel} OR ca."llmModel" IS NULL)`
-          : Prisma.sql`AND ca."orderId" = ${currentOrderId}`
-      )
-    : Prisma.empty;
-
-  const baseWhere = Prisma.sql`
-    ca."jobId" IS NULL
-    AND ca.method != 'error'
-    AND ca.repository IN (${Prisma.join(repoNames)})
-    AND (
-      ca."orderId" = ${currentOrderId}
-      OR (
-        ca."orderId" != ${currentOrderId}
-        AND o."userId" = ${userId}
-        AND o.status = 'COMPLETED'
-      )
-    )
-    ${crossOrderModelFilter}
-    ${scopeFilter}
-    ${excludedEmailsFilter}
-  `;
-
-  if (scope.mode === 'LAST_N_COMMITS' && scope.commitLimit && scope.commitLimit > 0) {
-    const rows = await prisma.$queryRaw<{ count: number }[]>`
-      WITH candidate AS (
-        SELECT ca."commitHash", MAX(ca."authorDate") AS "authorDate"
-        FROM "CommitAnalysis" ca
-        JOIN "Order" o ON o.id = ca."orderId"
-        WHERE ${baseWhere}
-        GROUP BY ca."commitHash"
-      ),
-      ranked AS (
-        SELECT "commitHash"
-        FROM candidate
-        ORDER BY "authorDate" DESC
-        LIMIT ${scope.commitLimit}
-      )
-      SELECT COUNT(*)::int AS count FROM ranked
-    `;
-    return rows[0]?.count ?? 0;
-  }
-
-  const rows = await prisma.$queryRaw<{ count: number }[]>`
-    SELECT COUNT(DISTINCT ca."commitHash")::int AS count
-    FROM "CommitAnalysis" ca
-    JOIN "Order" o ON o.id = ca."orderId"
-    WHERE ${baseWhere}
-  `;
-  return rows[0]?.count ?? 0;
 }
 
 // POST /api/orders/[id]/analyze — Create analysis job and run pipeline
@@ -209,62 +74,58 @@ export async function POST(
 
   const hasScopeUpdate = body.analysisPeriodMode !== undefined;
 
-  // ── Credit estimation: estimate billable commits before reserving ──
-  const excludedEmails = new Set((order.excludedDevelopers ?? []) as string[]);
-  const developers = (order.selectedDevelopers ?? []) as Array<{ email?: string; commit_count?: number }>;
-  const totalEstimate = developers
-    .filter(d => !d.email || !excludedEmails.has(d.email))
-    .reduce((sum, d) => sum + (d.commit_count ?? 0), 0);
-
-  const effectivePeriodMode = (body.analysisPeriodMode ?? order.analysisPeriodMode) as EffectiveScope['mode'];
-  const effectiveScope: EffectiveScope = {
-    mode: effectivePeriodMode,
-    years: parseYears(body.analysisYears ?? order.analysisYears ?? []),
-    startDate: toDateOrNull(body.analysisStartDate ?? order.analysisStartDate),
-    endDate: toDateOrNull(body.analysisEndDate ?? order.analysisEndDate),
-    commitLimit: toFiniteNumber(body.analysisCommitLimit ?? order.analysisCommitLimit),
-  };
-
-  // Subtract known cache hits estimate (same order + eligible cross-order cache).
-  // Skip subtraction when cache is disabled or force-recalculate is requested.
-  const estimateUsesCache = cacheMode !== 'off' && body.forceRecalculate !== true;
-  let cachedCount = 0;
-  if (estimateUsesCache) {
-    let llmModel: string | null = null;
-    if (cacheMode === 'model') {
-      try {
-        const llmConfig = await getLlmConfig();
-        llmModel = llmConfig.provider === 'openrouter'
-          ? llmConfig.openrouter.model
-          : llmConfig.ollama.model;
-      } catch (err) {
-        analysisLogger.warn({ err, orderId: id }, 'Failed to load llm config for cache-aware estimate');
-      }
-    }
-
-    cachedCount = await estimateReusableCachedCommits({
-      userId: session.user.id,
-      currentOrderId: order.id,
-      selectedRepos: order.selectedRepos,
-      excludedEmails: [...excludedEmails],
-      cacheMode,
-      llmModel,
-      scope: effectiveScope,
+  // If excludedDevelopers provided in request body, persist to order
+  if (body.excludedDevelopers !== undefined) {
+    await prisma.order.update({
+      where: { id },
+      data: { excludedDevelopers: body.excludedDevelopers },
     });
   }
 
-  let estimatedCredits = Math.max(1, totalEstimate - cachedCount);
+  // ── Credit estimation via shared billing preview service ──
+  const excludedEmails = [
+    ...new Set(body.excludedDevelopers ?? (order.excludedDevelopers as string[]) ?? []),
+  ];
 
-  // Cap at commit limit for LAST_N mode to avoid over-estimation
-  const effectiveCommitLimit = effectiveScope.commitLimit;
-  if (effectivePeriodMode === 'LAST_N_COMMITS' && effectiveCommitLimit) {
-    estimatedCredits = Math.min(estimatedCredits, effectiveCommitLimit);
-  }
+  const effectivePeriodMode = (body.analysisPeriodMode ?? order.analysisPeriodMode ?? 'ALL_TIME') as BillingPreviewScope['mode'];
+  const effectiveScope: BillingPreviewScope = {
+    mode: effectivePeriodMode,
+    years: (() => {
+      const raw = body.analysisYears ?? order.analysisYears ?? [];
+      if (!Array.isArray(raw)) return [];
+      return raw.filter((n): n is number => typeof n === 'number' && Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+    })(),
+    startDate: (() => {
+      const v = body.analysisStartDate ?? order.analysisStartDate;
+      if (!v) return null;
+      const d = v instanceof Date ? v : new Date(String(v));
+      return Number.isNaN(d.getTime()) ? null : d;
+    })(),
+    endDate: (() => {
+      const v = body.analysisEndDate ?? order.analysisEndDate;
+      if (!v) return null;
+      const d = v instanceof Date ? v : new Date(String(v));
+      return Number.isNaN(d.getTime()) ? null : d;
+    })(),
+    commitLimit: toFiniteNumber(body.analysisCommitLimit ?? order.analysisCommitLimit),
+  };
+
+  const billingPreview = await computeBillingPreview({
+    userId: session.user.id,
+    orderId: order.id,
+    selectedRepos: (order.selectedRepos ?? []) as Array<Record<string, unknown>>,
+    selectedDevelopers: (order.selectedDevelopers ?? []) as Array<Record<string, unknown>>,
+    excludedEmails,
+    cacheMode: body.forceRecalculate ? 'off' : cacheMode,
+    scope: effectiveScope,
+  });
+
+  const estimatedCredits = billingPreview.estimatedCredits;
 
   const shouldBill = isBillingEnabled() && session.user.role !== 'ADMIN';
 
   // ── Pre-check: does user have enough available credits? ──
-  if (shouldBill) {
+  if (shouldBill && estimatedCredits > 0) {
     const balance = await getAvailableBalance(session.user.id);
     if (balance.available < estimatedCredits) {
       billingLogger.warn(
@@ -308,7 +169,7 @@ export async function POST(
         },
       });
 
-      if (shouldBill) {
+      if (shouldBill && estimatedCredits > 0) {
         // Expire stale subscription credits before reservation check
         await runExpiryGuard(tx, session.user.id);
 

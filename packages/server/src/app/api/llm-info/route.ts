@@ -31,5 +31,6 @@ export async function GET() {
         ? settings?.openrouterModel || 'qwen/qwen3-coder-next'
         : settings?.ollamaModel || 'qwen2.5-coder:32b',
     costPerCommitUsd,
+    costIsApproximate: true,
   });
 }

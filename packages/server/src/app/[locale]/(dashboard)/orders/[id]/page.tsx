@@ -23,28 +23,21 @@ import { CommitProcessingTimeline } from '@/components/commit-processing-timelin
 import { EffortTimeline } from '@/components/effort-timeline';
 import type { PipelineLogEntry } from '@/components/pipeline-log';
 import type { AnalysisEventEntry } from '@/components/analysis-event-log';
-import { DeveloperGroupCard } from '@/components/developer-group';
-import type { Developer } from '@/components/developer-card';
-import type { DeveloperGroup } from '@/lib/deduplication';
-import { detectDuplicates } from '@/lib/deduplication';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { EditScopePanel, type AnalysisPeriodSettings } from '@/components/edit-scope-panel';
 import { GHOST_NORM, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
 import { Link } from '@/i18n/navigation';
 import {
   Loader2,
   ChevronLeft,
+  ChevronDown,
+  ChevronUp,
   Play,
   RefreshCw,
   AlertCircle,
   Users,
-  CheckCircle2,
-  Merge,
-  MousePointerClick,
-  CheckSquare,
-  XSquare,
-  Save,
-  ChevronDown,
-  ChevronUp,
   Terminal,
   Square,
   Settings2,
@@ -60,8 +53,6 @@ import { ShareLinkCard } from '@/components/share-link-card';
 import { useTranslations, useLocale } from 'next-intl';
 import { useToast } from '@/hooks/use-toast';
 import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
-
-type ExtractedDeveloper = Developer;
 
 // Fetch analysis details
 async function fetchOrder(id: string) {
@@ -325,15 +316,11 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [ghostNormMode, setGhostNormMode] = useState<GhostNormMode>('fixed');
   const isAdmin = session?.user?.role === 'ADMIN';
 
-  // Developer deduplication state
-  const [developerGroups, setDeveloperGroups] = useState<DeveloperGroup[]>([]);
+  // Contributor selection state
   const [excludedDevelopers, setExcludedDevelopers] = useState<Set<string>>(new Set());
-  const [isManualMergeMode, setIsManualMergeMode] = useState(false);
-  const [selectedForMerge, setSelectedForMerge] = useState<Set<string>>(new Set());
+  const [contributorSearch, setContributorSearch] = useState('');
   const [extracting, setExtracting] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
-  const [showExcluded, setShowExcluded] = useState(false);
   const [showCompletedLog, setShowCompletedLog] = useState(false);
   const [showEditScope, setShowEditScope] = useState(false);
   const [analysisStarted, setAnalysisStarted] = useState(false);
@@ -441,15 +428,54 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const { data: llmInfo } = useQuery({
     queryKey: ['llm-info'],
     queryFn: fetchLlmInfo,
-    enabled: order?.status === 'READY_FOR_ANALYSIS',
+    enabled: order?.status === 'DEVELOPERS_LOADED' || order?.status === 'READY_FOR_ANALYSIS',
     staleTime: 60_000,
   });
 
   const { data: balanceData } = useQuery({
     queryKey: ['billing-balance'],
     queryFn: fetchBalance,
-    enabled: order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS',
+    enabled: order?.status === 'DEVELOPERS_LOADED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS',
     staleTime: 30_000,
+  });
+
+  // Billing preview — authoritative server-side scoped estimate.
+  // Route reads persisted order scope; we send excludedEmails as the only client override.
+  // Query key includes persisted scope values so a refetch triggers after order PUT.
+  const {
+    data: billingPreview,
+    isLoading: isBillingPreviewLoading,
+    isFetched: isBillingPreviewFetched,
+  } = useQuery({
+    queryKey: [
+      'billing-preview',
+      id,
+      Array.from(excludedDevelopers).sort().join(','),
+      // Persisted scope — query invalidates when order is refetched after scope PUT
+      order?.analysisPeriodMode,
+      order?.analysisStartDate,
+      order?.analysisEndDate,
+      order?.analysisCommitLimit,
+      JSON.stringify(order?.analysisYears),
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({ cacheMode: 'model' });
+      if (excludedDevelopers.size > 0) {
+        params.set('excludedEmails', Array.from(excludedDevelopers).join(','));
+      }
+      const res = await fetch(`/api/orders/${id}/billing-preview?${params}`);
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json.data as {
+        totalScopedCommits: number;
+        reusableCachedCommits: number;
+        billableCommits: number;
+        estimatedCredits: number;
+        isFirstRunEstimate: boolean;
+      } | null;
+    },
+    enabled: order?.status === 'DEVELOPERS_LOADED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS',
+    staleTime: 10_000,
   });
 
   const prepareAnalysisLaunch = useCallback(() => {
@@ -463,11 +489,20 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   }, [id, queryClient]);
 
   const analyzeMutation = useMutation({
-    mutationFn: async () => {
-      const endpoint = isAdmin
+    mutationFn: async (opts: { excludedDevelopers?: string[] } | void) => {
+      // When called with a body (from contributor selector), always use the
+      // normal analyze endpoint — it handles excludedDevelopers persistence.
+      // Admin rerun endpoint is only for retry/re-analyze of completed/failed orders.
+      const endpoint = (!opts && isAdmin)
         ? `/api/admin/orders/${id}/rerun`
         : `/api/orders/${id}/analyze`;
-      const res = await fetch(endpoint, { method: 'POST' });
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        ...(opts && {
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(opts),
+        }),
+      });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
         throw new Error(json.error || 'Analysis failed');
@@ -623,6 +658,19 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     enabled: isAdmin && order?.status === 'COMPLETED',
   });
 
+  const { data: identityHealth } = useQuery({
+    queryKey: ['identity-health', order?.id],
+    queryFn: async () => {
+      const res = await fetch('/api/v2/contributors/identity-queue?pageSize=0');
+      if (!res.ok) return { unresolvedCount: 0 };
+      const json = await res.json();
+      return {
+        unresolvedCount: json.data?.summary?.unresolvedCount ?? 0,
+      };
+    },
+    enabled: order?.status === 'COMPLETED',
+  });
+
   // Auto-detect running benchmark job (e.g., after page refresh)
   useEffect(() => {
     if (benchmarkJobId) return;
@@ -651,25 +699,16 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     }
   }, [order?.status, queryClient, id]);
 
-  // Initialize developer groups when order data with developers is loaded
+  // Hydrate excludedDevelopers from persisted order state.
+  // Also clears local state when persisted exclusions are empty/null
+  // (e.g., navigating between orders or after "Select All" clears them).
   useEffect(() => {
-    if (
-      order?.selectedDevelopers?.length > 0 &&
-      developerGroups.length === 0 &&
-      (order.status === 'DEVELOPERS_LOADED' || order.status === 'READY_FOR_ANALYSIS')
-    ) {
-      const groups = detectDuplicates(
-        order.selectedDevelopers as ExtractedDeveloper[],
-        order.developerMapping as Record<string, { primary: ExtractedDeveloper; mergedFrom: ExtractedDeveloper[] }> | undefined
-      );
-      setDeveloperGroups(groups);
-
-      // Restore excluded developers
-      if (order.excludedDevelopers?.length > 0) {
-        setExcludedDevelopers(new Set(order.excludedDevelopers as string[]));
-      }
+    if (order?.excludedDevelopers && Array.isArray(order.excludedDevelopers) && order.excludedDevelopers.length > 0) {
+      setExcludedDevelopers(new Set(order.excludedDevelopers as string[]));
+    } else if (order?.id) {
+      setExcludedDevelopers(new Set());
     }
-  }, [order?.selectedDevelopers, order?.status, order?.developerMapping, order?.excludedDevelopers, developerGroups.length]);
+  }, [order?.excludedDevelopers, order?.id]);
 
   // Auto-extract developers when order is in DRAFT status
   useEffect(() => {
@@ -704,36 +743,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     }
   };
 
-  const handleToggleMerge = useCallback((groupId: string) => {
-    setDeveloperGroups((prev) =>
-      prev.map((g) =>
-        g.id === groupId
-          ? { ...g, merged: !g.merged, primaryEmail: g.merged ? undefined : g.developers[0]?.email }
-          : g
-      )
-    );
-  }, []);
-
-  const handleSetPrimary = useCallback((groupId: string, email: string) => {
-    setDeveloperGroups((prev) =>
-      prev.map((g) =>
-        g.id === groupId ? { ...g, primaryEmail: email } : g
-      )
-    );
-  }, []);
-
-  const handleToggleSelect = useCallback((devKey: string) => {
-    setSelectedForMerge((prev) => {
-      const newSet = new Set(prev);
-      if (newSet.has(devKey)) {
-        newSet.delete(devKey);
-      } else {
-        newSet.add(devKey);
-      }
-      return newSet;
-    });
-  }, []);
-
   const handleToggleExclude = useCallback((email: string) => {
     setExcludedDevelopers((prev) => {
       const newSet = new Set(prev);
@@ -746,189 +755,41 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     });
   }, []);
 
-  const handleUnmerge = useCallback((groupId: string) => {
-    setDeveloperGroups((prev) => {
-      const group = prev.find((g) => g.id === groupId);
-      if (!group) return prev;
-
-      const newGroups = group.developers.map((dev) => ({
-        id: `group-single-${dev.email}`,
-        developers: [dev],
-        merged: false,
-        isSaved: false,
-      }));
-
-      return [...prev.filter((g) => g.id !== groupId), ...newGroups];
+  const handleStartAnalysis = useCallback(() => {
+    analyzeMutation.mutate({
+      excludedDevelopers: Array.from(excludedDevelopers),
     });
-  }, []);
+  }, [excludedDevelopers, analyzeMutation]);
 
-  const handleManualMerge = useCallback(() => {
-    if (selectedForMerge.size < 2) return;
-
-    const selectedDevs: ExtractedDeveloper[] = [];
-    const affectedGroupIds = new Set<string>();
-
-    for (const group of developerGroups) {
-      for (const dev of group.developers) {
-        const devKey = `${dev.name}-${dev.email}`;
-        if (selectedForMerge.has(devKey)) {
-          selectedDevs.push(dev);
-          affectedGroupIds.add(group.id);
-        }
-      }
-    }
-
-    if (selectedDevs.length < 2) return;
-
-    const newGroup: DeveloperGroup = {
-      id: `group-manual-${Date.now()}`,
-      developers: selectedDevs,
-      merged: true,
-      primaryEmail: selectedDevs[0].email,
-      isSaved: false,
-    };
-
-    setDeveloperGroups((prev) => {
-      const updatedGroups = prev
-        .map((g) => {
-          if (!affectedGroupIds.has(g.id)) return g;
-          const remainingDevs = g.developers.filter(
-            (d) => !selectedForMerge.has(`${d.name}-${d.email}`)
-          );
-          if (remainingDevs.length === 0) return null;
-          return { ...g, developers: remainingDevs };
-        })
-        .filter((g): g is DeveloperGroup => g !== null);
-
-      return [...updatedGroups, newGroup];
-    });
-
-    setSelectedForMerge(new Set());
-    setIsManualMergeMode(false);
-  }, [selectedForMerge, developerGroups]);
-
-  const handleCancelManualMerge = useCallback(() => {
-    setSelectedForMerge(new Set());
-    setIsManualMergeMode(false);
-  }, []);
-
-  const handleSelectAll = useCallback(() => {
-    setExcludedDevelopers(new Set());
-  }, []);
-
-  const handleDeselectAll = useCallback(() => {
-    const allEmails = new Set<string>();
-    for (const group of developerGroups) {
-      for (const dev of group.developers) {
-        allEmails.add(dev.email);
-      }
-    }
-    setExcludedDevelopers(allEmails);
-  }, [developerGroups]);
-
-  const handleSaveMapping = async () => {
-    setSaving(true);
-    try {
-      const mapping: Record<string, { primary: ExtractedDeveloper; mergedFrom: ExtractedDeveloper[] }> = {};
-
-      for (const group of developerGroups) {
-        if (group.merged && group.developers.length > 1) {
-          const primary = group.developers.find((d) => d.email === group.primaryEmail) || group.developers[0];
-          mapping[primary.email] = {
-            primary,
-            mergedFrom: group.developers.filter((d) => d.email !== primary.email),
-          };
-        }
-      }
-
-      const res = await fetch(`/api/orders/${id}/mapping`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          developerMapping: mapping,
-          excludedDevelopers: Array.from(excludedDevelopers),
-        }),
-      });
-
-      if (!res.ok) {
-        throw new Error('Failed to save mapping');
-      }
-
-      // Refetch order to get updated status
-      queryClient.invalidateQueries({ queryKey: ['order', id] });
-    } catch (err) {
-      setExtractError(err instanceof Error ? err.message : 'Failed to save mapping');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Split groups into included and excluded
-  const { includedGroups, excludedGroups } = useMemo(() => {
-    const included: DeveloperGroup[] = [];
-    const excluded: DeveloperGroup[] = [];
-
-    for (const group of developerGroups) {
-      const allExcluded = group.developers.every((d) => excludedDevelopers.has(d.email));
-      if (allExcluded) {
-        excluded.push(group);
-      } else {
-        included.push(group);
-      }
-    }
-
-    return { includedGroups: included, excludedGroups: excluded };
-  }, [developerGroups, excludedDevelopers]);
-
-  // Counts for summary
-  const totalDevCount = useMemo(() => {
-    let count = 0;
-    for (const g of developerGroups) {
-      if (g.merged && g.developers.length > 1) {
-        // Merged group counts as 1
-        if (!g.developers.every((d) => excludedDevelopers.has(d.email))) count++;
-      } else {
-        count += g.developers.filter((d) => !excludedDevelopers.has(d.email)).length;
-      }
-    }
-    return count;
-  }, [developerGroups, excludedDevelopers]);
-
-  const mergedGroupCount = useMemo(() =>
-    developerGroups.filter((g) => g.merged && g.developers.length > 1).length,
-    [developerGroups]
+  // Contributor selector derived values
+  // Filter out developers without a usable email — they cannot be keyed,
+  // excluded, or billed. Legacy orders may contain blank-email rows.
+  const allDevelopers = useMemo(
+    () => ((order?.selectedDevelopers ?? []) as any[]).filter((d: any) => d.email),
+    [order?.selectedDevelopers]
   );
+  const filteredDevelopers = useMemo(() => {
+    if (!contributorSearch) return allDevelopers;
+    const q = contributorSearch.toLowerCase();
+    return allDevelopers.filter((d: any) =>
+      d.name?.toLowerCase().includes(q) ||
+      d.email?.toLowerCase().includes(q) ||
+      d.login?.toLowerCase().includes(q)
+    );
+  }, [allDevelopers, contributorSearch]);
 
-  // Commit count excluding excluded developers
-  const activeCommitCount = useMemo(() => {
-    if (excludedDevelopers.size === 0) return order?.totalCommits ?? 0;
-    let count = 0;
-    for (const g of developerGroups) {
-      for (const d of g.developers) {
-        if (!excludedDevelopers.has(d.email)) {
-          count += d.commitCount;
-        }
-      }
-    }
-    return count || (order?.totalCommits ?? 0);
-  }, [developerGroups, excludedDevelopers, order?.totalCommits]);
-
-  // Credit estimation — mirrors analyze route logic
-  const estimatedCredits = useMemo(() => {
-    if (!order?.selectedDevelopers) return 0;
-    const devs = order.selectedDevelopers as Array<{ email?: string; commit_count?: number; commitCount?: number }>;
-    let total = 0;
-    for (const d of devs) {
-      if (d.email && excludedDevelopers.has(d.email)) continue;
-      total += d.commit_count ?? d.commitCount ?? 0;
-    }
-    return Math.max(1, total);
-  }, [order?.selectedDevelopers, excludedDevelopers]);
+  const includedCount = allDevelopers.filter((d: any) => !excludedDevelopers.has(d.email)).length;
+  const totalDevCount = allDevelopers.length;
+  // Authoritative server estimate — null while loading (loading guard)
+  const estimatedCredits = billingPreview?.estimatedCredits ?? null;
+  const isBillingReady = isBillingPreviewFetched && estimatedCredits !== null;
 
   const availableCredits = balanceData?.balance?.available ?? 0;
-  const hasEnoughCredits = availableCredits >= estimatedCredits;
-  const creditDeficit = Math.max(0, estimatedCredits - availableCredits);
-  const canStartAnalysis = hasEnoughCredits || isAdmin;
+  const hasEnoughCredits = estimatedCredits === null
+    ? false
+    : estimatedCredits === 0 || availableCredits >= estimatedCredits;
+  const creditDeficit = estimatedCredits === null ? 0 : Math.max(0, estimatedCredits - availableCredits);
+  const canStartAnalysis = isBillingReady && (hasEnoughCredits || isAdmin);
   const heartbeatAgeMs = progress?.heartbeatAt ? now - new Date(progress.heartbeatAt).getTime() : null;
   const updateAgeMs = progress?.updatedAt ? now - new Date(progress.updatedAt).getTime() : null;
   const isPendingStale = progress?.status === 'PENDING' && updateAgeMs != null && updateAgeMs > 2 * 60 * 1000;
@@ -1097,190 +958,99 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       )}
 
       {/* ================================================================ */}
-      {/* DEVELOPERS_LOADED — Deduplication UI                             */}
+      {/* DEVELOPERS_LOADED / READY_FOR_ANALYSIS — Contributor Selector    */}
       {/* ================================================================ */}
-      {order.status === 'DEVELOPERS_LOADED' && developerGroups.length > 0 && (
-        <>
-          {/* Info card */}
-          <Card className="border-amber-200 bg-amber-50/50">
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <Users className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
-                <div className="space-y-1">
-                  <p className="font-medium text-amber-900">
-                    {t('detail.profilesFound', { count: order.selectedDevelopers?.length ?? 0 })}
-                    {order.totalCommits ? ` ${t('detail.acrossCommits', { count: order.totalCommits })}` : ''}
-                    {' '}&middot;{' '}
-                    <span className="text-amber-800">
-                      {t('detail.includedSummary', { devCount: totalDevCount, commitCount: activeCommitCount })}
-                    </span>
-                  </p>
-                  <p className="text-sm text-amber-700">
-                    {t('detail.deduplicationHint')}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Action buttons */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleSelectAll}
-            >
-              <CheckSquare className="h-4 w-4 mr-1" /> {t('detail.selectAll')}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleDeselectAll}
-            >
-              <XSquare className="h-4 w-4 mr-1" /> {t('detail.deselectAll')}
-            </Button>
-
-            <div className="h-4 w-px bg-border mx-1" />
-
-            {isManualMergeMode ? (
-              <>
-                <Button
-                  size="sm"
-                  onClick={handleManualMerge}
-                  disabled={selectedForMerge.size < 2}
-                >
-                  <Merge className="h-4 w-4 mr-1" />
-                  {t('detail.mergeSelected', { count: selectedForMerge.size })}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleCancelManualMerge}
-                >
-                  {t('detail.cancel')}
-                </Button>
-              </>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsManualMergeMode(true)}
-              >
-                <MousePointerClick className="h-4 w-4 mr-1" /> {t('detail.manualMerge')}
-              </Button>
-            )}
-
-            <div className="flex-1" />
-
-            <Button
-              onClick={handleSaveMapping}
-              disabled={saving}
-            >
-              {saving ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4 mr-2" />
-              )}
-              {t('detail.saveContinue')}
-            </Button>
-          </div>
-
-          {/* Developer groups */}
-          <div className="space-y-3">
-            {includedGroups.map((group) => (
-              <DeveloperGroupCard
-                key={group.id}
-                group={group}
-                isManualMergeMode={isManualMergeMode}
-                selectedForMerge={selectedForMerge}
-                excludedEmails={excludedDevelopers}
-                onToggleMerge={() => handleToggleMerge(group.id)}
-                onSetPrimary={(email) => handleSetPrimary(group.id, email)}
-                onToggleSelect={(devKey) => handleToggleSelect(devKey)}
-                onToggleExclude={(email) => handleToggleExclude(email)}
-                onUnmerge={() => handleUnmerge(group.id)}
-              />
-            ))}
-          </div>
-
-          {/* Excluded developers section */}
-          {excludedGroups.length > 0 && (
+      {(order.status === 'DEVELOPERS_LOADED' || order.status === 'READY_FOR_ANALYSIS') && !analysisStarted && (
+        <div className="space-y-4">
+          {/* Header */}
+          <div className="flex items-center justify-between">
             <div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground"
-                onClick={() => setShowExcluded(!showExcluded)}
-              >
-                {showExcluded ? (
-                  <ChevronUp className="h-4 w-4 mr-1" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 mr-1" />
-                )}
-                {t('detail.excluded', { count: excludedGroups.reduce((n, g) => n + g.developers.length, 0) })}
-              </Button>
-              {showExcluded && (
-                <div className="space-y-3 mt-2 opacity-60">
-                  {excludedGroups.map((group) => (
-                    <DeveloperGroupCard
-                      key={group.id}
-                      group={group}
-                      isManualMergeMode={isManualMergeMode}
-                      selectedForMerge={selectedForMerge}
-                      excludedEmails={excludedDevelopers}
-                      onToggleMerge={() => handleToggleMerge(group.id)}
-                      onSetPrimary={(email) => handleSetPrimary(group.id, email)}
-                      onToggleSelect={(devKey) => handleToggleSelect(devKey)}
-                      onToggleExclude={(email) => handleToggleExclude(email)}
-                      onUnmerge={() => handleUnmerge(group.id)}
-                    />
-                  ))}
-                </div>
+              <h3 className="text-lg font-semibold">{t('contributorSelector.title')}</h3>
+              <p className="text-sm text-muted-foreground">
+                {t('contributorSelector.subtitle')}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-muted-foreground">
+                {t('contributorSelector.included', { count: includedCount })}
+              </span>
+              {excludedDevelopers.size > 0 && (
+                <span className="text-sm text-muted-foreground">
+                  {t('contributorSelector.excluded', { count: excludedDevelopers.size })}
+                </span>
               )}
             </div>
-          )}
+          </div>
 
-          {/* Bottom duplicated primary action for long developer lists */}
-          <div className="flex justify-end pt-2">
+          {/* Select all / Deselect all */}
+          <div className="flex gap-2">
             <Button
-              onClick={handleSaveMapping}
-              disabled={saving}
+              variant="outline"
+              size="sm"
+              onClick={() => setExcludedDevelopers(new Set())}
             >
-              {saving ? (
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              ) : (
-                <Save className="h-4 w-4 mr-2" />
-              )}
-              {t('detail.saveContinue')}
+              {t('contributorSelector.selectAll')}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const allEmails = new Set(
+                  allDevelopers.map((d: any) => d.email).filter(Boolean)
+                );
+                setExcludedDevelopers(allEmails);
+              }}
+            >
+              {t('contributorSelector.deselectAll')}
             </Button>
           </div>
 
-          {/* Error message */}
-          {extractError && (
-            <p className="text-sm text-red-600 text-center">{extractError}</p>
-          )}
-        </>
-      )}
+          {/* Search */}
+          <Input
+            placeholder={t('contributorSelector.searching')}
+            value={contributorSearch}
+            onChange={(e) => setContributorSearch(e.target.value)}
+          />
 
-      {/* ================================================================ */}
-      {/* READY_FOR_ANALYSIS — Summary and Start                           */}
-      {/* ================================================================ */}
-      {order.status === 'READY_FOR_ANALYSIS' && !analysisStarted && (
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3 mb-4">
-              <CheckCircle2 className="h-6 w-6 text-green-600" />
-              <div>
-                <p className="font-medium">{t('detail.readyForAnalysis')}</p>
-                <p className="text-sm text-muted-foreground">
-                  {t('detail.developersConfirmed', { count: totalDevCount })}
-                  {excludedDevelopers.size > 0 && `, ${t('detail.excludedCount', { count: excludedDevelopers.size })}`}
-                  {mergedGroupCount > 0 && `, ${t('detail.mergedGroups', { count: mergedGroupCount })}`}
-                </p>
-              </div>
-            </div>
-            {llmInfo && activeCommitCount > 0 && (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
+          {/* Contributor list */}
+          <div className="space-y-2 max-h-96 overflow-y-auto">
+            {filteredDevelopers.map((dev: any) => {
+              const isExcluded = excludedDevelopers.has(dev.email);
+              return (
+                <div
+                  key={dev.email}
+                  className={cn(
+                    'flex items-center gap-3 p-3 rounded-lg border',
+                    isExcluded && 'opacity-50'
+                  )}
+                >
+                  <Checkbox
+                    checked={!isExcluded}
+                    onCheckedChange={() => handleToggleExclude(dev.email)}
+                  />
+                  {dev.avatarUrl && (
+                    <img src={dev.avatarUrl} alt="" className="h-8 w-8 rounded-full" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{dev.name}</div>
+                    <div className="text-xs text-muted-foreground truncate">
+                      {dev.email}
+                      {dev.login && ` (@${dev.login})`}
+                    </div>
+                  </div>
+                  <div className="text-sm text-muted-foreground whitespace-nowrap">
+                    {t('contributorSelector.commits', { count: dev.commitCount ?? dev.commit_count ?? 0 })}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Billing preflight */}
+          <div className="space-y-3 pt-4 border-t">
+            {/* LLM provider + cost info */}
+            {llmInfo && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Badge variant="outline" className={
                   llmInfo.provider === 'openrouter'
                     ? 'border-blue-300 text-blue-700 bg-blue-50'
@@ -1290,25 +1060,34 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </Badge>
                 <span>
                   {llmInfo.provider === 'openrouter' ? (
-                    <>
-                      ~<span className="font-medium text-foreground">
-                        ${(activeCommitCount * llmInfo.costPerCommitUsd).toFixed(4)}
-                      </span>{' '}
-                      {t('detail.costForCommits', { count: activeCommitCount })}
-                    </>
+                    estimatedCredits != null && estimatedCredits > 0 ? (
+                      <>
+                        ~<span className="font-medium text-foreground">
+                          ${(estimatedCredits * (llmInfo.costPerCommitUsd ?? 0)).toFixed(4)}
+                        </span>{' '}
+                        {t('detail.costForCommits', { count: estimatedCredits })}
+                      </>
+                    ) : estimatedCredits === 0 ? (
+                      <span className="text-green-600">{t('detail.zeroBillableCommits')}</span>
+                    ) : null
                   ) : (
-                    <>{t('detail.freeLocalProcessing', { count: activeCommitCount })}</>
+                    estimatedCredits != null ? (
+                      <>{t('detail.freeLocalProcessing', { count: estimatedCredits })}</>
+                    ) : null
                   )}
                 </span>
-                <span className="text-xs text-muted-foreground/70">
-                  {llmInfo.model}
-                </span>
+                <span className="text-xs text-muted-foreground/70">{llmInfo.model}</span>
               </div>
             )}
+            {billingPreview?.isFirstRunEstimate && (order?.analysisPeriodMode === 'DATE_RANGE' || order?.analysisPeriodMode === 'SELECTED_YEARS') && (
+              <p className="text-xs text-muted-foreground/70 italic">
+                {t('detail.firstRunEstimateHint')}
+              </p>
+            )}
 
-            {/* Credit estimate */}
-            {balanceData && (
-              <div className={`flex items-center gap-2 text-sm mb-4 rounded-md border px-3 py-2 ${
+            {/* Credit balance check */}
+            {balanceData && estimatedCredits !== null && (
+              <div className={`flex items-center gap-2 text-sm rounded-md border px-3 py-2 ${
                 hasEnoughCredits
                   ? 'border-blue-200 bg-blue-50/50 text-blue-800'
                   : 'border-amber-200 bg-amber-50/50 text-amber-800'
@@ -1327,11 +1106,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               </div>
             )}
 
-            {!canStartAnalysis && balanceData ? (
+            {/* Start Analysis / Insufficient credits */}
+            {!canStartAnalysis && balanceData && isBillingReady ? (
               <div className="space-y-2">
                 <Button disabled>
                   <Play className="h-4 w-4 mr-2" />
-                  {t('detail.startAnalysis')}
+                  {t('contributorSelector.startAnalysis')}
                 </Button>
                 <p className="text-sm text-amber-700">
                   {t('detail.notEnoughCredits')}{' '}
@@ -1367,26 +1147,33 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {t('detail.adminCreditBypassHint')}
                   </p>
                 )}
+                {isBillingPreviewLoading && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>{t('detail.calculatingCredits')}</span>
+                  </div>
+                )}
                 <Button
-                  onClick={() => analyzeMutation.mutate()}
-                  disabled={analyzeMutation.isPending}
+                  onClick={handleStartAnalysis}
+                  disabled={includedCount === 0 || analyzeMutation.isPending || !isBillingReady}
                 >
                   {analyzeMutation.isPending ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                   ) : (
                     <Play className="h-4 w-4 mr-2" />
                   )}
-                  {t('detail.startAnalysis')}
+                  {t('contributorSelector.startAnalysis')}
                 </Button>
               </div>
             )}
+
             {analyzeMutation.isError && (
-              <p className="text-sm text-red-600 mt-3">
+              <p className="text-sm text-red-600">
                 {analyzeMutation.error instanceof Error ? analyzeMutation.error.message : t('detail.analysisFailed')}
               </p>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
 
       {/* ================================================================ */}
@@ -1723,6 +1510,21 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </div>
               </CardContent>
             </Card>
+          )}
+          {identityHealth?.unresolvedCount != null && identityHealth.unresolvedCount > 0 && (
+            <div className="flex items-center justify-between p-4 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-yellow-600" />
+                <span className="text-sm">
+                  {t('identityReview.banner', { count: identityHealth.unresolvedCount })}
+                </span>
+              </div>
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/people?identityHealth=unresolved">
+                  {t('identityReview.action')}
+                </Link>
+              </Button>
+            </div>
           )}
           <div className="flex items-center justify-between">
             {progress?.totalCostUsd != null && progress.totalCostUsd > 0 ? (

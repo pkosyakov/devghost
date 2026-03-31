@@ -106,10 +106,11 @@ export function computeIdentityHealth(counts: {
 
 // ─── Auto-merge rules ───
 
-async function findContributorMatch(
+export async function findContributorMatch(
   workspaceId: string,
   raw: RawAlias
 ): Promise<Contributor | null> {
+  // Strategy 1: Match by providerId (strongest signal)
   if (raw.providerId) {
     const aliasMatch = await prisma.contributorAlias.findFirst({
       where: {
@@ -125,10 +126,27 @@ async function findContributorMatch(
     }
   }
 
+  // Strategy 2: Match by primary email
   const contributor = await prisma.contributor.findFirst({
     where: { workspaceId, primaryEmail: raw.email },
   });
   if (contributor) return contributor;
+
+  // Strategy 3: Match by GitHub login (deterministic provider signal)
+  if (raw.username) {
+    const aliasMatch = await prisma.contributorAlias.findFirst({
+      where: {
+        workspaceId,
+        providerType: raw.providerType,
+        username: raw.username,
+        contributorId: { not: null },
+      },
+      include: { contributor: true },
+    });
+    if (aliasMatch?.contributor) {
+      return aliasMatch.contributor;
+    }
+  }
 
   return null;
 }
