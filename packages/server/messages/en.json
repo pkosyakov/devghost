@@ -395,6 +395,10 @@
       "searching": "Search contributors...",
       "commits": "{count, plural, one {# commit} other {# commits}}"
     },
+    "identityReview": {
+      "banner": "{count, plural, one {# contributor needs} other {# contributors need}} identity review",
+      "action": "Review in People"
+    },
     "detail": {
       "back": "Back",
       "analysisCost": "Analysis cost: {cost} ({tokens} tokens, {calls} calls, {model})",

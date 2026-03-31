@@ -616,6 +616,19 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     enabled: isAdmin && order?.status === 'COMPLETED',
   });
 
+  const { data: identityHealth } = useQuery({
+    queryKey: ['identity-health', order?.id],
+    queryFn: async () => {
+      const res = await fetch('/api/v2/contributors/identity-queue?pageSize=0');
+      if (!res.ok) return { unresolvedCount: 0 };
+      const json = await res.json();
+      return {
+        unresolvedCount: json.data?.summary?.unresolvedCount ?? 0,
+      };
+    },
+    enabled: order?.status === 'COMPLETED',
+  });
+
   // Auto-detect running benchmark job (e.g., after page refresh)
   useEffect(() => {
     if (benchmarkJobId) return;
@@ -1442,6 +1455,21 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </div>
               </CardContent>
             </Card>
+          )}
+          {identityHealth?.unresolvedCount != null && identityHealth.unresolvedCount > 0 && (
+            <div className="flex items-center justify-between p-4 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-yellow-600" />
+                <span className="text-sm">
+                  {t('identityReview.banner', { count: identityHealth.unresolvedCount })}
+                </span>
+              </div>
+              <Button variant="outline" size="sm" asChild>
+                <Link href="/people?identityHealth=unresolved">
+                  {t('identityReview.action')}
+                </Link>
+              </Button>
+            </div>
           )}
           <div className="flex items-center justify-between">
             {progress?.totalCostUsd != null && progress.totalCostUsd > 0 ? (

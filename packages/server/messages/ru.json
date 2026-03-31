@@ -395,6 +395,10 @@
       "searching": "Поиск контрибьюторов...",
       "commits": "{count, plural, one {# коммит} few {# коммита} other {# коммитов}}"
     },
+    "identityReview": {
+      "banner": "{count, plural, one {# контрибьютор требует} few {# контрибьютора требуют} other {# контрибьюторов требуют}} проверки идентичности",
+      "action": "Перейти в People"
+    },
     "detail": {
       "back": "Назад",
       "analysisCost": "Стоимость анализа: {cost} ({tokens} токенов, {calls} вызовов, {model})",
