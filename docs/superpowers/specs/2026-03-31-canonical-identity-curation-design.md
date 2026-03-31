@@ -106,13 +106,17 @@ NOT from `CommitAnalysis` only. `CommitAnalysis` contains only `authorEmail` and
 ### Projection Logic
 
 For each candidate in `selectedDevelopers`:
-1. Create/update `ContributorAlias` with available signals (email, login, username, avatarUrl)
-2. Auto-resolve using deterministic matching only:
-   - **Exact providerId match** (if extractor is enriched with providerId — not available today)
-   - **Exact email match** -> AUTO_MERGED
-   - **Same GitHub login** as deterministic provider-level match -> AUTO_MERGED
-3. No providerId match and no email/login match -> UNRESOLVED -> identity queue
-4. **No fuzzy matching** (no Levenshtein, no domain similarity, no initial+lastname)
+1. Look up existing `ContributorAlias` by deterministic signals:
+   - **Exact providerId** (if extractor is enriched with providerId — not available today)
+   - **Exact email match**
+   - **Same GitHub login** as deterministic provider-level match
+2. If alias exists -> update signals (login, avatarUrl, lastSeenAt), keep existing Contributor link -> AUTO_MERGED
+3. If alias does not exist but a Contributor matches by email/login -> create alias linked to that Contributor -> AUTO_MERGED
+4. If no match at all -> **create new Contributor + attached alias** -> AUTO_MERGED. This is a brand-new legitimate contributor, not an unresolved case.
+
+UNRESOLVED status is reserved for aliases that cannot be confidently assigned to any contributor — this does not apply to first-time primary seeds from extraction, which are by definition new canonical contributors.
+
+**No fuzzy matching** (no Levenshtein, no domain similarity, no initial+lastname).
 
 ### Identity Signal Availability
 
@@ -167,15 +171,16 @@ With no fuzzy matching and no manual dedup, many ambiguous cases (e.g., "J. Doe"
 **Design decision for this slice**: identity review is manual from the People list, not queue-driven for ambiguous cases. The identity queue continues to surface only technically unresolved aliases (aliases created without a contributor match). Fuzzy suggestion matching (SUGGESTED status) is deferred to a future slice.
 
 Concretely:
-- UNRESOLVED aliases (no email/login match found during projection) -> appear in identity queue
-- Ambiguous but separate contributors (same name, different emails) -> visible in People list, user can manually merge from there
+- First-time contributors with no prior match -> new Contributor created, NOT sent to queue
+- UNRESOLVED aliases only appear if a future non-primary signal (e.g., merged_from in legacy path) cannot be assigned
+- Ambiguous but separate contributors (same name, different emails) -> visible in People list, user can merge via Contributor Detail page (merge affordance already exists there)
 - The "N contributors need identity review" banner on completed analysis counts UNRESOLVED aliases only
 
 ### Legacy Dedup UI
 
 **Retired entirely.** The projection no longer reads `developerMapping`, so manual merge decisions saved through the legacy dedup screen would have no effect on canonical identity. Keeping a non-functional UI path is misleading.
 
-Manual merge/unmerge capabilities exist on canonical surfaces (People page, contributor detail, identity queue). These are the correct place for identity correction work.
+Manual merge/unmerge capabilities exist on canonical surfaces (Contributor Detail page, identity queue). The People list links to Contributor Detail where merge/unmerge actions are available. No new People list UI work is needed for this slice — the existing Contributor Detail merge affordance is sufficient.
 
 ## Files to Change
 
