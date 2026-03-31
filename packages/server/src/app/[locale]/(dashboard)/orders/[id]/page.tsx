@@ -7,49 +7,32 @@ import { useSession } from 'next-auth/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
-import { GhostKpiCards } from '@/components/ghost-kpi-cards';
-import { GhostDistributionPanel } from '@/components/ghost-distribution-panel';
-import { GhostDeveloperTable } from '@/components/ghost-developer-table';
-import { GhostPeriodSelector } from '@/components/ghost-period-selector';
-import { CommitAnalysisTable } from '@/components/commit-analysis-table';
-import { BenchmarkLauncher } from '@/components/benchmark-launcher';
-import { BenchmarkMatrix } from '@/components/benchmark-matrix';
 import { PipelineLog } from '@/components/pipeline-log';
 import { AnalysisEventLog } from '@/components/analysis-event-log';
 import { CommitProcessingTimeline } from '@/components/commit-processing-timeline';
-import { EffortTimeline } from '@/components/effort-timeline';
 import type { PipelineLogEntry } from '@/components/pipeline-log';
 import type { AnalysisEventEntry } from '@/components/analysis-event-log';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
-import { EditScopePanel, type AnalysisPeriodSettings } from '@/components/edit-scope-panel';
+import type { AnalysisPeriodSettings } from '@/components/edit-scope-panel';
+import { AnalysisResultsSummary } from '@/components/analysis-results-summary';
+import { AnalysisHandoffCard } from '@/components/analysis-handoff-card';
+import { AnalysisResultsOverview } from '@/components/analysis-results-overview';
+import { AnalysisTechnicalPanel } from '@/components/analysis-technical-panel';
 import { GHOST_NORM, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
 import { Link } from '@/i18n/navigation';
 import {
   Loader2,
   ChevronLeft,
-  ChevronDown,
-  ChevronUp,
   Play,
   RefreshCw,
   AlertCircle,
-  Users,
-  Terminal,
   Square,
-  Settings2,
-  CalendarRange,
   Coins,
   AlertTriangle,
-  Share2,
-  FolderGit2,
-  UsersRound,
 } from 'lucide-react';
-import { PublishModal } from '@/components/publish-modal';
-import { ShareLinkCard } from '@/components/share-link-card';
 import { useTranslations, useLocale } from 'next-intl';
 import { useToast } from '@/hooks/use-toast';
 import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
@@ -138,8 +121,6 @@ interface AnalysisProgressData {
   eventCursor: string | null;
 }
 
-type GhostNormMode = 'fixed' | 'median';
-
 // Fetch analysis progress
 async function fetchProgress(
   id: string,
@@ -199,17 +180,6 @@ function formatSizeFromMb(sizeMb: number): string {
   return `${sizeMb.toFixed(1)} MB`;
 }
 
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[middle] ?? null;
-  const left = sorted[middle - 1];
-  const right = sorted[middle];
-  if (left == null || right == null) return null;
-  return (left + right) / 2;
-}
-
 function sumSelectedRepoSizeKb(selectedRepos: unknown): number {
   if (!Array.isArray(selectedRepos)) return 0;
   return selectedRepos.reduce((sum, repo) => {
@@ -233,32 +203,6 @@ function useNow(enabled: boolean): number {
 // ==================== Pipeline Live Log ====================
 
 // PipelineLogEntry and PipelineLog imported from @/components/pipeline-log
-
-/** Convert order DB fields to AnalysisPeriodSettings for the UI selector */
-function orderToScopeSettings(order: {
-  analysisPeriodMode: string;
-  analysisYears?: number[] | null;
-  analysisStartDate?: string | Date | null;
-  analysisEndDate?: string | Date | null;
-  analysisCommitLimit?: number | null;
-}): AnalysisPeriodSettings {
-  // SELECTED_YEARS not supported in UI selector — convert to DATE_RANGE
-  if (order.analysisPeriodMode === 'SELECTED_YEARS' && order.analysisYears?.length) {
-    const minYear = Math.min(...order.analysisYears);
-    const maxYear = Math.max(...order.analysisYears);
-    return {
-      mode: 'DATE_RANGE',
-      startDate: new Date(`${minYear}-01-01`),
-      endDate: new Date(`${maxYear}-12-31`),
-    };
-  }
-  return {
-    mode: (order.analysisPeriodMode as AnalysisPeriodSettings['mode']) || 'ALL_TIME',
-    startDate: order.analysisStartDate ? new Date(order.analysisStartDate) : undefined,
-    endDate: order.analysisEndDate ? new Date(order.analysisEndDate) : undefined,
-    commitLimit: order.analysisCommitLimit ?? undefined,
-  };
-}
 
 /** Format a short date like "Sep 9, 2024" */
 function fmtDate(d: string | Date | null | undefined, locale: string = 'en-US'): string | null {
@@ -313,7 +257,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
-  const [ghostNormMode, setGhostNormMode] = useState<GhostNormMode>('fixed');
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Contributor selection state
@@ -321,8 +264,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [contributorSearch, setContributorSearch] = useState('');
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
-  const [showCompletedLog, setShowCompletedLog] = useState(false);
-  const [showEditScope, setShowEditScope] = useState(false);
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const [analysisJobId, setAnalysisJobId] = useState<string | null>(null);
   const [pipelineLog, setPipelineLog] = useState<PipelineLogEntry[]>([]);
@@ -335,8 +276,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const benchmarkLogSinceRef = useRef<number>(0);
   const [benchmarkEvents, setBenchmarkEvents] = useState<AnalysisEventEntry[]>([]);
   const benchmarkEventCursorRef = useRef<string | null>(null);
-  const [activeTab, setActiveTab] = useState('overview');
-  const [publishRepo, setPublishRepo] = useState<string | null>(null);
   const [shareToken, setShareToken] = useState<string | null>(null);
   const { data: demoLiveModeEnabled = false } = useQuery({
     queryKey: ['admin-demo-live-mode'],
@@ -545,7 +484,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       prepareAnalysisLaunch();
     },
     onSuccess: (data) => {
-      setShowEditScope(false);
       setAnalysisJobId(data.data?.jobId ?? null);
       queryClient.invalidateQueries({ queryKey: ['order', id] });
       queryClient.invalidateQueries({ queryKey: ['metrics', id] });
@@ -628,9 +566,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           || data?.status === 'FAILED_FATAL' || data?.status === 'FAILED_RETRYABLE') {
         setBenchmarkJobId(null);
         queryClient.invalidateQueries({ queryKey: ['benchmarks', id] });
-        if (data?.status === 'COMPLETED') {
-          setActiveTab('benchmark');
-        }
       }
       return data;
     },
@@ -640,12 +575,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const benchmarkNow = useNow(!!benchmarkJobId);
 
-  // Benchmark diagnostics — mirrors main analysis heartbeat/stale detection
-  const bmHeartbeatAgeMs = benchmarkProgress?.heartbeatAt ? benchmarkNow - new Date(benchmarkProgress.heartbeatAt).getTime() : null;
-  const bmUpdateAgeMs = benchmarkProgress?.updatedAt ? benchmarkNow - new Date(benchmarkProgress.updatedAt).getTime() : null;
-  const bmIsPendingStale = benchmarkProgress?.status === 'PENDING' && bmUpdateAgeMs != null && bmUpdateAgeMs > 2 * 60 * 1000;
-  const bmIsHeartbeatStale = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 2 * 60 * 1000;
-  const bmIsHeartbeatCritical = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 10 * 60 * 1000;
 
   const { data: benchmarkRuns = [] } = useQuery<{ id: string; status: string; llmModel: string | null; completedAt: string | null; createdAt: string }[]>({
     queryKey: ['benchmarks', id],
@@ -862,16 +791,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     return <div className="text-center p-8">{t('detail.orderNotFound')}</div>;
   }
 
-  const normCandidates = metrics
-    .filter((m: GhostMetric) => m.hasEnoughData && Number.isFinite(m.avgDailyEffort) && m.avgDailyEffort > 0)
-    .map((m: GhostMetric) => m.avgDailyEffort);
-  const medianGhostNorm = median(normCandidates);
-  const effectiveGhostNorm = ghostNormMode === 'median' && medianGhostNorm != null
-    ? medianGhostNorm
-    : GHOST_NORM;
-  const effectiveGhostNormMode: GhostNormMode = ghostNormMode === 'median' && medianGhostNorm != null
-    ? 'median'
-    : 'fixed';
+  // Ghost norm for orchestrator-level KPIs (fixed baseline).
+  // Interactive norm selection lives inside AnalysisResultsOverview.
+  const effectiveGhostNorm = GHOST_NORM;
   const displayMetrics: GhostMetric[] = metrics.map((metric: GhostMetric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
       return metric;
@@ -888,21 +810,20 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     };
   });
 
+  // Stable completed-result counts from server (independent of period filter)
+  const completedRepoCount: number = order?.completedRepoCount
+    ?? (Array.isArray(order?.selectedRepos) ? order.selectedRepos.length : 0);
+  const completedContributorCount: number = order?.completedContributorCount
+    ?? displayMetrics.length;
+  const completedCommitCount: number = order?.completedCommitCount
+    ?? displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.commitCount, 0);
+
   // Calculate aggregate KPIs from displayed metrics (respect selected Ghost Norm mode)
   const activeMetrics = displayMetrics.filter((m: GhostMetric) => m.hasEnoughData);
   const avgGhost = activeMetrics.length > 0
     ? activeMetrics.reduce((sum: number, m: GhostMetric) => sum + (m.ghostPercent ?? 0), 0) / activeMetrics.length
     : null;
-  const totalCommits = displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.commitCount, 0);
   const totalWorkDays = displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.actualWorkDays, 0);
-  const normNumberFormat = new Intl.NumberFormat(locale === 'ru' ? 'ru-RU' : 'en-US', {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 2,
-  });
-  const effectiveGhostNormLabel = normNumberFormat.format(effectiveGhostNorm);
-  const medianGhostNormLabel = medianGhostNorm != null
-    ? normNumberFormat.format(medianGhostNorm)
-    : null;
 
   const repoCount = Array.isArray(order.selectedRepos) ? order.selectedRepos.length : 0;
 
@@ -1475,531 +1396,75 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       )}
 
       {/* ================================================================ */}
-      {/* COMPLETED — Full dashboard                                       */}
+      {/* COMPLETED — Analysis Results Landing                            */}
       {/* ================================================================ */}
       {order.status === 'COMPLETED' && !analysisStarted && (
-        <>
-          {isFirstRun && (
-            <Card className="border-primary/20 bg-primary/5">
-              <CardContent className="pt-6">
-                <div className="space-y-3">
-                  <div>
-                    <p className="font-medium">{t('onboardingHandoff.title')}</p>
-                    <p className="text-sm text-muted-foreground">{t('onboardingHandoff.description')}</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Link href="/people">
-                      <Button variant="default" size="sm">
-                        <Users className="h-4 w-4 mr-2" />
-                        {t('onboardingHandoff.peopleCta')}
-                      </Button>
-                    </Link>
-                    <Link href="/repositories">
-                      <Button variant="outline" size="sm">
-                        <FolderGit2 className="h-4 w-4 mr-2" />
-                        {t('onboardingHandoff.repositoriesCta')}
-                      </Button>
-                    </Link>
-                    <Link href="/repositories">
-                      <Button variant="outline" size="sm">
-                        <UsersRound className="h-4 w-4 mr-2" />
-                        {t('onboardingHandoff.teamCta')}
-                      </Button>
-                    </Link>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          )}
-          {identityHealth?.unresolvedCount != null && identityHealth.unresolvedCount > 0 && (
-            <div className="flex items-center justify-between p-4 rounded-lg border border-yellow-200 bg-yellow-50 dark:border-yellow-800 dark:bg-yellow-950">
-              <div className="flex items-center gap-2">
-                <AlertCircle className="h-4 w-4 text-yellow-600" />
-                <span className="text-sm">
-                  {t('identityReview.banner', { count: identityHealth.unresolvedCount })}
-                </span>
-              </div>
-              <Button variant="outline" size="sm" asChild>
-                <Link href="/people?identityHealth=unresolved">
-                  {t('identityReview.action')}
-                </Link>
-              </Button>
-            </div>
-          )}
-          <div className="flex items-center justify-between">
-            {progress?.totalCostUsd != null && progress.totalCostUsd > 0 ? (
-              <p className="text-sm text-muted-foreground">
-                {t('detail.analysisCost', {
-                  cost: `$${progress.totalCostUsd.toFixed(4)}`,
-                  tokens: `${(progress.totalPromptTokens ?? 0).toLocaleString()} + ${(progress.totalCompletionTokens ?? 0).toLocaleString()}`,
-                  calls: progress.totalLlmCalls ?? 0,
-                  model: progress.llmModel ?? 'unknown',
-                })}
-              </p>
-            ) : progress?.llmProvider === 'ollama' ? (
-              <p className="text-sm text-muted-foreground">
-                {t('detail.processedLocally', {
-                  model: progress.llmModel ?? 'unknown',
-                  calls: progress.totalLlmCalls ?? 0,
-                  tokens: `${(progress.totalPromptTokens ?? 0).toLocaleString()} + ${(progress.totalCompletionTokens ?? 0).toLocaleString()}`
-                })}
-              </p>
-            ) : <div />}
-            <div className="flex items-center gap-2">
-              {Array.isArray(order.selectedRepos) && order.selectedRepos.map((r: Record<string, unknown>) => {
-                const fullName = (r.full_name ?? r.fullName ?? `${(r.owner as any)?.login}/${r.name}`) as string;
-                return (
-                  <Button
-                    key={fullName}
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setPublishRepo(fullName)}
-                  >
-                    <Share2 className="h-4 w-4 mr-2" />
-                    {t('detail.publish')}{order.selectedRepos.length > 1 ? ` ${fullName}` : ''}
-                  </Button>
-                );
-              })}
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowEditScope(!showEditScope)}
-              >
-                <Settings2 className="h-4 w-4 mr-2" />
-                {t('detail.editScope')}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => analyzeMutation.mutate()}
-                disabled={analyzeMutation.isPending}
-              >
-                {analyzeMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                )}
-                {t('detail.reAnalyze')}
-              </Button>
-            </div>
-          </div>
+        <div className="space-y-6">
+          <AnalysisResultsSummary
+            orderName={order.name}
+            repoCount={completedRepoCount}
+            contributorCount={completedContributorCount}
+            commitCount={completedCommitCount}
+            completedAt={order.completedAt}
+            avgGhostPercent={avgGhost}
+            totalWorkDays={totalWorkDays}
+            ghostNormHours={effectiveGhostNorm}
+            dateRangeLabel={(() => {
+              const start = fmtDate(order.availableStartDate, dateLocale);
+              const end = fmtDate(order.availableEndDate, dateLocale);
+              return start && end ? t('detail.repoDateRange', { start, end }) : null;
+            })()}
+            scopeLabel={formatScopeDescription(order, t, dateLocale)}
+            isPartialScope={order.analysisPeriodMode !== 'ALL_TIME'}
+          />
 
-          {/* Publish modal */}
-          {publishRepo && (
-            <PublishModal
-              open={!!publishRepo}
-              onOpenChange={(open) => { if (!open) setPublishRepo(null); }}
-              orderId={id}
-              repository={publishRepo}
-              developers={
-                Array.isArray(order.extractedDevelopers)
-                  ? (order.extractedDevelopers as Array<{ email: string; name: string | null }>).map(d => ({
-                      email: d.email,
-                      name: d.name ?? null,
-                    }))
-                  : metrics.map((m: GhostMetric) => ({
-                      email: m.developerEmail,
-                      name: m.developerName ?? null,
-                    }))
-              }
-              onPublished={(token) => setShareToken(token)}
-            />
-          )}
+          <AnalysisHandoffCard
+            analysisId={id}
+            workspaceStage={stageData?.workspaceStage ?? 'first_data'}
+            topCanonicalRepoId={order.topCanonicalRepoId ?? null}
+            unresolvedIdentityCount={identityHealth?.unresolvedCount ?? 0}
+          />
 
-          {/* Share link card */}
-          {shareToken && <ShareLinkCard token={shareToken} />}
-
-          {showEditScope && (
-            <EditScopePanel
-              currentSettings={orderToScopeSettings(order)}
-              onSubmit={handleScopeSubmit}
-              onCancel={() => setShowEditScope(false)}
-              isSubmitting={scopeMutation.isPending}
-              availableStartDate={order.availableStartDate ? new Date(order.availableStartDate) : undefined}
-              availableEndDate={order.availableEndDate ? new Date(order.availableEndDate) : undefined}
-              modeChangeWarning={
-                order.analysisPeriodMode === 'SELECTED_YEARS'
-                  ? t('detail.modeChangeWarning', { years: (order.analysisYears as number[])?.join(', ') })
-                  : undefined
-              }
-            />
-          )}
-
-          {/* Benchmark */}
-          {isAdmin && <BenchmarkLauncher
+          <AnalysisResultsOverview
             orderId={id}
-            disabled={!!benchmarkJobId}
-            commitCount={totalCommits || undefined}
-            avgInputTokens={
-              progress?.totalPromptTokens && progress?.totalLlmCalls
-                ? Math.round(progress.totalPromptTokens / progress.totalLlmCalls)
-                : undefined
-            }
-            onLaunched={(jobId) => {
+            metrics={metrics}
+            period={period}
+            onPeriodChange={setPeriod}
+            onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}
+            highlightedEmail={highlightedEmail ?? null}
+          />
+
+          <AnalysisTechnicalPanel
+            orderId={id}
+            order={order}
+            workspaceStage={stageData?.workspaceStage ?? 'first_data'}
+            isAdmin={isAdmin}
+            progress={progress}
+            jobEvents={jobEvents}
+            pipelineLog={pipelineLog}
+            benchmarkJobId={benchmarkJobId}
+            benchmarkProgress={benchmarkProgress}
+            benchmarkEvents={benchmarkEvents}
+            benchmarkLog={benchmarkLog}
+            benchmarkNow={benchmarkNow}
+            onBenchmarkLaunched={(jobId) => {
               setBenchmarkJobId(jobId);
               setBenchmarkLog([]);
               benchmarkLogSinceRef.current = 0;
               setBenchmarkEvents([]);
               benchmarkEventCursorRef.current = null;
             }}
-          />}
-
-          {/* Inline benchmark progress — rich display matching main analysis */}
-          {isAdmin && benchmarkJobId && benchmarkProgress && (() => {
-            const bmStartedAt = benchmarkProgress.startedAt ? new Date(benchmarkProgress.startedAt) : null;
-            const bmElapsed = bmStartedAt ? benchmarkNow - bmStartedAt.getTime() : 0;
-            return (
-              <Card className="border-purple-200">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2">
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                      {t('detail.benchmarkInProgress')}
-                    </CardTitle>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => cancelJobMutation.mutate(benchmarkJobId)}
-                      disabled={cancelJobMutation.isPending}
-                    >
-                      {cancelJobMutation.isPending ? (
-                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                      ) : (
-                        <Square className="h-4 w-4 mr-1" />
-                      )}
-                      {cancelJobMutation.isPending ? t('detail.cancelling') : t('detail.cancel')}
-                    </Button>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <Progress value={benchmarkProgress.progress ?? 0} />
-                  <div className="flex justify-between text-sm text-muted-foreground">
-                    <span>{benchmarkProgress.currentStep ?? t('detail.preparing')}</span>
-                    <span>
-                      {t('detail.commitsProgress', {
-                        current: benchmarkProgress.currentCommit ?? 0,
-                        total: benchmarkProgress.totalCommits ?? '?',
-                      })}
-                    </span>
-                  </div>
-
-                  {/* Timing & provider info */}
-                  <div className="flex items-center gap-4 text-xs text-muted-foreground font-mono">
-                    {bmStartedAt && (
-                      <span>
-                        {t('detail.started', { time: bmStartedAt.toLocaleTimeString('en-GB', { hour12: false }) })}
-                      </span>
-                    )}
-                    {bmElapsed > 0 && (
-                      <span className="tabular-nums">
-                        {t('detail.elapsed', { time: formatElapsed(bmElapsed) })}
-                      </span>
-                    )}
-                    {benchmarkProgress.cloneSizeMb != null && benchmarkProgress.cloneSizeMb > 0 && (
-                      <span>
-                        {t('detail.clone', { size: formatSizeFromMb(benchmarkProgress.cloneSizeMb) })}
-                      </span>
-                    )}
-                    {benchmarkProgress.llmProvider && (
-                      <span className="border-l pl-4 ml-2">
-                        {benchmarkProgress.llmProvider === 'openrouter' ? 'OpenRouter' : 'Ollama'}
-                        {benchmarkProgress.llmModel && (
-                          <span className="ml-1 text-foreground/70">{benchmarkProgress.llmModel}</span>
-                        )}
-                        {benchmarkProgress.llmConcurrency != null && (
-                          <span className="ml-2 text-foreground/50">
-                            {benchmarkProgress.llmConcurrency}x
-                            {benchmarkProgress.fdLlmConcurrency != null
-                              && benchmarkProgress.fdLlmConcurrency !== benchmarkProgress.llmConcurrency && (
-                                <> / FD {benchmarkProgress.fdLlmConcurrency}x</>
-                              )}
-                          </span>
-                        )}
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Runtime diagnostics */}
-                  <div className="rounded-md border bg-muted/30 p-3 space-y-2">
-                    <div className="text-xs font-medium">{t('detail.progressDiagnosticsTitle')}</div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-xs">
-                      <div>
-                        <span className="text-muted-foreground">{t('detail.jobStatusLabel')}:</span>{' '}
-                        <span className="font-mono">{benchmarkProgress.status}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">{t('detail.executionModeLabel')}:</span>{' '}
-                        <span className="font-mono">
-                          {benchmarkProgress.executionMode === 'modal'
-                            ? t('detail.executionModeModal')
-                            : t('detail.executionModeLocal')}
-                        </span>
-                      </div>
-                      {benchmarkProgress.currentRepoName && (
-                        <div className="md:col-span-2">
-                          <span className="text-muted-foreground">{t('detail.currentRepoLabel')}:</span>{' '}
-                          <span className="font-mono">{benchmarkProgress.currentRepoName}</span>
-                        </div>
-                      )}
-                      {benchmarkProgress.modalCallId && (
-                        <div className="md:col-span-2">
-                          <span className="text-muted-foreground">{t('detail.modalCallLabel')}:</span>{' '}
-                          <span className="font-mono">{benchmarkProgress.modalCallId}</span>
-                        </div>
-                      )}
-                      <div>
-                        <span className="text-muted-foreground">{t('detail.retryLabel')}:</span>{' '}
-                        <span className="font-mono">{benchmarkProgress.retryCount}/{benchmarkProgress.maxRetries}</span>
-                      </div>
-                      {benchmarkProgress.executionMode === 'modal' && (
-                        <>
-                          <div>
-                            <span className="text-muted-foreground">{t('detail.heartbeatLabel')}:</span>{' '}
-                            <span className="font-mono">
-                              {bmHeartbeatAgeMs != null ? t('detail.secondsAgo', { time: formatElapsed(bmHeartbeatAgeMs) }) : 'n/a'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-muted-foreground">{t('detail.lastUpdateLabel')}:</span>{' '}
-                            <span className="font-mono">
-                              {bmUpdateAgeMs != null ? t('detail.secondsAgo', { time: formatElapsed(bmUpdateAgeMs) }) : 'n/a'}
-                            </span>
-                          </div>
-                        </>
-                      )}
-                    </div>
-
-                    {benchmarkProgress.error && (
-                      <div className="rounded-md border border-red-200 bg-red-50/70 px-2 py-1 text-xs text-red-700">
-                        {t('detail.workerError', { error: benchmarkProgress.error })}
-                      </div>
-                    )}
-
-                    {bmIsPendingStale && (
-                      <div className="rounded-md border border-amber-200 bg-amber-50/70 px-2 py-1 text-xs text-amber-800">
-                        {t('detail.pendingStaleHint')}
-                      </div>
-                    )}
-
-                    {(bmIsHeartbeatStale || bmIsHeartbeatCritical) && (
-                      <div className={`rounded-md border px-2 py-1 text-xs ${
-                        bmIsHeartbeatCritical
-                          ? 'border-red-200 bg-red-50/70 text-red-700'
-                          : 'border-amber-200 bg-amber-50/70 text-amber-800'
-                      }`}>
-                        {bmIsHeartbeatCritical
-                          ? t('detail.heartbeatCriticalHint')
-                          : t('detail.heartbeatStaleHint')}
-                      </div>
-                    )}
-                  </div>
-
-                  <CommitProcessingTimeline
-                    events={benchmarkEvents}
-                    pipelineEntries={benchmarkLog}
-                    jobStartedAt={benchmarkProgress.startedAt ?? null}
-                    title={t('detail.commitTimelineTitle')}
-                    emptyLabel={t('detail.commitTimelineEmpty')}
-                    spanLabel={t('detail.commitTimelineSpan')}
-                    showChildrenLabel={t('detail.commitTimelineShowChildren')}
-                    hideChildrenLabel={t('detail.commitTimelineHideChildren')}
-                    commitLegendLabel={t('detail.commitTimelineLegendCommit')}
-                    fdChildLegendLabel={t('detail.commitTimelineLegendFdChild')}
-                  />
-
-                  {/* Live diagnostics events */}
-                  {benchmarkEvents.length > 0 ? (
-                    <AnalysisEventLog
-                      entries={benchmarkEvents}
-                      title={t('detail.liveEventsTitle')}
-                      copyLabel={t('detail.copyEvents')}
-                      copiedLabel={t('detail.copiedEvents')}
-                    />
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      {t('detail.noLiveEventsHint')}
-                    </p>
-                  )}
-
-                  {/* Live pipeline log */}
-                  {benchmarkLog.length > 0 ? (
-                    <PipelineLog entries={benchmarkLog} />
-                  ) : (
-                    <p className="text-xs text-muted-foreground">
-                      {t('detail.noLiveLogHint')}
-                    </p>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })()}
-
-          {/* Collapsible runtime log (events + pipeline log) */}
-          {(jobEvents.length > 0 || pipelineLog.length > 0) && (
-            <div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground"
-                onClick={() => setShowCompletedLog(!showCompletedLog)}
-              >
-                <Terminal className="h-4 w-4 mr-1" />
-                {t('detail.pipelineLog', { count: pipelineLog.length + jobEvents.length })}
-                {showCompletedLog ? (
-                  <ChevronUp className="h-4 w-4 ml-1" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 ml-1" />
-                )}
-              </Button>
-              {showCompletedLog && (
-                <div className="space-y-3">
-                  <CommitProcessingTimeline
-                    events={jobEvents}
-                    pipelineEntries={pipelineLog}
-                    jobStartedAt={progress?.startedAt ?? null}
-                    title={t('detail.commitTimelineTitle')}
-                    emptyLabel={t('detail.commitTimelineEmpty')}
-                    spanLabel={t('detail.commitTimelineSpan')}
-                    showChildrenLabel={t('detail.commitTimelineShowChildren')}
-                    hideChildrenLabel={t('detail.commitTimelineHideChildren')}
-                    commitLegendLabel={t('detail.commitTimelineLegendCommit')}
-                    fdChildLegendLabel={t('detail.commitTimelineLegendFdChild')}
-                  />
-                  {jobEvents.length > 0 && (
-                    <AnalysisEventLog
-                      entries={jobEvents}
-                      title={t('detail.liveEventsTitle')}
-                      copyLabel={t('detail.copyEvents')}
-                      copiedLabel={t('detail.copiedEvents')}
-                    />
-                  )}
-                  {pipelineLog.length > 0 && <PipelineLog entries={pipelineLog} />}
-                </div>
-              )}
-            </div>
-          )}
-
-          <GhostKpiCards
-            avgGhostPercent={avgGhost}
-            developerCount={displayMetrics.length}
-            commitCount={totalCommits}
-            totalWorkDays={totalWorkDays}
-            ghostNormHours={effectiveGhostNorm}
+            onAnalyze={() => analyzeMutation.mutate()}
+            analyzeIsPending={analyzeMutation.isPending}
+            onCancelJob={(jobId) => cancelJobMutation.mutate(jobId)}
+            cancelIsPending={cancelJobMutation.isPending}
+            onScopeSubmit={(settings) => handleScopeSubmit(settings, false)}
+            scopeIsPending={scopeMutation.isPending}
+            metrics={displayMetrics}
+            shareToken={shareToken}
+            onShareTokenChange={setShareToken}
           />
-
-          {/* Commit date range & analysis scope */}
-          {(() => {
-            const repoStart = fmtDate(order.availableStartDate, dateLocale);
-            const repoEnd = fmtDate(order.availableEndDate, dateLocale);
-            const scope = formatScopeDescription(order, t, dateLocale);
-            const isPartial = order.analysisPeriodMode !== 'ALL_TIME';
-            const displayCommits = totalCommits || order.totalCommits || 0;
-            return (repoStart && repoEnd) ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
-                <CalendarRange className="h-4 w-4 flex-shrink-0" />
-                <span>{t('detail.repoDateRange', { start: repoStart, end: repoEnd })}</span>
-                <span className="text-muted-foreground/40">&middot;</span>
-                {isPartial ? (
-                  <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50 text-xs font-normal">
-                    {scope}
-                  </Badge>
-                ) : (
-                  <span>{scope}</span>
-                )}
-                {displayCommits > 0 && (
-                  <>
-                    <span className="text-muted-foreground/40">&middot;</span>
-                    <span>{t('detail.commitsAnalyzed', { count: displayCommits.toLocaleString() })}</span>
-                  </>
-                )}
-              </div>
-            ) : null;
-          })()}
-
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
-            <TabsList>
-              <TabsTrigger value="overview">{t('detail.overview')}</TabsTrigger>
-              <TabsTrigger value="commits">{t('detail.commits')}</TabsTrigger>
-              {isAdmin && <TabsTrigger value="benchmark">
-                {t('detail.benchmark')}
-                {benchmarkRuns.filter(r => r.status === 'COMPLETED').length > 0 && (
-                  <span className="ml-1 text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full">
-                    {benchmarkRuns.filter(r => r.status === 'COMPLETED').length}
-                  </span>
-                )}
-              </TabsTrigger>}
-              <TabsTrigger value="calendar">{t('detail.effortTimeline')}</TabsTrigger>
-            </TabsList>
-
-            <TabsContent value="overview" className="space-y-6">
-              <div className="flex justify-end items-center gap-2 flex-wrap">
-                <GhostPeriodSelector value={period} onChange={setPeriod} />
-                <Select value={ghostNormMode} onValueChange={(value) => setGhostNormMode(value as GhostNormMode)}>
-                  <SelectTrigger className="w-[320px]">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="fixed">{t('detail.ghostNormModeFixed', { hours: GHOST_NORM.toFixed(1) })}</SelectItem>
-                    <SelectItem value="median">{t('detail.ghostNormModeMedian')}</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Badge variant="outline" className="text-xs">
-                  {t('detail.ghostNormCurrent', { hours: effectiveGhostNormLabel })}
-                </Badge>
-              </div>
-              {ghostNormMode === 'median' && effectiveGhostNormMode === 'fixed' && (
-                <p className="text-xs text-muted-foreground text-right">
-                  {t('detail.ghostNormMedianFallback', { hours: GHOST_NORM.toFixed(1) })}
-                </p>
-              )}
-              {ghostNormMode === 'median' && medianGhostNormLabel && (
-                <p className="text-xs text-muted-foreground text-right">
-                  {t('detail.ghostNormMedianValue', { hours: medianGhostNormLabel })}
-                </p>
-              )}
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('detail.ghostDistribution')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <GhostDistributionPanel
-                    metrics={displayMetrics}
-                    onDeveloperClick={(email) => router.push(`/orders/${id}/developers/${encodeURIComponent(email)}`)}
-                  />
-                </CardContent>
-              </Card>
-
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t('detail.developersTitle')}</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <GhostDeveloperTable
-                    metrics={displayMetrics}
-                    orderId={id}
-                    highlightedEmail={highlightedEmail}
-                    onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}
-                  />
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="commits">
-              <CommitAnalysisTable orderId={id} />
-            </TabsContent>
-
-            {isAdmin && (
-              <TabsContent value="benchmark">
-                <BenchmarkMatrix orderId={id} />
-              </TabsContent>
-            )}
-
-            <TabsContent value="calendar">
-              <EffortTimeline orderId={id} />
-            </TabsContent>
-          </Tabs>
-        </>
+        </div>
       )}
     </div>
   );

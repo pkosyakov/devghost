@@ -39,8 +39,67 @@ export async function GET(
 
     const { order } = result;
 
+    // Completed-analysis enrichment: stable counts + canonical repo ID
+    let topCanonicalRepoId: string | null = null;
+    let completedRepoCount: number | null = null;
+    let completedContributorCount: number | null = null;
+    let completedCommitCount: number | null = null;
+    if (order.status === 'COMPLETED') {
+      // Stable counts from successful base analysis rows (excludes benchmarks and errors)
+      const baseWhere = { orderId: order.id, jobId: null, method: { not: 'error' } };
+      const [repoRows, contributorRows, commitCount] = await Promise.all([
+        prisma.commitAnalysis.findMany({
+          where: baseWhere,
+          select: { repository: true },
+          distinct: ['repository'],
+        }),
+        prisma.commitAnalysis.findMany({
+          where: baseWhere,
+          select: { authorEmail: true },
+          distinct: ['authorEmail'],
+        }),
+        prisma.commitAnalysis.count({
+          where: baseWhere,
+        }),
+      ]);
+      completedRepoCount = repoRows.length;
+      completedContributorCount = contributorRows.length;
+      completedCommitCount = commitCount;
+
+      // topCanonicalRepoId: match actually analyzed repos (not selectedRepos snapshot)
+      // to workspace, prioritized by commit count (most active repo first)
+      if (repoRows.length > 0) {
+        const workspace = await prisma.workspace.findUnique({
+          where: { ownerId: order.userId },
+          select: { id: true },
+        });
+        if (workspace) {
+          const reposByActivity = await prisma.commitAnalysis.groupBy({
+            by: ['repository'],
+            where: baseWhere,
+            _count: { id: true },
+            orderBy: { _count: { id: 'desc' } },
+          });
+          for (const entry of reposByActivity) {
+            const match = await prisma.repository.findFirst({
+              where: { workspaceId: workspace.id, fullName: entry.repository },
+              select: { id: true },
+            });
+            if (match) {
+              topCanonicalRepoId = match.id;
+              break;
+            }
+          }
+        }
+      }
+    }
+
     return apiResponse({
       ...order,
+      topCanonicalRepoId,
+      completedRepoCount,
+      completedContributorCount,
+      completedCommitCount,
       metrics: order.metrics.map((m) => ({
         ...m,
         totalEffortHours: Number(m.totalEffortHours ?? 0),
