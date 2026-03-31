@@ -26,15 +26,10 @@ import { Link } from '@/i18n/navigation';
 import {
   Loader2,
   ChevronLeft,
-  ChevronDown,
-  ChevronUp,
   Play,
   RefreshCw,
   AlertCircle,
-  Users,
-  Terminal,
   Square,
-  CalendarRange,
   Coins,
   AlertTriangle,
 } from 'lucide-react';
@@ -126,8 +121,6 @@ interface AnalysisProgressData {
   eventCursor: string | null;
 }
 
-type GhostNormMode = 'fixed' | 'median';
-
 // Fetch analysis progress
 async function fetchProgress(
   id: string,
@@ -185,17 +178,6 @@ function formatSizeFromMb(sizeMb: number): string {
   if (sizeMb >= 1024) return `${(sizeMb / 1024).toFixed(1)} GB`;
   if (sizeMb >= 100) return `${Math.round(sizeMb)} MB`;
   return `${sizeMb.toFixed(1)} MB`;
-}
-
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  if (sorted.length % 2 === 1) return sorted[middle] ?? null;
-  const left = sorted[middle - 1];
-  const right = sorted[middle];
-  if (left == null || right == null) return null;
-  return (left + right) / 2;
 }
 
 function sumSelectedRepoSizeKb(selectedRepos: unknown): number {
@@ -275,7 +257,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
-  const [ghostNormMode, setGhostNormMode] = useState<GhostNormMode>('fixed');
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Contributor selection state
@@ -594,12 +575,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const benchmarkNow = useNow(!!benchmarkJobId);
 
-  // Benchmark diagnostics — mirrors main analysis heartbeat/stale detection
-  const bmHeartbeatAgeMs = benchmarkProgress?.heartbeatAt ? benchmarkNow - new Date(benchmarkProgress.heartbeatAt).getTime() : null;
-  const bmUpdateAgeMs = benchmarkProgress?.updatedAt ? benchmarkNow - new Date(benchmarkProgress.updatedAt).getTime() : null;
-  const bmIsPendingStale = benchmarkProgress?.status === 'PENDING' && bmUpdateAgeMs != null && bmUpdateAgeMs > 2 * 60 * 1000;
-  const bmIsHeartbeatStale = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 2 * 60 * 1000;
-  const bmIsHeartbeatCritical = benchmarkProgress?.status === 'RUNNING' && bmHeartbeatAgeMs != null && bmHeartbeatAgeMs > 10 * 60 * 1000;
 
   const { data: benchmarkRuns = [] } = useQuery<{ id: string; status: string; llmModel: string | null; completedAt: string | null; createdAt: string }[]>({
     queryKey: ['benchmarks', id],
@@ -816,13 +791,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     return <div className="text-center p-8">{t('detail.orderNotFound')}</div>;
   }
 
-  const normCandidates = metrics
-    .filter((m: GhostMetric) => m.hasEnoughData && Number.isFinite(m.avgDailyEffort) && m.avgDailyEffort > 0)
-    .map((m: GhostMetric) => m.avgDailyEffort);
-  const medianGhostNorm = median(normCandidates);
-  const effectiveGhostNorm = ghostNormMode === 'median' && medianGhostNorm != null
-    ? medianGhostNorm
-    : GHOST_NORM;
+  // Ghost norm for orchestrator-level KPIs (fixed baseline).
+  // Interactive norm selection lives inside AnalysisResultsOverview.
+  const effectiveGhostNorm = GHOST_NORM;
   const displayMetrics: GhostMetric[] = metrics.map((metric: GhostMetric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
       return metric;
@@ -844,7 +815,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const completedCommitCount = displayMetrics.reduce(
     (sum: number, m: GhostMetric) => sum + m.commitCount, 0
   );
-  const completedRepoCount = Array.isArray(order?.selectedRepos) ? order.selectedRepos.length : 0;
+  // completedRepoCount from server-side analysis data (added in order API response)
+  const completedRepoCount: number = order?.completedRepoCount
+    ?? (Array.isArray(order?.selectedRepos) ? order.selectedRepos.length : 0);
 
   // Calculate aggregate KPIs from displayed metrics (respect selected Ghost Norm mode)
   const activeMetrics = displayMetrics.filter((m: GhostMetric) => m.hasEnoughData);

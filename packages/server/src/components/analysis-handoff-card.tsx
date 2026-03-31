@@ -21,7 +21,7 @@ export function AnalysisHandoffCard({
   unresolvedIdentityCount,
 }: AnalysisHandoffCardProps) {
   const t = useTranslations('analysisResults');
-  const fromParam = `fromAnalysis=${analysisId}`;
+  const fromParam = `fromAnalysis=${encodeURIComponent(analysisId)}`;
 
   const identityBanner = unresolvedIdentityCount > 0 && (
     <div className="flex items-center justify-between rounded-lg border border-yellow-200 bg-yellow-50 px-4 py-2 dark:border-yellow-800 dark:bg-yellow-950">

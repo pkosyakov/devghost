@@ -39,9 +39,17 @@ export async function GET(
 
     const { order } = result;
 
-    // Resolve first canonical repository for handoff CTA (workspace-scoped)
+    // Completed-analysis enrichment: repo count from actual analysis data, canonical repo ID
     let topCanonicalRepoId: string | null = null;
+    let completedRepoCount: number | null = null;
     if (order.status === 'COMPLETED') {
+      // Distinct repos from base analysis rows (excludes benchmarks via jobId: null)
+      const repoRows = await prisma.commitAnalysis.findMany({
+        where: { orderId: order.id, jobId: null },
+        select: { repository: true },
+        distinct: ['repository'],
+      });
+      completedRepoCount = repoRows.length;
       const repoFullNames = Array.isArray(order.selectedRepos)
         ? (order.selectedRepos as Array<{ full_name?: string; fullName?: string }>)
             .map((r) => r.full_name ?? r.fullName)
@@ -68,6 +76,7 @@ export async function GET(
     return apiResponse({
       ...order,
       topCanonicalRepoId,
+      completedRepoCount,
       metrics: order.metrics.map((m) => ({
         ...m,
         totalEffortHours: Number(m.totalEffortHours ?? 0),
