@@ -780,10 +780,6 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const includedCount = allDevelopers.filter((d: any) => !excludedDevelopers.has(d.email)).length;
   const totalDevCount = allDevelopers.length;
-  const activeCommitCount = allDevelopers
-    .filter((d: any) => d.email && !excludedDevelopers.has(d.email))
-    .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
-
   // Authoritative server estimate — null while loading (loading guard)
   const estimatedCredits = billingPreview?.estimatedCredits ?? null;
   const isBillingReady = isBillingPreviewFetched && estimatedCredits !== null;
