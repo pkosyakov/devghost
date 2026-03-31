@@ -439,6 +439,45 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     staleTime: 30_000,
   });
 
+  // Billing preview — authoritative server-side scoped estimate.
+  // Route reads persisted order scope; we send excludedEmails as the only client override.
+  // Query key includes persisted scope values so a refetch triggers after order PUT.
+  const {
+    data: billingPreview,
+    isLoading: isBillingPreviewLoading,
+    isFetched: isBillingPreviewFetched,
+  } = useQuery({
+    queryKey: [
+      'billing-preview',
+      id,
+      Array.from(excludedDevelopers).sort().join(','),
+      // Persisted scope — query invalidates when order is refetched after scope PUT
+      order?.analysisPeriodMode,
+      order?.analysisStartDate,
+      order?.analysisEndDate,
+      order?.analysisCommitLimit,
+      JSON.stringify(order?.analysisYears),
+    ],
+    queryFn: async () => {
+      const params = new URLSearchParams({ cacheMode: 'model' });
+      if (excludedDevelopers.size > 0) {
+        params.set('excludedEmails', Array.from(excludedDevelopers).join(','));
+      }
+      const res = await fetch(`/api/orders/${id}/billing-preview?${params}`);
+      if (!res.ok) return null;
+      const json = await res.json();
+      return json.data as {
+        totalScopedCommits: number;
+        reusableCachedCommits: number;
+        billableCommits: number;
+        estimatedCredits: number;
+        isFirstRunEstimate: boolean;
+      } | null;
+    },
+    enabled: order?.status === 'DEVELOPERS_LOADED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS',
+    staleTime: 10_000,
+  });
+
   const prepareAnalysisLaunch = useCallback(() => {
     setAnalysisStarted(true);
     setAnalysisJobId(null);
@@ -745,18 +784,16 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     .filter((d: any) => d.email && !excludedDevelopers.has(d.email))
     .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
 
-  // Credit estimation — mirrors analyze route logic:
-  // only count rows with a usable email that are not excluded.
-  const estimatedCredits = useMemo(() => {
-    return Math.max(1, allDevelopers
-      .filter((d: any) => !excludedDevelopers.has(d.email))
-      .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0));
-  }, [allDevelopers, excludedDevelopers]);
+  // Authoritative server estimate — null while loading (loading guard)
+  const estimatedCredits = billingPreview?.estimatedCredits ?? null;
+  const isBillingReady = isBillingPreviewFetched && estimatedCredits !== null;
 
   const availableCredits = balanceData?.balance?.available ?? 0;
-  const hasEnoughCredits = availableCredits >= estimatedCredits;
-  const creditDeficit = Math.max(0, estimatedCredits - availableCredits);
-  const canStartAnalysis = hasEnoughCredits || isAdmin;
+  const hasEnoughCredits = estimatedCredits === null
+    ? false
+    : estimatedCredits === 0 || availableCredits >= estimatedCredits;
+  const creditDeficit = estimatedCredits === null ? 0 : Math.max(0, estimatedCredits - availableCredits);
+  const canStartAnalysis = isBillingReady && (hasEnoughCredits || isAdmin);
   const heartbeatAgeMs = progress?.heartbeatAt ? now - new Date(progress.heartbeatAt).getTime() : null;
   const updateAgeMs = progress?.updatedAt ? now - new Date(progress.updatedAt).getTime() : null;
   const isPendingStale = progress?.status === 'PENDING' && updateAgeMs != null && updateAgeMs > 2 * 60 * 1000;
@@ -1016,7 +1053,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           {/* Billing preflight */}
           <div className="space-y-3 pt-4 border-t">
             {/* LLM provider + cost info */}
-            {llmInfo && estimatedCredits > 0 && (
+            {llmInfo && (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <Badge variant="outline" className={
                   llmInfo.provider === 'openrouter'
@@ -1027,22 +1064,33 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 </Badge>
                 <span>
                   {llmInfo.provider === 'openrouter' ? (
-                    <>
-                      ~<span className="font-medium text-foreground">
-                        ${(estimatedCredits * (llmInfo.costPerCommitUsd ?? 0)).toFixed(4)}
-                      </span>{' '}
-                      {t('detail.costForCommits', { count: estimatedCredits })}
-                    </>
+                    estimatedCredits != null && estimatedCredits > 0 ? (
+                      <>
+                        ~<span className="font-medium text-foreground">
+                          ${(estimatedCredits * (llmInfo.costPerCommitUsd ?? 0)).toFixed(4)}
+                        </span>{' '}
+                        {t('detail.costForCommits', { count: estimatedCredits })}
+                      </>
+                    ) : estimatedCredits === 0 ? (
+                      <span className="text-green-600">{t('detail.zeroBillableCommits')}</span>
+                    ) : null
                   ) : (
-                    <>{t('detail.freeLocalProcessing', { count: estimatedCredits })}</>
+                    estimatedCredits != null ? (
+                      <>{t('detail.freeLocalProcessing', { count: estimatedCredits })}</>
+                    ) : null
                   )}
                 </span>
                 <span className="text-xs text-muted-foreground/70">{llmInfo.model}</span>
               </div>
             )}
+            {billingPreview?.isFirstRunEstimate && (order?.analysisPeriodMode === 'DATE_RANGE' || order?.analysisPeriodMode === 'SELECTED_YEARS') && (
+              <p className="text-xs text-muted-foreground/70 italic">
+                {t('detail.firstRunEstimateHint')}
+              </p>
+            )}
 
             {/* Credit balance check */}
-            {balanceData && (
+            {balanceData && estimatedCredits !== null && (
               <div className={`flex items-center gap-2 text-sm rounded-md border px-3 py-2 ${
                 hasEnoughCredits
                   ? 'border-blue-200 bg-blue-50/50 text-blue-800'
@@ -1103,9 +1151,15 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {t('detail.adminCreditBypassHint')}
                   </p>
                 )}
+                {isBillingPreviewLoading && (
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    <span>{t('detail.calculatingCredits')}</span>
+                  </div>
+                )}
                 <Button
                   onClick={handleStartAnalysis}
-                  disabled={includedCount === 0 || analyzeMutation.isPending}
+                  disabled={includedCount === 0 || analyzeMutation.isPending || !isBillingReady}
                 >
                   {analyzeMutation.isPending ? (
                     <Loader2 className="h-4 w-4 mr-2 animate-spin" />
