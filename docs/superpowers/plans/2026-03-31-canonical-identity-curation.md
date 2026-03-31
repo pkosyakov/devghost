@@ -757,10 +757,17 @@ Keep:
 const [excludedDevelopers, setExcludedDevelopers] = useState<Set<string>>(new Set());
 ```
 
-Remove the `detectDuplicates` call in useEffect (lines ~654-672):
+Simplify the useEffect (lines ~654-672): remove the `detectDuplicates` call and `setDeveloperGroups`, but **keep the `excludedDevelopers` hydration** from the order:
 ```typescript
-// DELETE the useEffect that calls detectDuplicates and sets developerGroups
+// KEEP — hydrate excludedDevelopers from persisted order state
+useEffect(() => {
+  if (order?.excludedDevelopers && Array.isArray(order.excludedDevelopers) && order.excludedDevelopers.length > 0) {
+    setExcludedDevelopers(new Set(order.excludedDevelopers as string[]));
+  }
+}, [order?.excludedDevelopers]);
 ```
+
+This ensures existing READY_FOR_ANALYSIS orders and previously configured exclusions are restored when the page loads, instead of silently reopening with everything included.
 
 Remove `handleSaveMapping` function (lines ~829-864).
 
@@ -850,7 +857,7 @@ Replace lines ~1102-1262 with:
               </div>
             </div>
             <div className="text-sm text-muted-foreground whitespace-nowrap">
-              {dev.commitCount} commits
+              {dev.commitCount ?? dev.commit_count ?? 0} commits
             </div>
           </div>
         );
