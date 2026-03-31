@@ -210,7 +210,7 @@ export async function POST(
   const hasScopeUpdate = body.analysisPeriodMode !== undefined;
 
   // If excludedDevelopers provided in request body, persist to order
-  if (body.excludedDevelopers) {
+  if (body.excludedDevelopers !== undefined) {
     await prisma.order.update({
       where: { id },
       data: { excludedDevelopers: body.excludedDevelopers },
