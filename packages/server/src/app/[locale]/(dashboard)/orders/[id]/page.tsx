@@ -745,17 +745,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     .filter((d: any) => d.email && !excludedDevelopers.has(d.email))
     .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0);
 
-  // Credit estimation — mirrors analyze route logic
+  // Credit estimation — mirrors analyze route logic:
+  // only count rows with a usable email that are not excluded.
   const estimatedCredits = useMemo(() => {
-    if (!order?.selectedDevelopers) return 0;
-    const devs = order.selectedDevelopers as Array<{ email?: string; commit_count?: number; commitCount?: number }>;
-    let total = 0;
-    for (const d of devs) {
-      if (d.email && excludedDevelopers.has(d.email)) continue;
-      total += d.commit_count ?? d.commitCount ?? 0;
-    }
-    return Math.max(1, total);
-  }, [order?.selectedDevelopers, excludedDevelopers]);
+    return Math.max(1, allDevelopers
+      .filter((d: any) => !excludedDevelopers.has(d.email))
+      .reduce((sum: number, d: any) => sum + (d.commitCount ?? d.commit_count ?? 0), 0));
+  }, [allDevelopers, excludedDevelopers]);
 
   const availableCredits = balanceData?.balance?.available ?? 0;
   const hasEnoughCredits = availableCredits >= estimatedCredits;
