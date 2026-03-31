@@ -451,7 +451,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const analyzeMutation = useMutation({
     mutationFn: async (opts: { excludedDevelopers?: string[] } | void) => {
-      const endpoint = isAdmin
+      // When called with a body (from contributor selector), always use the
+      // normal analyze endpoint — it handles excludedDevelopers persistence.
+      // Admin rerun endpoint is only for retry/re-analyze of completed/failed orders.
+      const endpoint = (!opts && isAdmin)
         ? `/api/admin/orders/${id}/rerun`
         : `/api/orders/${id}/analyze`;
       const res = await fetch(endpoint, {
@@ -657,12 +660,16 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     }
   }, [order?.status, queryClient, id]);
 
-  // Hydrate excludedDevelopers from persisted order state
+  // Hydrate excludedDevelopers from persisted order state.
+  // Also clears local state when persisted exclusions are empty/null
+  // (e.g., navigating between orders or after "Select All" clears them).
   useEffect(() => {
     if (order?.excludedDevelopers && Array.isArray(order.excludedDevelopers) && order.excludedDevelopers.length > 0) {
       setExcludedDevelopers(new Set(order.excludedDevelopers as string[]));
+    } else if (order?.id) {
+      setExcludedDevelopers(new Set());
     }
-  }, [order?.excludedDevelopers]);
+  }, [order?.excludedDevelopers, order?.id]);
 
   // Auto-extract developers when order is in DRAFT status
   useEffect(() => {
@@ -716,8 +723,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   }, [excludedDevelopers, analyzeMutation]);
 
   // Contributor selector derived values
+  // Filter out developers without a usable email — they cannot be keyed,
+  // excluded, or billed. Legacy orders may contain blank-email rows.
   const allDevelopers = useMemo(
-    () => (order?.selectedDevelopers ?? []) as any[],
+    () => ((order?.selectedDevelopers ?? []) as any[]).filter((d: any) => d.email),
     [order?.selectedDevelopers]
   );
   const filteredDevelopers = useMemo(() => {
