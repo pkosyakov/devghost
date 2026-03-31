@@ -248,7 +248,12 @@
       "repositoriesCta": "Check repositories",
       "teamCtaTitle": "Ready to create your first team?",
       "teamCta": "Create first team from repository",
-      "teamHint": "Start from your most active repository — the system will suggest team members from its contributors."
+      "teamHint": "Start from your most active repository — the system will suggest team members from its contributors.",
+      "latestAnalysis": {
+        "title": "Latest analysis ready",
+        "subtitle": "{repoCount} repos, {contributorCount} contributors, {commitCount} commits",
+        "cta": "View analysis results"
+      }
     },
     "operational": {
       "firstSavedView": {
@@ -256,6 +261,9 @@
         "description": "Open your team, choose a useful date range, and save it as a report you can reopen anytime.",
         "openTeam": "Open team and save view",
         "learnMore": "Open Reports"
+      },
+      "latestAnalysis": {
+        "label": "Latest analysis"
       }
     },
     "error": {
@@ -612,6 +620,32 @@
       "failedFetchRepo": "Failed to fetch repository",
       "failedAddRepo": "Failed to add repository",
       "failedCreateOrder": "Failed to create analysis"
+    }
+  },
+  "analysisResults": {
+    "summary": {
+      "title": "Analysis Results",
+      "subtitle": "{repoCount} repositories, {contributorCount} contributors, {commitCount} commits analyzed",
+      "completedAt": "Completed {date}"
+    },
+    "handoff": {
+      "title": "Your analysis is complete. Here's what to do next.",
+      "description": "Review the imported data, then create your first team.",
+      "peopleCta": "Review contributors",
+      "repositoriesCta": "Check repositories",
+      "teamCta": "Create first team",
+      "teamFallbackCta": "Find a repository to start your first team",
+      "operationalPeople": "People",
+      "operationalRepositories": "Repositories",
+      "operationalLabel": "Review imported data:",
+      "identityBanner": "{count} unresolved identities need review"
+    },
+    "technical": {
+      "label": "Technical details"
+    },
+    "returnBanner": {
+      "text": "You came here from analysis results.",
+      "cta": "Back to analysis results"
     }
   },
   "billing": {
@@ -1436,9 +1470,9 @@
       "title": "Create Team from Repository",
       "name": "Team name",
       "namePlaceholder": "e.g. Backend Core",
-    "contributors": "Suggested contributors",
-    "recentHint": "Preselected from the most recent repository activity.",
-    "selectAll": "Select all",
+      "contributors": "Suggested contributors",
+      "recentHint": "Preselected from the most recent repository activity.",
+      "selectAll": "Select all",
       "clearAll": "Clear",
       "commits": "{count} commits",
       "emptyContributors": "No canonical contributors found for this repository.",
