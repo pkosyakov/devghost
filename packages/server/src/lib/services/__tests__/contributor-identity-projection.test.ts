@@ -116,10 +116,10 @@ describe('projectContributorsFromOrder — flat seed', () => {
     // No existing aliases or contributors
     vi.mocked(prisma.contributorAlias.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.contributor.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.contributor.create).mockImplementation(async ({ data }) => ({
+    (vi.mocked(prisma.contributor.create) as any).mockImplementation(async ({ data }: any) => ({
       id: `c-${data.primaryEmail}`,
       ...data,
-    }) as any);
+    }));
     vi.mocked(prisma.contributorAlias.create).mockResolvedValue({} as any);
 
     await projectContributorsFromOrder(orderId);
@@ -151,9 +151,9 @@ describe('projectContributorsFromOrder — flat seed', () => {
 
     vi.mocked(prisma.contributorAlias.findFirst).mockResolvedValue(null);
     vi.mocked(prisma.contributor.findFirst).mockResolvedValue(null);
-    vi.mocked(prisma.contributor.create).mockImplementation(async ({ data }) => ({
+    (vi.mocked(prisma.contributor.create) as any).mockImplementation(async ({ data }: any) => ({
       id: 'c-new', ...data,
-    }) as any);
+    }));
     vi.mocked(prisma.contributorAlias.create).mockResolvedValue({} as any);
 
     await projectContributorsFromOrder(orderId);
