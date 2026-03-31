@@ -39,36 +39,57 @@ export async function GET(
 
     const { order } = result;
 
-    // Completed-analysis enrichment: repo count from actual analysis data, canonical repo ID
+    // Completed-analysis enrichment: stable counts + canonical repo ID
     let topCanonicalRepoId: string | null = null;
     let completedRepoCount: number | null = null;
+    let completedContributorCount: number | null = null;
+    let completedCommitCount: number | null = null;
     if (order.status === 'COMPLETED') {
-      // Distinct repos from base analysis rows (excludes benchmarks via jobId: null)
-      const repoRows = await prisma.commitAnalysis.findMany({
-        where: { orderId: order.id, jobId: null },
-        select: { repository: true },
-        distinct: ['repository'],
-      });
+      // Stable counts from successful base analysis rows (excludes benchmarks and errors)
+      const baseWhere = { orderId: order.id, jobId: null, method: { not: 'error' } };
+      const [repoRows, contributorRows, commitCount] = await Promise.all([
+        prisma.commitAnalysis.findMany({
+          where: baseWhere,
+          select: { repository: true },
+          distinct: ['repository'],
+        }),
+        prisma.commitAnalysis.findMany({
+          where: baseWhere,
+          select: { authorEmail: true },
+          distinct: ['authorEmail'],
+        }),
+        prisma.commitAnalysis.count({
+          where: baseWhere,
+        }),
+      ]);
       completedRepoCount = repoRows.length;
-      const repoFullNames = Array.isArray(order.selectedRepos)
-        ? (order.selectedRepos as Array<{ full_name?: string; fullName?: string }>)
-            .map((r) => r.full_name ?? r.fullName)
-            .filter((n): n is string => !!n)
-        : [];
-      if (repoFullNames.length > 0) {
+      completedContributorCount = contributorRows.length;
+      completedCommitCount = commitCount;
+
+      // topCanonicalRepoId: match actually analyzed repos (not selectedRepos snapshot)
+      // to workspace, prioritized by commit count (most active repo first)
+      if (repoRows.length > 0) {
         const workspace = await prisma.workspace.findUnique({
           where: { ownerId: order.userId },
           select: { id: true },
         });
         if (workspace) {
-          const match = await prisma.repository.findFirst({
-            where: {
-              workspaceId: workspace.id,
-              fullName: { in: repoFullNames },
-            },
-            select: { id: true },
+          const reposByActivity = await prisma.commitAnalysis.groupBy({
+            by: ['repository'],
+            where: baseWhere,
+            _count: { id: true },
+            orderBy: { _count: { id: 'desc' } },
           });
-          topCanonicalRepoId = match?.id ?? null;
+          for (const entry of reposByActivity) {
+            const match = await prisma.repository.findFirst({
+              where: { workspaceId: workspace.id, fullName: entry.repository },
+              select: { id: true },
+            });
+            if (match) {
+              topCanonicalRepoId = match.id;
+              break;
+            }
+          }
         }
       }
     }
@@ -77,6 +98,8 @@ export async function GET(
       ...order,
       topCanonicalRepoId,
       completedRepoCount,
+      completedContributorCount,
+      completedCommitCount,
       metrics: order.metrics.map((m) => ({
         ...m,
         totalEffortHours: Number(m.totalEffortHours ?? 0),

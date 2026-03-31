@@ -63,12 +63,13 @@ describe('getLatestCompletedAnalysis', () => {
       commitCount: 95,
     });
 
-    // Verify commit/repo queries exclude benchmark rows (jobId: null)
+    // Verify commit/repo queries exclude benchmark rows AND error rows
+    const expectedWhere = { orderId: 'order-1', jobId: null, method: { not: 'error' } };
     expect(mockCommitAnalysisCount).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { orderId: 'order-1', jobId: null } })
+      expect.objectContaining({ where: expectedWhere })
     );
     expect(mockCommitAnalysisFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { orderId: 'order-1', jobId: null } })
+      expect.objectContaining({ where: expectedWhere })
     );
   });
 });

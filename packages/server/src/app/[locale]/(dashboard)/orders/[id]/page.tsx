@@ -810,14 +810,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     };
   });
 
-  // Completed-result counts (not raw extraction-era)
-  const completedContributorCount = displayMetrics.length;
-  const completedCommitCount = displayMetrics.reduce(
-    (sum: number, m: GhostMetric) => sum + m.commitCount, 0
-  );
-  // completedRepoCount from server-side analysis data (added in order API response)
+  // Stable completed-result counts from server (independent of period filter)
   const completedRepoCount: number = order?.completedRepoCount
     ?? (Array.isArray(order?.selectedRepos) ? order.selectedRepos.length : 0);
+  const completedContributorCount: number = order?.completedContributorCount
+    ?? displayMetrics.length;
+  const completedCommitCount: number = order?.completedCommitCount
+    ?? displayMetrics.reduce((sum: number, m: GhostMetric) => sum + m.commitCount, 0);
 
   // Calculate aggregate KPIs from displayed metrics (respect selected Ghost Norm mode)
   const activeMetrics = displayMetrics.filter((m: GhostMetric) => m.hasEnoughData);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useTranslations } from 'next-intl';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -133,8 +133,13 @@ export function AnalysisTechnicalPanel(props: AnalysisTechnicalPanelProps) {
 
   const t = useTranslations('orders');
   const tResults = useTranslations('analysisResults');
-  const defaultOpen = workspaceStage !== 'first_data';
-  const [isOpen, setIsOpen] = useState(defaultOpen);
+  const [isOpen, setIsOpen] = useState(workspaceStage !== 'first_data');
+  const userToggled = useRef(false);
+  useEffect(() => {
+    if (!userToggled.current) {
+      setIsOpen(workspaceStage !== 'first_data');
+    }
+  }, [workspaceStage]);
   const [publishRepo, setPublishRepo] = useState<string | null>(null);
   const [showEditScope, setShowEditScope] = useState(false);
   const [showCompletedLog, setShowCompletedLog] = useState(false);
@@ -158,7 +163,7 @@ export function AnalysisTechnicalPanel(props: AnalysisTechnicalPanelProps) {
   const totalCommits = progress?.totalCommits ?? order.totalCommits ?? 0;
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen}>
+    <Collapsible open={isOpen} onOpenChange={(open) => { userToggled.current = true; setIsOpen(open); }}>
       <CollapsibleTrigger asChild>
         <Button variant="ghost" className="flex items-center gap-2 text-muted-foreground">
           {isOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}

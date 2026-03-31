@@ -30,8 +30,8 @@ export async function getLatestCompletedAnalysis(userId: string) {
   });
   const distinctContributors = new Set(metricRows.map((r) => r.developerEmail));
 
-  // commitCount and repoCount: from base analysis rows only (jobId: null excludes benchmarks)
-  const baseWhere = { orderId: order.id, jobId: null };
+  // commitCount and repoCount: from successful base analysis rows (excludes benchmarks and errors)
+  const baseWhere = { orderId: order.id, jobId: null, method: { not: 'error' } };
 
   const commitCount = await prisma.commitAnalysis.count({
     where: baseWhere,
