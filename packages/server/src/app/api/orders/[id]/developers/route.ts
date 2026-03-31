@@ -91,7 +91,7 @@ function detectDuplicates(developers: ExtractedDeveloper[]): {
 
   for (let i = 0; i < developers.length; i++) {
     const dev = developers[i];
-    const devKey = dev.email || dev.name.toLowerCase();
+    const devKey = dev.email;
 
     if (processed.has(devKey)) continue;
 
@@ -101,7 +101,7 @@ function detectDuplicates(developers: ExtractedDeveloper[]): {
     // Find similar developers
     for (let j = i + 1; j < developers.length; j++) {
       const other = developers[j];
-      const otherKey = other.email || other.name.toLowerCase();
+      const otherKey = other.email;
 
       if (processed.has(otherKey)) continue;
 
