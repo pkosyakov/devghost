@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useCallback } from 'react';
+import { AnalysisReturnBanner } from '@/components/analysis-return-banner';
 import { useTranslations } from 'next-intl';
 import { useSearchParams } from 'next/navigation';
 import { useRouter, usePathname } from '@/i18n/navigation';
@@ -127,6 +128,7 @@ function PeoplePage() {
 
   return (
     <div className="space-y-6 p-6">
+      <AnalysisReturnBanner />
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">{t('title')}</h1>
         <ScreenHelpTrigger
