@@ -1107,7 +1107,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             )}
 
             {/* Start Analysis / Insufficient credits */}
-            {!canStartAnalysis && balanceData ? (
+            {!canStartAnalysis && balanceData && isBillingReady ? (
               <div className="space-y-2">
                 <Button disabled>
                   <Play className="h-4 w-4 mr-2" />

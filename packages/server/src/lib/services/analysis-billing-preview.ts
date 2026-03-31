@@ -347,7 +347,23 @@ export async function computeBillingPreview(
         );
 
     const cappedCache = Math.min(cached, total);
-    const billable = Math.max(0, total - cappedCache);
+    let billable = Math.max(0, total - cappedCache);
+
+    // First-run safety: cross-order cache counts hashes from other orders but
+    // we cannot hash-join them against the current order's actual commit set
+    // (which doesn't exist yet). If cache subtraction drives billable to 0 but
+    // total > 0, keep a 1-credit safety margin so the analyze route still
+    // reserves credits. This avoids CREDIT_EXHAUSTED when the worker encounters
+    // commits that weren't in the cross-order cache after all.
+    // This is NOT the old universal Math.max(1) — it only applies to first-run
+    // where hash-level verification is impossible.
+    if (total > 0 && billable === 0) {
+      billable = 1;
+      log.debug(
+        { total, cached: cappedCache },
+        'First-run safety: cache >= total but no hash-level join — keeping 1-credit floor',
+      );
+    }
 
     log.info(
       { total, cached: cappedCache, billable, isFirstRun: true },

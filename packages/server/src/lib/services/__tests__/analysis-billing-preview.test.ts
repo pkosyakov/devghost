@@ -117,7 +117,7 @@ describe('computeBillingPreview — first-run path', () => {
     expect(result.estimatedCredits).toBe(7);
   });
 
-  it('shows zero billable when cross-order cache covers all commits', async () => {
+  it('keeps 1-credit safety margin when cross-order cache covers all commits (no hash-level join)', async () => {
     mockedPrisma.$queryRaw.mockResolvedValue([{ count: 15 }]);
     const input = makeInput({
       selectedDevelopers: [{ email: 'a@x.com', commitCount: 10 }],
@@ -128,8 +128,10 @@ describe('computeBillingPreview — first-run path', () => {
     expect(result.totalScopedCommits).toBe(10);
     // Cache is capped at total
     expect(result.reusableCachedCommits).toBe(10);
-    expect(result.billableCommits).toBe(0);
-    expect(result.estimatedCredits).toBe(0);
+    // First-run safety: billable stays 1 because we cannot hash-join cache
+    // against the current order's actual commit set
+    expect(result.billableCommits).toBe(1);
+    expect(result.estimatedCredits).toBe(1);
   });
 
   it('excludes specified emails', async () => {
