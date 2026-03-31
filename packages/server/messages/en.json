@@ -383,6 +383,18 @@
       "repositoriesCta": "Check repositories",
       "teamCta": "Create first team from repository"
     },
+    "contributorSelector": {
+      "title": "Contributors",
+      "subtitle": "Select which contributors to include in the analysis. Deselected contributors will be excluded from results and billing.",
+      "estimated": "Estimated credits: {count}",
+      "included": "{count} included",
+      "excluded": "{count} excluded",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "startAnalysis": "Start Analysis",
+      "searching": "Search contributors...",
+      "commits": "{count, plural, one {# commit} other {# commits}}"
+    },
     "detail": {
       "back": "Back",
       "analysisCost": "Analysis cost: {cost} ({tokens} tokens, {calls} calls, {model})",
@@ -561,11 +573,22 @@
     "new": {
       "title": "New Analysis",
       "description": "Select repositories to analyze",
+      "help": {
+        "what": "Use this screen to choose which repositories go into one analysis run.",
+        "how": "Public repositories can be analyzed right away through Public Repository or Explore. GitHub connection is only needed for your own and private repositories in My Repositories."
+      },
       "analysisName": "Analysis Name",
       "analysisNameDescription": "Give your analysis a descriptive name",
+      "analysisNameOptional": "Custom analysis name (optional)",
       "analysisNameHint": "Auto-generated from repos if empty",
+      "analysisNamePlaceholder": "Leave empty to auto-generate from selected repositories",
       "selectRepos": "Select Repositories",
       "selectReposDescription": "Choose the repositories you want to analyze",
+      "publicAccessTitle": "Analyze public repositories without connecting GitHub",
+      "publicAccessDescription": "Use Public Repository or Explore to analyze any public repo right away.",
+      "privateAccessTitle": "Connect GitHub for your own and private repositories",
+      "privateAccessDescription": "My Repositories becomes available after connecting GitHub.",
+      "connectGithubNow": "Connect GitHub",
       "myRepos": "My Repositories",
       "publicRepo": "Public Repository",
       "explore": "Explore",
@@ -582,7 +605,6 @@
       "repoSize": "Repository size",
       "lastPush": "Last push: {date}",
       "createdAt": "Created at",
-      "connectGithubAccess": "Connect GitHub to access your repositories",
       "connect": "Connect",
       "retry": "Retry",
       "noMatchingRepos": "No repositories match your search",
