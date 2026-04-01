@@ -269,7 +269,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
-  const [fteMode, setFteMode] = useState(false);
+  const [fteMode, setFteMode] = useState(true);
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Contributor selection state
@@ -897,7 +897,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   // Ghost norm for orchestrator-level KPIs (fixed baseline).
   // Interactive norm selection lives inside AnalysisResultsOverview.
   const effectiveGhostNorm = GHOST_NORM;
-  const sourceMetrics = fteMode ? applyFteView(metrics) : metrics;
+  const sourceMetrics = (fteMode && fteReady) ? applyFteView(metrics) : metrics;
   const displayMetrics: GhostMetric[] = sourceMetrics.map((metric: GhostMetric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
       return metric;
@@ -1593,7 +1593,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
           <AnalysisResultsOverview
             orderId={id}
-            metrics={fteMode ? applyFteView(metrics) : metrics}
+            metrics={(fteMode && fteReady) ? applyFteView(metrics) : metrics}
             period={period}
             onPeriodChange={setPeriod}
             onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}

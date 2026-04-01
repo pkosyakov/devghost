@@ -136,11 +136,15 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   const xDomainMin = Math.max(0, Math.floor(minDays - xPadding));
   const xDomainMax = Math.max(xDomainMin + 1, Math.ceil(maxDays + xPadding));
 
+  const minGhost = allPoints.length > 0
+    ? Math.min(...allPoints.map((point) => point.y))
+    : 0;
   const maxGhost = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.y))
     : 100;
-  const dataYRange = maxGhost || 100;
+  const dataYRange = (maxGhost - minGhost) || 100;
   const yPadding = maxBubbleRadius * dataYRange / Math.max(plotHeight - 2 * maxBubbleRadius, 100);
+  const yDomainMin = Math.min(0, Math.floor(minGhost - yPadding));
   const yDomainMax = Math.max(120, Math.ceil((maxGhost + yPadding) / 50) * 50);
 
   const makeBubbleRenderer = (opts: {
@@ -257,7 +261,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             dataKey="y"
             name="Ghost %"
             type="number"
-            domain={[0, yDomainMax]}
+            domain={[yDomainMin, yDomainMax]}
             allowDataOverflow
             allowDecimals={false}
             tickFormatter={(value: number) => `${Math.round(value)}`}
