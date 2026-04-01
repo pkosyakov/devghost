@@ -454,7 +454,7 @@ def clear_force_recalculate(conn, job_id: str):
     """
     with conn.cursor() as cur:
         cur.execute(
-            'UPDATE "AnalysisJob" SET "forceRecalculate" = false WHERE id = %s',
+            'UPDATE "AnalysisJob" SET "forceRecalculate" = false, "updatedAt" = NOW() WHERE id = %s',
             (job_id,),
         )
     conn.commit()

@@ -139,7 +139,7 @@ _QUOTA_KEYWORDS = [
     "quota", "rate limit", "rate_limit", "ratelimit",
     "billing", "credits exhausted", "credit limit",
     "budget", "insufficient funds", "payment required",
-    "too many requests", "exceeded",
+    "too many requests", "quota exceeded", "limit exceeded", "credits exceeded",
 ]
 
 _FATAL_KEYWORDS = [
