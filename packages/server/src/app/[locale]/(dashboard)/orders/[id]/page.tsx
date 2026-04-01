@@ -1422,7 +1422,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                     {progress.currentRepoName && (
                       <div className="md:col-span-2">
                         <span className="text-muted-foreground">{t('detail.currentRepoLabel')}:</span>{' '}
-                        <span className="font-mono">{progress.currentRepoName}</span>
+                        <span className="font-mono">{demoMode ? maskText(progress.currentRepoName) : progress.currentRepoName}</span>
                       </div>
                     )}
                     {progress.modalCallId && (
@@ -1638,9 +1638,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               shareMutation.mutate({ email, share, auto });
             }}
             highlightedEmail={highlightedEmail ?? null}
+            demoMode={demoMode}
           />
 
-          <AnalysisTechnicalPanel
+          {!demoMode && <AnalysisTechnicalPanel
             orderId={id}
             order={order}
             workspaceStage={stageData?.workspaceStage ?? 'first_data'}
@@ -1671,7 +1672,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             metrics={finalMetrics}
             shareToken={shareToken}
             onShareTokenChange={setShareToken}
-          />
+          />}
         </div>
       )}
     </div>

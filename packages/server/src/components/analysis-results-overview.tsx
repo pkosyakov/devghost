@@ -23,6 +23,7 @@ interface AnalysisResultsOverviewProps {
   onPeriodChange: (period: GhostEligiblePeriod) => void;
   onShareChange: (email: string, share: number, auto: boolean) => void;
   highlightedEmail: string | null;
+  demoMode?: boolean;
 }
 
 function median(values: number[]): number | null {
@@ -41,6 +42,7 @@ export function AnalysisResultsOverview({
   onPeriodChange,
   onShareChange,
   highlightedEmail,
+  demoMode,
 }: AnalysisResultsOverviewProps) {
   const t = useTranslations('orders');
   const locale = useLocale();
@@ -83,8 +85,8 @@ export function AnalysisResultsOverview({
     <Tabs value={activeTab} onValueChange={setActiveTab}>
       <TabsList>
         <TabsTrigger value="overview">{t('detail.overview')}</TabsTrigger>
-        <TabsTrigger value="commits">{t('detail.commits')}</TabsTrigger>
-        <TabsTrigger value="calendar">{t('detail.effortTimeline')}</TabsTrigger>
+        {!demoMode && <TabsTrigger value="commits">{t('detail.commits')}</TabsTrigger>}
+        {!demoMode && <TabsTrigger value="calendar">{t('detail.effortTimeline')}</TabsTrigger>}
       </TabsList>
 
       <TabsContent value="overview" className="space-y-6">
@@ -127,7 +129,7 @@ export function AnalysisResultsOverview({
           <CardContent>
             <GhostDistributionPanel
               metrics={displayMetrics}
-              onDeveloperClick={(email) =>
+              onDeveloperClick={demoMode ? undefined : (email) =>
                 router.push(`/orders/${orderId}/developers/${encodeURIComponent(email)}`)
               }
             />
@@ -143,19 +145,24 @@ export function AnalysisResultsOverview({
               metrics={displayMetrics}
               orderId={orderId}
               highlightedEmail={highlightedEmail ?? undefined}
-              onShareChange={onShareChange}
+              onShareChange={demoMode ? undefined : onShareChange}
+              readOnly={demoMode}
             />
           </CardContent>
         </Card>
       </TabsContent>
 
-      <TabsContent value="commits">
-        <CommitAnalysisTable orderId={orderId} />
-      </TabsContent>
+      {!demoMode && (
+        <TabsContent value="commits">
+          <CommitAnalysisTable orderId={orderId} />
+        </TabsContent>
+      )}
 
-      <TabsContent value="calendar">
-        <EffortTimeline orderId={orderId} />
-      </TabsContent>
+      {!demoMode && (
+        <TabsContent value="calendar">
+          <EffortTimeline orderId={orderId} />
+        </TabsContent>
+      )}
     </Tabs>
   );
 }
