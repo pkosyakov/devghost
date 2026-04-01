@@ -34,7 +34,7 @@ export function BenchmarkLauncher({ orderId, disabled, commitCount, avgInputToke
     },
   });
 
-  // Rollout profile launch
+  // Current production profile launch
   const rolloutMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch(`/api/orders/${orderId}/benchmark`, {
@@ -89,7 +89,7 @@ export function BenchmarkLauncher({ orderId, disabled, commitCount, avgInputToke
 
   return (
     <div className="space-y-3">
-      {/* Rollout candidate — one-click */}
+      {/* Current production pipeline — one-click */}
       <div className="flex items-center gap-3 flex-wrap">
         <div className="text-xs text-muted-foreground space-y-0.5">
           <p className="font-medium">{t('rolloutProfile')}</p>

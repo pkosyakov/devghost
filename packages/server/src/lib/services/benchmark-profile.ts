@@ -1,8 +1,8 @@
 /**
  * Benchmark profile resolver.
  *
- * Defines the explicit rollout candidate pipeline so that order-page
- * benchmarks always test the full target architecture, not an ad-hoc
+ * Defines the explicit production pipeline profile so that order-page
+ * benchmarks always test the current target architecture, not an ad-hoc
  * single-model experiment driven by whatever env flags happen to be live.
  */
 
@@ -22,7 +22,7 @@ export interface ResolvedBenchmarkProfile {
 const PROFILES: Record<BenchmarkProfileId, ResolvedBenchmarkProfile> = {
   target_rollout: {
     id: 'target_rollout',
-    label: 'Full Rollout Candidate',
+    label: 'Current Production Pipeline',
     provider: 'openrouter',
     model: 'qwen/qwen3-coder-next',
     promptRepeat: false,

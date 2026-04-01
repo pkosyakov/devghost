@@ -16,6 +16,14 @@ RETRYABLE_DB_ERRORS = (
     psycopg2.OperationalError,
 )
 
+MODEL_INDEPENDENT_NULL_METHODS = (
+    "root_commit_skip",
+    "FD_cheap",
+    "FD_bulk_scaffold",
+    "FD_v2_heuristic_only",
+    "FD_v3_heuristic_only",
+)
+
 
 class ResilientConnection:
     """Thin psycopg2 connection proxy with auto-reconnect on cursor acquisition.
@@ -249,10 +257,18 @@ def lookup_cached_commits(
     params = [shas, repository, current_order_id, user_id]
 
     if cache_mode == "model":
-        # Match model for LLM-analyzed commits; always allow NULL llmModel
-        # (FD heuristic, root_commit_skip — these are model-independent)
-        query += ' AND (ca."llmModel" = %s OR ca."llmModel" IS NULL)'
-        params.append(current_llm_model)
+        # Reuse exact llmModel matches plus a narrow allowlist of methods that
+        # are explicitly model-independent and therefore safe to cache even
+        # when historical rows were stored with llmModel=NULL.
+        #
+        # Everything else with llmModel=NULL (for example legacy plain FD rows
+        # or old mis-attributed large-model rows) must be recomputed under the
+        # current pipeline to avoid pulling stale pre-rollout estimates.
+        query += (
+            ' AND (ca."llmModel" = %s'
+            ' OR (ca."llmModel" IS NULL AND ca.method = ANY(%s)))'
+        )
+        params.extend([current_llm_model, list(MODEL_INDEPENDENT_NULL_METHODS)])
 
     query += ' ORDER BY ca."analyzedAt" DESC'
 

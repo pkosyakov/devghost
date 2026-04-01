@@ -43,7 +43,7 @@ describe('GET /api/orders/[id]/benchmark/compare', () => {
           fdLargeProvider: 'openrouter',
           effectiveContextLength: 196608,
           benchmarkProfile: 'target_rollout',
-          benchmarkProfileLabel: 'Full Rollout Candidate',
+          benchmarkProfileLabel: 'Current Production Pipeline',
         },
       },
     ]);
@@ -62,7 +62,7 @@ describe('GET /api/orders/[id]/benchmark/compare', () => {
     // Benchmark run has profile metadata
     const benchRun = body.runs.find((r: any) => r.jobId === 'job-bench');
     expect(benchRun.benchmarkProfile).toBe('target_rollout');
-    expect(benchRun.benchmarkProfileLabel).toBe('Full Rollout Candidate');
+    expect(benchRun.benchmarkProfileLabel).toBe('Current Production Pipeline');
     expect(benchRun.fdV3Enabled).toBe(true);
     expect(benchRun.fdLargeModel).toBe('qwen/qwen3-coder-plus');
     expect(benchRun.fdLargeProvider).toBe('openrouter');

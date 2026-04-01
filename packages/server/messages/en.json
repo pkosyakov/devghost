@@ -890,9 +890,9 @@
     },
     "benchmark": {
       "run": "Run Benchmark",
-      "runRollout": "Run Rollout Benchmark",
+      "runRollout": "Run Production Pipeline Benchmark",
       "starting": "Starting...",
-      "rolloutProfile": "Rollout Candidate Pipeline",
+      "rolloutProfile": "Current Production Pipeline",
       "promptRepeat": "Prompt Repeat",
       "estCost": "Est. cost: ~${cost} ({commits} commits)",
       "freeLocal": "Free (local)"

@@ -92,7 +92,7 @@ describe('POST /api/orders/[id]/benchmark — profile mode', () => {
     const createCall = mockJobCreate.mock.calls[0]![0];
     const snapshot = createCall.data.llmConfigSnapshot;
     expect(snapshot.benchmarkProfile).toBe('target_rollout');
-    expect(snapshot.benchmarkProfileLabel).toBe('Full Rollout Candidate');
+    expect(snapshot.benchmarkProfileLabel).toBe('Current Production Pipeline');
     expect(snapshot.fdV3Enabled).toBe(true);
     expect(snapshot.fdLargeModel).toBe('qwen/qwen3-coder-plus');
     expect(snapshot.fdLargeProvider).toBe('openrouter');
