@@ -250,6 +250,104 @@ export class GhostMetricsService {
   }
 
   /**
+   * Recalculate FTE metrics for an existing order without re-running analysis.
+   * Uses stored DailyEffort dates as dayMap proxy and in-scope commit dates.
+   * Bucket-aware: filters data by periodType+year+month per OrderMetric row.
+   */
+  async recalculateFteForOrder(orderId: string, userId: string): Promise<number> {
+    const scopeConfig = await this.loadOrderScope(orderId, userId);
+    const commitAnalyses = await getInScopeCommits(orderId, scopeConfig, {
+      select: {
+        commitHash: true,
+        authorEmail: true,
+        authorName: true,
+        authorDate: true,
+        effortHours: true,
+      },
+    }) as InScopeCommitRow[];
+
+    // Load all DailyEffort rows with dates
+    const dailyEfforts = await prisma.dailyEffort.findMany({
+      where: { orderId },
+      select: { developerEmail: true, date: true },
+    });
+
+    // Load all OrderMetric records
+    const orderMetrics = await prisma.orderMetric.findMany({
+      where: { orderId },
+    });
+
+    let updated = 0;
+
+    for (const m of orderMetrics) {
+      const email = m.developerEmail;
+
+      // Filter commits and daily effort dates for this metric's period bucket
+      const bucketCommitDates: Date[] = [];
+      for (const ca of commitAnalyses) {
+        if (ca.authorEmail !== email) continue;
+        const d = new Date(ca.authorDate);
+        if (this.dateMatchesBucket(d, m.periodType, m.year, m.month)) {
+          bucketCommitDates.push(d);
+        }
+      }
+
+      const bucketDayMapKeys: Set<string> = new Set();
+      for (const de of dailyEfforts) {
+        if (de.developerEmail !== email) continue;
+        const d = new Date(de.date);
+        if (this.dateMatchesBucket(d, m.periodType, m.year, m.month)) {
+          bucketDayMapKeys.add(d.toISOString().slice(0, 10));
+        }
+      }
+
+      const dayMapKeys = Array.from(bucketDayMapKeys);
+      if (dayMapKeys.length === 0 || bucketCommitDates.length === 0) continue;
+
+      const fteDays = computeFteDays(dayMapKeys, bucketCommitDates);
+      const totalEffort = Number(m.totalEffortHours ?? 0);
+      const share = Number(m.share ?? 1);
+      const fteAvgDaily = fteDays > 0 ? totalEffort / fteDays : 0;
+      const fteGhostRaw = calcGhostPercentRaw(totalEffort, fteDays);
+      const fteGhost = calcGhostPercent(totalEffort, fteDays, share);
+
+      await prisma.orderMetric.update({
+        where: { id: m.id },
+        data: {
+          fteWorkDays: fteDays,
+          fteAvgDailyEffort: fteAvgDaily,
+          fteGhostPercentRaw: fteGhostRaw,
+          fteGhostPercent: fteGhost,
+        },
+      });
+      updated++;
+    }
+
+    log.info({ orderId, updated }, 'FTE metrics recalculated');
+    return updated;
+  }
+
+  /** Check if a date falls within the given period bucket. */
+  private dateMatchesBucket(
+    date: Date,
+    periodType: string,
+    year: number | null,
+    month: number | null,
+  ): boolean {
+    if (periodType === 'ALL_TIME') return true;
+    const y = date.getUTCFullYear();
+    const m = date.getUTCMonth() + 1;
+    if (periodType === 'YEAR') return y === year;
+    if (periodType === 'MONTH') return y === year && m === month;
+    if (periodType === 'QUARTER') {
+      const q = Math.ceil(m / 3);
+      const bucketQ = month != null ? Math.ceil(month / 3) : null;
+      return y === year && q === bucketQ;
+    }
+    return true;
+  }
+
+  /**
    * Calculate and save Ghost % metrics for all developers in an order.
    * Uses effort spreading to determine realistic workDays and detect overhead.
    */
