@@ -53,6 +53,48 @@ export function calcAutoShare(
   return commitsInThisOrder / totalCommitsAcrossAllOrders;
 }
 
+/**
+ * Compute FTE (Full-Time Employee) working days for a developer.
+ *
+ * Period: min(dayMapKeys) to max(commitDates).
+ * Counts all weekdays in that range + weekend days present in dayMapKeys.
+ */
+export function computeFteDays(dayMapKeys: string[], commitDates: Date[]): number {
+  if (dayMapKeys.length === 0 || commitDates.length === 0) return 0;
+
+  const dayMapSet = new Set(dayMapKeys);
+
+  const sortedKeys = [...dayMapKeys].sort();
+  const periodStart = sortedKeys[0];
+
+  const maxCommitMs = Math.max(...commitDates.map(d => d.getTime()));
+  const maxCommitDate = new Date(maxCommitMs);
+  const periodEnd = maxCommitDate.toISOString().slice(0, 10);
+
+  const effectiveEnd = sortedKeys[sortedKeys.length - 1] > periodEnd
+    ? sortedKeys[sortedKeys.length - 1]
+    : periodEnd;
+
+  let count = 0;
+  const current = new Date(periodStart + 'T00:00:00Z');
+  const endDate = new Date(effectiveEnd + 'T00:00:00Z');
+
+  while (current <= endDate) {
+    const dow = current.getUTCDay();
+    const dateStr = current.toISOString().slice(0, 10);
+
+    if (dow !== 0 && dow !== 6) {
+      count++;
+    } else if (dayMapSet.has(dateStr)) {
+      count++;
+    }
+
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+
+  return count;
+}
+
 // ==================== Effort Spreading Algorithm ====================
 
 /** Input commit for spreading */

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { calcGhostPercentRaw, calcGhostPercent, calcAutoShare } from '../utils';
+import { calcGhostPercentRaw, calcGhostPercent, calcAutoShare, computeFteDays } from '../utils';
 
 describe('Ghost % calculation (GHOST_NORM=3)', () => {
   it('returns null when work days below minimum', () => {
@@ -43,5 +43,54 @@ describe('Share auto-calculation', () => {
 
   it('returns 1.0 for zero total commits', () => {
     expect(calcAutoShare(0, 0)).toBe(1.0);
+  });
+});
+
+describe('computeFteDays', () => {
+  it('counts weekdays in range plus weekend days in dayMap', () => {
+    // Mon 2026-01-05 to Fri 2026-01-09 = 5 weekdays, no weekend days in map
+    const dayMapKeys = ['2026-01-05', '2026-01-06', '2026-01-07'];
+    const commitDates = [new Date('2026-01-09T12:00:00Z')];
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(5);
+  });
+
+  it('includes weekend days that appear in dayMap', () => {
+    const dayMapKeys = ['2026-01-05', '2026-01-10']; // Mon + Sat
+    const commitDates = [new Date('2026-01-11T12:00:00Z')]; // Sun (not in dayMap)
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(6);
+  });
+
+  it('handles spread days before first commit', () => {
+    const dayMapKeys = ['2026-01-01', '2026-01-02'];
+    const commitDates = [new Date('2026-01-05T12:00:00Z')];
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(3);
+  });
+
+  it('returns 1 for single commit on a weekday', () => {
+    const dayMapKeys = ['2026-01-05'];
+    const commitDates = [new Date('2026-01-05T12:00:00Z')];
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(1);
+  });
+
+  it('returns 1 for single commit on a weekend day in dayMap', () => {
+    const dayMapKeys = ['2026-01-10'];
+    const commitDates = [new Date('2026-01-10T12:00:00Z')];
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(1);
+  });
+
+  it('returns 0 for empty inputs', () => {
+    expect(computeFteDays([], [])).toBe(0);
+  });
+
+  it('uses periodEnd from commitDates even if after last dayMap key', () => {
+    const dayMapKeys = ['2026-01-05'];
+    const commitDates = [new Date('2026-01-07T12:00:00Z')];
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(3);
+  });
+
+  it('handles multi-week period correctly', () => {
+    const dayMapKeys = ['2026-01-05', '2026-01-10']; // Mon + Sat
+    const commitDates = [new Date('2026-01-16T12:00:00Z')]; // Fri
+    expect(computeFteDays(dayMapKeys, commitDates)).toBe(11);
   });
 });
