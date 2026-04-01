@@ -28,6 +28,7 @@ import { CommitProcessingTimeline } from '@/components/commit-processing-timelin
 import { EditScopePanel, type AnalysisPeriodSettings } from '@/components/edit-scope-panel';
 import { PublishModal } from '@/components/publish-modal';
 import { ShareLinkCard } from '@/components/share-link-card';
+import { AdminRerunControls, type AdminRerunOptions } from '@/components/admin-rerun-controls';
 import type { PipelineLogEntry } from '@/components/pipeline-log';
 import type { AnalysisEventEntry } from '@/components/analysis-event-log';
 import type { GhostMetric } from '@devghost/shared';
@@ -93,6 +94,8 @@ interface AnalysisTechnicalPanelProps {
   // Mutations
   onAnalyze: () => void;
   analyzeIsPending: boolean;
+  rerunOptions: AdminRerunOptions;
+  onRerunOptionsChange: (options: AdminRerunOptions) => void;
   onCancelJob: (jobId: string) => void;
   cancelIsPending: boolean;
   // Scope
@@ -122,6 +125,8 @@ export function AnalysisTechnicalPanel(props: AnalysisTechnicalPanelProps) {
     onBenchmarkLaunched,
     onAnalyze,
     analyzeIsPending,
+    rerunOptions,
+    onRerunOptionsChange,
     onCancelJob,
     cancelIsPending,
     onScopeSubmit,
@@ -229,6 +234,15 @@ export function AnalysisTechnicalPanel(props: AnalysisTechnicalPanelProps) {
             </Button>
           </div>
         </div>
+
+        {isAdmin && (
+          <AdminRerunControls
+            options={rerunOptions}
+            onChange={onRerunOptionsChange}
+            disabled={analyzeIsPending}
+            compact
+          />
+        )}
 
         {/* Publish modal */}
         {publishRepo && (

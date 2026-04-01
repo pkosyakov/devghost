@@ -39,6 +39,12 @@ export async function GET(
 
     const { order } = result;
 
+    const latestAnalysisJob = await prisma.analysisJob.findFirst({
+      where: { orderId: order.id, type: 'analysis' },
+      orderBy: { createdAt: 'desc' },
+      select: { cacheMode: true },
+    });
+
     // Completed-analysis enrichment: stable counts + canonical repo ID
     let topCanonicalRepoId: string | null = null;
     let completedRepoCount: number | null = null;
@@ -96,6 +102,7 @@ export async function GET(
 
     return apiResponse({
       ...order,
+      latestAnalysisCacheMode: latestAnalysisJob?.cacheMode ?? 'model',
       topCanonicalRepoId,
       completedRepoCount,
       completedContributorCount,

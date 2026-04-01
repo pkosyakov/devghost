@@ -66,6 +66,7 @@ const mockGetLlmConfig = vi.fn().mockResolvedValue({
 });
 vi.mock('@/lib/llm-config', () => ({
   getLlmConfig: (...a: unknown[]) => mockGetLlmConfig(...a),
+  getConcurrencySnapshot: () => ({ llm: 5, fd: null, fdCap: null }),
 }));
 
 const mockResolveEffectiveContext = vi.fn().mockResolvedValue({
@@ -94,9 +95,13 @@ import { POST } from '../route';
 const mockOrder = { id: 'order-1', userId: 'admin-1', status: 'COMPLETED' };
 const mockJob = { id: 'job-rerun', orderId: 'order-1', status: 'PENDING' };
 
-function makeRequest(): NextRequest {
+function makeRequest(body?: unknown): NextRequest {
   return new NextRequest(new URL('http://localhost/api/admin/orders/order-1/rerun'), {
     method: 'POST',
+    ...(body !== undefined ? {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    } : {}),
   });
 }
 
@@ -221,6 +226,29 @@ describe('POST /api/admin/orders/[id]/rerun', () => {
 
     expect(processAnalysisJob).toHaveBeenCalledWith('job-rerun', expect.objectContaining({
       contextLength: 49152,
+    }));
+  });
+
+  it('accepts admin-selected cache and recalculation options', async () => {
+    setupAdmin();
+    setupTransaction();
+    mockJobFindMany.mockResolvedValue([]);
+
+    const res = await POST(
+      makeRequest({ cacheMode: 'off', forceRecalculate: true }),
+      { params: Promise.resolve({ id: 'order-1' }) },
+    );
+    expect(res.status).toBe(200);
+
+    expect(mockJobCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        cacheMode: 'off',
+        forceRecalculate: true,
+      }),
+    }));
+    expect(processAnalysisJob).toHaveBeenCalledWith('job-rerun', expect.objectContaining({
+      cacheMode: 'off',
+      forceRecalculate: true,
     }));
   });
 });

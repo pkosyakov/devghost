@@ -17,6 +17,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { cn } from '@/lib/utils';
 import type { AnalysisPeriodSettings } from '@/components/edit-scope-panel';
+import { AdminRerunControls, type AdminRerunOptions } from '@/components/admin-rerun-controls';
 import { AnalysisResultsSummary } from '@/components/analysis-results-summary';
 import { AnalysisHandoffCard } from '@/components/analysis-handoff-card';
 import { AnalysisResultsOverview } from '@/components/analysis-results-overview';
@@ -276,6 +277,11 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const benchmarkLogSinceRef = useRef<number>(0);
   const [benchmarkEvents, setBenchmarkEvents] = useState<AnalysisEventEntry[]>([]);
   const benchmarkEventCursorRef = useRef<string | null>(null);
+  const [adminRerunOptionsTouched, setAdminRerunOptionsTouched] = useState(false);
+  const [adminRerunOptions, setAdminRerunOptions] = useState<AdminRerunOptions>({
+    cacheMode: 'model',
+    forceRecalculate: false,
+  });
   const [shareToken, setShareToken] = useState<string | null>(null);
   const { data: demoLiveModeEnabled = false } = useQuery({
     queryKey: ['admin-demo-live-mode'],
@@ -300,6 +306,14 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   });
 
   const now = useNow(order?.status === 'PROCESSING');
+  const inheritedAdminCacheMode = useMemo<AdminRerunOptions['cacheMode']>(() => {
+    const value = order?.latestAnalysisCacheMode;
+    return value === 'any' || value === 'off' ? value : 'model';
+  }, [order?.latestAnalysisCacheMode]);
+  const billingPreviewCacheMode: AdminRerunOptions['cacheMode'] =
+    isAdmin && order?.status === 'INSUFFICIENT_CREDITS'
+      ? (adminRerunOptions.forceRecalculate ? 'off' : adminRerunOptions.cacheMode)
+      : 'model';
 
   const { data: metrics = [] } = useQuery({
     queryKey: ['metrics', id, period],
@@ -390,6 +404,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       'billing-preview',
       id,
       Array.from(excludedDevelopers).sort().join(','),
+      billingPreviewCacheMode,
       // Persisted scope — query invalidates when order is refetched after scope PUT
       order?.analysisPeriodMode,
       order?.analysisStartDate,
@@ -398,7 +413,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       JSON.stringify(order?.analysisYears),
     ],
     queryFn: async () => {
-      const params = new URLSearchParams({ cacheMode: 'model' });
+      const params = new URLSearchParams({ cacheMode: billingPreviewCacheMode });
       if (excludedDevelopers.size > 0) {
         params.set('excludedEmails', Array.from(excludedDevelopers).join(','));
       }
@@ -441,6 +456,32 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(opts),
         }),
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Analysis failed');
+      }
+      return res.json();
+    },
+    onMutate: () => {
+      prepareAnalysisLaunch();
+    },
+    onSuccess: (data) => {
+      setAnalysisJobId(data.data?.jobId ?? null);
+      queryClient.invalidateQueries({ queryKey: ['order', id] });
+      queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+    },
+    onError: () => {
+      setAnalysisStarted(false);
+    },
+  });
+
+  const adminRerunMutation = useMutation({
+    mutationFn: async (options: AdminRerunOptions) => {
+      const res = await fetch(`/api/admin/orders/${id}/rerun`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(options),
       });
       if (!res.ok) {
         const json = await res.json().catch(() => ({}));
@@ -615,6 +656,18 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   // Reset logSinceRef and force-refresh progress on completion so the full
   // persisted log is loaded from DB (not stale incremental cache)
   useEffect(() => {
+    setAdminRerunOptionsTouched(false);
+  }, [id]);
+
+  useEffect(() => {
+    if (!isAdmin || adminRerunOptionsTouched) return;
+    setAdminRerunOptions((prev) => {
+      if (prev.cacheMode === inheritedAdminCacheMode) return prev;
+      return { ...prev, cacheMode: inheritedAdminCacheMode };
+    });
+  }, [adminRerunOptionsTouched, inheritedAdminCacheMode, isAdmin]);
+
+  useEffect(() => {
     if (order?.status === 'PROCESSING' || order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'INSUFFICIENT_CREDITS') {
       setAnalysisStarted(false);
     }
@@ -689,6 +742,23 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       excludedDevelopers: Array.from(excludedDevelopers),
     });
   }, [excludedDevelopers, analyzeMutation]);
+
+  const handleAdminRerunOptionsChange = useCallback((options: AdminRerunOptions) => {
+    setAdminRerunOptionsTouched(true);
+    setAdminRerunOptions(options);
+  }, []);
+
+  const handleAdminRerun = useCallback(() => {
+    adminRerunMutation.mutate(adminRerunOptions);
+  }, [adminRerunMutation, adminRerunOptions]);
+
+  const handleRetryAnalysis = useCallback(() => {
+    if (isAdmin) {
+      handleAdminRerun();
+      return;
+    }
+    analyzeMutation.mutate();
+  }, [analyzeMutation, handleAdminRerun, isAdmin]);
 
   // Contributor selector derived values
   // Filter out developers without a usable email — they cannot be keyed,
@@ -1134,12 +1204,21 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                   {t('detail.adminQuickTopUp', { count: creditDeficit })}
                 </Button>
               )}
+              {isAdmin && (
+                <div className="w-full">
+                  <AdminRerunControls
+                    options={adminRerunOptions}
+                    onChange={handleAdminRerunOptionsChange}
+                    disabled={adminRerunMutation.isPending}
+                  />
+                </div>
+              )}
               <Button
                 variant="outline"
-                onClick={() => analyzeMutation.mutate()}
-                disabled={analyzeMutation.isPending}
+                onClick={handleRetryAnalysis}
+                disabled={isAdmin ? adminRerunMutation.isPending : analyzeMutation.isPending}
               >
-                {analyzeMutation.isPending ? (
+                {(isAdmin ? adminRerunMutation.isPending : analyzeMutation.isPending) ? (
                   <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 ) : (
                   <RefreshCw className="h-4 w-4 mr-2" />
@@ -1147,9 +1226,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                 {t('detail.retryAnalysis')}
               </Button>
             </div>
-            {analyzeMutation.isError && (
+            {(isAdmin ? adminRerunMutation.isError : analyzeMutation.isError) && (
               <p className="text-sm text-red-600 mt-3">
-                {analyzeMutation.error instanceof Error ? analyzeMutation.error.message : t('detail.analysisFailed')}
+                {(() => {
+                  const retryError = isAdmin ? adminRerunMutation.error : analyzeMutation.error;
+                  return retryError instanceof Error ? retryError.message : t('detail.analysisFailed');
+                })()}
               </p>
             )}
           </CardContent>
@@ -1383,11 +1465,20 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               <span className="font-medium">{t('detail.analysisFailed')}</span>
             </div>
             <p className="text-sm text-muted-foreground">{order.errorMessage ?? t('detail.unknownError')}</p>
+            {isAdmin && (
+              <div className="mt-4">
+                  <AdminRerunControls
+                    options={adminRerunOptions}
+                    onChange={handleAdminRerunOptionsChange}
+                    disabled={adminRerunMutation.isPending}
+                  />
+                </div>
+            )}
             <Button
               variant="outline"
               className="mt-4"
-              onClick={() => analyzeMutation.mutate()}
-              disabled={analyzeMutation.isPending}
+              onClick={handleRetryAnalysis}
+              disabled={isAdmin ? adminRerunMutation.isPending : analyzeMutation.isPending}
             >
               <RefreshCw className="h-4 w-4 mr-2" /> {t('detail.retry')}
             </Button>
@@ -1454,8 +1545,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               setBenchmarkEvents([]);
               benchmarkEventCursorRef.current = null;
             }}
-            onAnalyze={() => analyzeMutation.mutate()}
-            analyzeIsPending={analyzeMutation.isPending}
+            onAnalyze={handleRetryAnalysis}
+            analyzeIsPending={isAdmin ? adminRerunMutation.isPending : analyzeMutation.isPending}
+            rerunOptions={adminRerunOptions}
+            onRerunOptionsChange={handleAdminRerunOptionsChange}
             onCancelJob={(jobId) => cancelJobMutation.mutate(jobId)}
             cancelIsPending={cancelJobMutation.isPending}
             onScopeSubmit={(settings) => handleScopeSubmit(settings, false)}

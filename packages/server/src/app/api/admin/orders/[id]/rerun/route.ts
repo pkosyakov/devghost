@@ -5,11 +5,17 @@ import { apiResponse, apiError, requireAdmin, isErrorResponse } from '@/lib/api-
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { auditLog } from '@/lib/audit';
 import { analysisLogger } from '@/lib/logger';
-import { getLlmConfig } from '@/lib/llm-config';
+import { getLlmConfig, getConcurrencySnapshot } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
+import { z } from 'zod';
 
 type CacheMode = 'any' | 'model' | 'off';
+
+const rerunBodySchema = z.object({
+  cacheMode: z.enum(['any', 'model', 'off']).optional(),
+  forceRecalculate: z.boolean().optional(),
+});
 
 function normalizeCacheMode(value: string | null | undefined): CacheMode {
   if (value === 'any' || value === 'off') return value;
@@ -38,12 +44,24 @@ function snapshotProviderAndModel(snapshot: Prisma.InputJsonValue): { provider: 
 }
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await requireAdmin();
   if (isErrorResponse(session)) return session;
   const { id } = await params;
+
+  let body: z.infer<typeof rerunBodySchema>;
+  try {
+    const raw = await request.json().catch(() => ({}));
+    const parsed = rerunBodySchema.safeParse(raw);
+    if (!parsed.success) {
+      return apiError(parsed.error.errors.map(e => e.message).join(', '), 400);
+    }
+    body = parsed.data;
+  } catch {
+    body = {};
+  }
 
   const order = await prisma.order.findUnique({ where: { id } });
   if (!order) return apiError('Order not found', 404);
@@ -60,7 +78,8 @@ export async function POST(
     take: 10,
     select: { cacheMode: true, llmConfigSnapshot: true },
   });
-  const cacheMode = normalizeCacheMode(recentJobs.find(j => !!j.cacheMode)?.cacheMode);
+  const cacheMode = normalizeCacheMode(body.cacheMode ?? recentJobs.find(j => !!j.cacheMode)?.cacheMode);
+  const forceRecalculate = body.forceRecalculate === true;
 
   let snapshotConfig = sanitizeSnapshot(
     recentJobs.find(j => j.llmConfigSnapshot != null)?.llmConfigSnapshot,
@@ -74,6 +93,7 @@ export async function POST(
           ...llmConfig.openrouter,
           apiKey: undefined,
         },
+        concurrency: getConcurrencySnapshot(),
       } as unknown as Prisma.InputJsonValue;
     } catch (err) {
       analysisLogger.error({ err, orderId: id }, 'Admin rerun failed to build llm snapshot');
@@ -127,7 +147,7 @@ export async function POST(
         executionMode: pipelineMode === 'modal' ? 'modal' : 'local',
         cacheMode,
         skipBilling: true,
-        forceRecalculate: false,
+        forceRecalculate,
         llmConfigSnapshot: snapshotConfig,
       },
     });
@@ -163,7 +183,7 @@ export async function POST(
       pipelineMode,
       cacheMode,
       skipBilling: true,
-      forceRecalculate: false,
+      forceRecalculate,
       resumeFromExisting: true,
     },
   });
@@ -180,7 +200,7 @@ export async function POST(
     action: 'admin.order.rerun',
     targetType: 'Order',
     targetId: id,
-    details: { jobId: job.id, cacheMode, resumeFromExisting: true },
+    details: { jobId: job.id, cacheMode, forceRecalculate, resumeFromExisting: true },
   });
 
   if (pipelineMode === 'modal') {
@@ -230,7 +250,7 @@ export async function POST(
   } else {
     processAnalysisJob(job.id, {
       cacheMode,
-      forceRecalculate: false,
+      forceRecalculate,
       skipBillingOverride: true,
       ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
     }).catch((err) => {
