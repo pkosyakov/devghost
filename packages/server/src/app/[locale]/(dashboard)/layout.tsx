@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Sidebar } from '@/components/layout/sidebar';
 import { GlobalContextBar } from '@/components/layout/global-context-bar';
 import { ErrorBoundaryWrapper } from '@/components/error-boundary';
@@ -9,10 +10,14 @@ export default function DashboardLayout({
 }) {
   return (
     <div className="flex h-screen bg-background">
-      <Sidebar />
+      <Suspense>
+        <Sidebar />
+      </Suspense>
       <main className="flex-1 overflow-auto p-6">
         <ErrorBoundaryWrapper>
-          <GlobalContextBar />
+          <Suspense>
+            <GlobalContextBar />
+          </Suspense>
           {children}
         </ErrorBoundaryWrapper>
       </main>
