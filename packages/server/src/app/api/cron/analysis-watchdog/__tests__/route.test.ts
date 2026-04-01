@@ -15,6 +15,7 @@ const mockExecuteRaw = vi.fn();
 const mockQueryRaw = vi.fn();
 const mockTransaction = vi.fn();
 const mockCalculateAndSaveBatch = vi.fn();
+const mockSystemSettingsUpsert = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   default: {
@@ -30,6 +31,7 @@ vi.mock('@/lib/db', () => ({
     orderMetric: { deleteMany: (...a: unknown[]) => mockOrderMetricDeleteMany(...a) },
     dailyEffort: { deleteMany: (...a: unknown[]) => mockDailyEffortDeleteMany(...a) },
     commitAnalysis: { count: (...a: unknown[]) => mockCommitAnalysisCount(...a) },
+    systemSettings: { upsert: (...a: unknown[]) => mockSystemSettingsUpsert(...a) },
     $executeRaw: (...a: unknown[]) => mockExecuteRaw(...a),
     $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
     $transaction: (...a: unknown[]) => mockTransaction(...a),
@@ -92,6 +94,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockJobFindMany.mockResolvedValue([]);
     mockExecuteRaw.mockResolvedValue(0);
     mockQueryRaw.mockResolvedValue([]);
+    mockSystemSettingsUpsert.mockResolvedValue({});
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
     mockCalculateAndSaveBatch.mockResolvedValue({
       metrics: [],
