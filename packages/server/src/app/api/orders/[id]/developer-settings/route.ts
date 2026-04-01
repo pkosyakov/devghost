@@ -63,13 +63,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   try {
     const { id: orderId } = await context.params;
 
-    const authResult = await getOrderWithAuth(orderId, {
-      select: { id: true },
+    const authResult = await getOrderWithAuth<{ id: string; userId: string }>(orderId, {
+      select: { id: true, userId: true },
     });
     if (!authResult.success) {
       return orderAuthError(authResult);
     }
 
+    const order = authResult.order;
     const parsed = await parseBody(request, developerSettingsSchema);
     if (!parsed.success) return parsed.error;
     const { developerEmail, share, isExcluded, shareAutoCalculated } = parsed.data;
@@ -97,7 +98,7 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
 
     // Recalculate Ghost % with updated share
     const ghostService = getGhostMetricsService();
-    await ghostService.calculateAndSave(orderId, authResult.session.user.id);
+    await ghostService.calculateAndSave(orderId, order.userId);
 
     return apiResponse({
       ...result,
