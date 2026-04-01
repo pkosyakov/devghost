@@ -88,6 +88,10 @@ export async function GET(
       shareAutoCalculated: m.shareAutoCalculated,
       commitCount: m.commitCount,
       hasEnoughData: (m.workDays ?? 0) >= MIN_WORK_DAYS_FOR_GHOST,
+      fteWorkDays: m.fteWorkDays ?? 0,
+      fteAvgDailyEffort: Number(m.fteAvgDailyEffort ?? 0),
+      fteGhostPercentRaw: m.fteGhostPercentRaw != null ? Number(m.fteGhostPercentRaw) : null,
+      fteGhostPercent: m.fteGhostPercent != null ? Number(m.fteGhostPercent) : null,
       overheadHours,
     };
   });

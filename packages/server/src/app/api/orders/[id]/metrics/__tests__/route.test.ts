@@ -77,5 +77,75 @@ describe('GET /api/orders/[id]/metrics', () => {
     });
     expect(json.data).toEqual([]);
   });
+
+  it('includes FTE fields in metric response', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'user-1', role: 'USER' },
+    } as never);
+
+    mockOrderMetricFindMany.mockResolvedValue([
+      {
+        developerEmail: 'dev@test.com',
+        developerName: 'Dev',
+        periodType: 'ALL_TIME',
+        year: null,
+        month: null,
+        commitCount: 10,
+        workDays: 5,
+        totalEffortHours: 15,
+        avgDailyEffort: 3.0,
+        ghostPercentRaw: 100,
+        ghostPercent: 100,
+        share: 1.0,
+        shareAutoCalculated: true,
+        fteWorkDays: 20,
+        fteAvgDailyEffort: 0.75,
+        fteGhostPercentRaw: 25,
+        fteGhostPercent: 25,
+      },
+    ]);
+    mockDailyEffortFindMany.mockResolvedValue([]);
+
+    const res = await GET(makeRequest('period=ALL_TIME'), { params: Promise.resolve({ id: 'order-1' }) });
+    const json = await res.json();
+
+    expect(json.data[0].fteWorkDays).toBe(20);
+    expect(json.data[0].fteAvgDailyEffort).toBe(0.75);
+    expect(json.data[0].fteGhostPercentRaw).toBe(25);
+    expect(json.data[0].fteGhostPercent).toBe(25);
+  });
+
+  it('defaults FTE fields to 0/null for legacy metrics', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'user-1', role: 'USER' },
+    } as never);
+
+    mockOrderMetricFindMany.mockResolvedValue([
+      {
+        developerEmail: 'dev@test.com',
+        developerName: 'Dev',
+        periodType: 'ALL_TIME',
+        year: null,
+        month: null,
+        commitCount: 5,
+        workDays: 3,
+        totalEffortHours: 9,
+        avgDailyEffort: 3.0,
+        ghostPercentRaw: 100,
+        ghostPercent: 100,
+        share: 1.0,
+        shareAutoCalculated: true,
+      },
+    ]);
+    mockDailyEffortFindMany.mockResolvedValue([]);
+
+    const res = await GET(makeRequest('period=ALL_TIME'), { params: Promise.resolve({ id: 'order-1' }) });
+    const json = await res.json();
+
+    expect(json.data[0].fteWorkDays).toBe(0);
+    expect(json.data[0].fteAvgDailyEffort).toBe(0);
+    expect(json.data[0].fteGhostPercentRaw).toBeNull();
+    expect(json.data[0].fteGhostPercent).toBeNull();
+  });
 });
 
