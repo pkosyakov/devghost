@@ -40,6 +40,11 @@ export interface GhostMetric {
   commitCount: number;
   hasEnoughData: boolean;
   overheadHours?: number;
+  // FTE mode (optional — only populated on order results page)
+  fteWorkDays?: number;
+  fteAvgDailyEffort?: number;
+  fteGhostPercentRaw?: number | null;
+  fteGhostPercent?: number | null;
 }
 
 export interface OrderSummary {
