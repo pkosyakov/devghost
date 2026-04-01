@@ -6,6 +6,7 @@ import { NextRequest } from 'next/server';
 const mockJobFindMany = vi.fn();
 const mockJobFindUnique = vi.fn();
 const mockJobUpdate = vi.fn();
+const mockJobUpdateMany = vi.fn();
 const mockOrderFindUnique = vi.fn();
 const mockOrderUpdate = vi.fn();
 const mockOrderMetricDeleteMany = vi.fn();
@@ -23,6 +24,7 @@ vi.mock('@/lib/db', () => ({
       findMany: (...a: unknown[]) => mockJobFindMany(...a),
       findUnique: (...a: unknown[]) => mockJobFindUnique(...a),
       update: (...a: unknown[]) => mockJobUpdate(...a),
+      updateMany: (...a: unknown[]) => mockJobUpdateMany(...a),
     },
     order: {
       findUnique: (...a: unknown[]) => mockOrderFindUnique(...a),
@@ -95,6 +97,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockExecuteRaw.mockResolvedValue(0);
     mockQueryRaw.mockResolvedValue([]);
     mockSystemSettingsUpsert.mockResolvedValue({});
+    mockJobUpdateMany.mockResolvedValue({ count: 1 });
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
     mockCalculateAndSaveBatch.mockResolvedValue({
       metrics: [],
@@ -287,9 +290,9 @@ describe('GET /api/cron/analysis-watchdog', () => {
     expect(json.processed).toBe(1);
 
     // Job should be marked COMPLETED
-    expect(mockJobUpdate).toHaveBeenCalledWith(
+    expect(mockJobUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'job-4' },
+        where: { id: 'job-4', status: 'LLM_COMPLETE' },
         data: expect.objectContaining({
           status: 'COMPLETED',
           progress: 100,
@@ -491,9 +494,9 @@ describe('GET /api/cron/analysis-watchdog', () => {
       'user-7',
       expect.objectContaining({ offset: 10 }),
     );
-    expect(mockJobUpdate).toHaveBeenCalledWith(
+    expect(mockJobUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'job-7' },
+        where: { id: 'job-7', status: 'LLM_COMPLETE' },
         data: expect.objectContaining({
           status: 'COMPLETED',
           progress: 100,

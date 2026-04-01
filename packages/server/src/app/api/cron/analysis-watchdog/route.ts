@@ -350,6 +350,7 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
   const skipBilling = !isBillingEnabled() || order.user.role === 'ADMIN';
   let state = parsePostProcessingState(job.currentStep);
   let lastLeaseRefreshMs = 0;
+  const cancellationOutcome: PostProcessingOutcome = { done: false, step: 'cancelled', reason: 'partial' };
 
   const refreshLease = async (force = false) => {
     const nowMs = Date.now();
@@ -539,27 +540,28 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
     const inScopeCount = await countInScopeCommits(order.id, scopeConfig);
 
     const completedAt = new Date();
-    await prisma.$transaction([
-      prisma.order.update({
-        where: { id: order.id },
-        data: {
-          status: 'COMPLETED',
-          analyzedAt: completedAt,
-          completedAt,
-          totalCommits: inScopeCount,
-        },
-      }),
-      prisma.analysisJob.update({
-        where: { id: job.id },
-        data: {
-          status: 'COMPLETED',
-          progress: 100,
-          currentStep: 'done',
-          completedAt,
-          totalCostUsd: actualCost,
-        },
-      }),
-    ]);
+    const finalized = await prisma.analysisJob.updateMany({
+      where: { id: job.id, status: 'LLM_COMPLETE' },
+      data: {
+        status: 'COMPLETED',
+        progress: 100,
+        currentStep: 'done',
+        completedAt,
+        totalCostUsd: actualCost,
+      },
+    });
+    if (finalized.count === 0) {
+      return cancellationOutcome;
+    }
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: 'COMPLETED',
+        analyzedAt: completedAt,
+        completedAt,
+        totalCommits: inScopeCount,
+      },
+    });
 
     if (!skipBilling) {
       await releaseReservedCredits(userId, job.id, order.id);

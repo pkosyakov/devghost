@@ -1,10 +1,11 @@
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
-import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
+import { apiResponse, apiError, getOrderWithAuth, orderAuthError } from '@/lib/api-utils';
 import { requestCancel } from '@/lib/services/job-registry';
 import { analysisLogger } from '@/lib/logger';
 
 const log = analysisLogger.child({ module: 'cancel-api' });
+const CANCELLABLE_STATUSES = ['PENDING', 'RUNNING', 'LLM_COMPLETE'] as const;
 
 // POST /api/orders/[id]/jobs/[jobId]/cancel
 export async function POST(
@@ -12,37 +13,50 @@ export async function POST(
   { params }: { params: Promise<{ id: string; jobId: string }> }
 ) {
   const { id, jobId } = await params;
-  const session = await requireUserSession();
-  if (isErrorResponse(session)) return session;
-
-  // Verify order ownership
-  const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
+  const authResult = await getOrderWithAuth<{ id: string; status: string }>(id, {
     select: { id: true, status: true },
   });
-  if (!order) return apiError('Order not found', 404);
+  if (!authResult.success) return orderAuthError(authResult);
+  const { order } = authResult;
 
   // Verify job exists and belongs to this order
   const job = await prisma.analysisJob.findFirst({
     where: { id: jobId, orderId: id },
-    select: { id: true, status: true, type: true },
+    select: { id: true, status: true, type: true, executionMode: true },
   });
   if (!job) return apiError('Job not found', 404);
 
-  if (job.status !== 'PENDING' && job.status !== 'RUNNING') {
+  if (!CANCELLABLE_STATUSES.includes(job.status as (typeof CANCELLABLE_STATUSES)[number])) {
     return apiError(`Cannot cancel job in ${job.status} state`, 400);
   }
 
-  log.info({ jobId, orderId: id, jobType: job.type, jobStatus: job.status }, 'Cancel requested via API');
+  log.info(
+    {
+      jobId,
+      orderId: id,
+      jobType: job.type,
+      jobStatus: job.status,
+      executionMode: job.executionMode,
+    },
+    'Cancel requested via API',
+  );
 
-  // Signal cancellation — kills process tree and sets flag for worker
-  requestCancel(jobId);
+  // Local mode: kill process tree / set in-memory cancel flag.
+  // Modal mode: worker observes DB status transitions instead.
+  if (job.executionMode !== 'modal') {
+    requestCancel(jobId);
+  }
 
-  // Immediately mark job as CANCELLED in DB
-  await prisma.analysisJob.update({
-    where: { id: jobId },
-    data: { status: 'CANCELLED', completedAt: new Date() },
+  const cancelResult = await prisma.analysisJob.updateMany({
+    where: {
+      id: jobId,
+      status: { in: [...CANCELLABLE_STATUSES] },
+    },
+    data: { status: 'CANCELLED', completedAt: new Date(), currentStep: 'cancelled' },
   });
+  if (cancelResult.count === 0) {
+    return apiError('Job is no longer cancellable', 409);
+  }
 
   // For primary analysis: reset order status so user can retry
   if (job.type === 'analysis' && order.status === 'PROCESSING') {

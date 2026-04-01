@@ -572,6 +572,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       queryClient.invalidateQueries({ queryKey: ['order', id] });
       queryClient.invalidateQueries({ queryKey: ['progress', id] });
     },
+    onError: (error: Error) => {
+      toast.error(t('detail.analysisFailed'), error.message);
+    },
   });
 
   const { data: benchmarkProgress } = useQuery<AnalysisProgressData | null>({

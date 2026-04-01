@@ -506,6 +506,16 @@ def update_heartbeat(conn, job_id: str):
     conn.commit()
 
 
+def is_job_cancelled(conn, job_id: str) -> bool:
+    """Check if a job was cancelled by user/API."""
+    with conn.cursor() as cur:
+        cur.execute('SELECT status FROM "AnalysisJob" WHERE id = %s', (job_id,))
+        row = cur.fetchone()
+    if not row:
+        return True
+    return row[0] == "CANCELLED"
+
+
 def update_llm_usage(conn, job_id: str, total_analyzed: int):
     """Store LLM usage stats on the job (token counts aggregated from pipeline)."""
     with conn.cursor() as cur:
@@ -563,6 +573,10 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
         updates.append('"completedAt" = NOW()')
         updates.append('"currentStep" = %s')
         params.append("completed")
+    elif status == "CANCELLED":
+        updates.append('"completedAt" = NOW()')
+        updates.append('"currentStep" = %s')
+        params.append("cancelled")
 
     params.append(job_id)
     with conn.cursor() as cur:

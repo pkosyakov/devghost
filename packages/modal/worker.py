@@ -56,6 +56,7 @@ from db import (
     get_existing_shas, get_base_commit_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
     set_job_status, set_job_error, increment_total_commits,
+    is_job_cancelled,
     update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
     delete_benchmark_analyses,
     append_job_event,
@@ -65,6 +66,35 @@ from rate_limiter import RateLimiter
 
 
 HEARTBEAT_INTERVAL_S = 60
+
+
+class JobCancelled(Exception):
+    """Raised when a running job is marked CANCELLED in DB."""
+
+
+def _ensure_job_not_cancelled(
+    conn,
+    job_id: str,
+    *,
+    phase: str = "worker",
+    code: str = "WORKER_CANCEL_DETECTED",
+    repo_name: str | None = None,
+    payload: dict | None = None,
+) -> None:
+    if not is_job_cancelled(conn, job_id):
+        return
+
+    append_job_event(
+        conn,
+        job_id,
+        "Cancellation flag detected; stopping worker execution",
+        level="warn",
+        phase=phase,
+        code=code,
+        repo_name=repo_name,
+        payload=payload,
+    )
+    raise JobCancelled(f"Job {job_id} was cancelled")
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -201,6 +231,13 @@ def run_analysis(job_id: str):
     )
 
     try:
+        _ensure_job_not_cancelled(
+            conn,
+            job_id,
+            phase="worker",
+            code="WORKER_CANCEL_PRE_START",
+        )
+
         order = load_order(conn, job["orderId"])
         order_id = order["id"]
         repos = json.loads(order["selected_repos"]) if isinstance(order["selected_repos"], str) else order["selected_repos"]
@@ -299,6 +336,17 @@ def run_analysis(job_id: str):
         extracted_repos = []
 
         for repo_idx, repo in enumerate(repos):
+            _ensure_job_not_cancelled(
+                conn,
+                job_id,
+                phase="worker",
+                code="WORKER_CANCEL_BEFORE_REPO",
+                payload={
+                    "repoIndex": repo_idx + 1,
+                    "repoTotal": len(repos),
+                },
+            )
+
             repo_full_name = repo.get("fullName") or repo.get("full_name", "")
             clone_url = repo.get("cloneUrl") or repo.get("clone_url", "")
             language = repo.get("language") or "Unknown"
@@ -483,6 +531,12 @@ def run_analysis(job_id: str):
         if is_last_n and extracted_repos:
             all_commits = []
             for er in extracted_repos:
+                _ensure_job_not_cancelled(
+                    conn,
+                    job_id,
+                    phase="worker",
+                    code="WORKER_CANCEL_BEFORE_LAST_N_SCOPE",
+                )
                 for c in er["commits"]:
                     all_commits.append({**c, "_repo_label": er["repo_full_name"]})
 
@@ -509,6 +563,14 @@ def run_analysis(job_id: str):
 
             # Phase 2: Process only allowed commits per repo
             for er in extracted_repos:
+                _ensure_job_not_cancelled(
+                    conn,
+                    job_id,
+                    phase="worker",
+                    code="WORKER_CANCEL_BEFORE_LAST_N_REPO",
+                    repo_name=er["repo_full_name"],
+                )
+
                 repo_commits = [c for c in er["commits"] if c["sha"] in allowed_shas]
                 if not repo_commits:
                     continue
@@ -541,6 +603,13 @@ def run_analysis(job_id: str):
         )
 
         # All done
+        _ensure_job_not_cancelled(
+            conn,
+            job_id,
+            phase="worker",
+            code="WORKER_CANCEL_BEFORE_FINALIZE",
+        )
+
         if is_benchmark:
             # Benchmarks complete directly — no post-processing (metrics, DailyEffort)
             set_job_status(conn, job_id, "COMPLETED", progress=100)
@@ -568,6 +637,18 @@ def run_analysis(job_id: str):
             job_id=job_id,
             reason="job_complete",
         )
+
+    except JobCancelled:
+        try:
+            set_job_status(conn, job_id, "CANCELLED")
+        except Exception:
+            pass
+        _commit_repos_volume_checkpoint(
+            conn=conn,
+            job_id=job_id,
+            reason="job_cancelled",
+        )
+        return
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -685,6 +766,13 @@ def _process_repo_commits(
             "demoLiveMode": demo_live_mode,
             "demoLiveChunkSize": demo_live_chunk_size,
         },
+    )
+    _ensure_job_not_cancelled(
+        conn,
+        job_id,
+        phase="worker",
+        code="WORKER_CANCEL_REPO_START",
+        repo_name=repo_full_name,
     )
 
     # Intra-order dedup / benchmark commit pinning
@@ -834,6 +922,18 @@ def _process_repo_commits(
     commit_lookup = {c["sha"]: c for c in commits}
 
     for chunk_index, start in enumerate(range(0, len(commits), chunk_size), start=1):
+        _ensure_job_not_cancelled(
+            conn,
+            job_id,
+            phase="worker",
+            code="WORKER_CANCEL_BEFORE_CHUNK",
+            repo_name=repo_full_name,
+            payload={
+                "chunkIndex": chunk_index,
+                "chunkTotal": total_chunks,
+            },
+        )
+
         chunk_commits = commits[start:start + chunk_size]
         chunk_started = time.time()
         chunk_sha = chunk_commits[0]["sha"] if len(chunk_commits) == 1 else None
