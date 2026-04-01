@@ -347,18 +347,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   });
 
   const shareMutation = useMutation({
-    mutationFn: async ({ email, share, auto }: { email: string; share: number; auto: boolean }) => {
-      console.log('[shareMutation] mutationFn called', { email, share, auto });
-      const result = await updateShare(id, email, share, auto);
-      console.log('[shareMutation] PATCH response', result);
-      return result;
+    mutationFn: ({ email, share, auto }: { email: string; share: number; auto: boolean }) =>
+      updateShare(id, email, share, auto),
+    onSuccess: async () => {
+      await queryClient.refetchQueries({ queryKey: ['metrics', id] });
     },
-    onSuccess: () => {
-      console.log('[shareMutation] onSuccess — refetching metrics');
-      queryClient.refetchQueries({ queryKey: ['metrics', id] });
-    },
-    onError: (err) => {
-      console.error('[shareMutation] onError', err);
+    onError: () => {
       toast({ title: 'Failed to update share', variant: 'destructive' });
     },
   });
@@ -1633,10 +1627,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             metrics={finalOverviewMetrics}
             period={period}
             onPeriodChange={setPeriod}
-            onShareChange={(email, share, auto) => {
-              console.log('[OrderPage] onShareChange', { email, share, auto });
-              shareMutation.mutate({ email, share, auto });
-            }}
+            onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}
+            shareUpdating={shareMutation.isPending}
             highlightedEmail={highlightedEmail ?? null}
             demoMode={demoMode}
           />

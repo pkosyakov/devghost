@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
-import { ArrowUp, ArrowDown, Minus, AlertTriangle, ChevronRight, BarChart2 } from 'lucide-react';
+import { ArrowUp, ArrowDown, Minus, AlertTriangle, ChevronRight, BarChart2, Loader2 } from 'lucide-react';
 import { formatGhostPercent, ghostColor } from '@devghost/shared';
 import { useTranslations } from 'next-intl';
 import type { GhostMetric } from '@devghost/shared';
@@ -37,6 +37,7 @@ interface GhostDeveloperTableProps {
   orderId: string;
   highlightedEmail?: string;
   onShareChange?: (email: string, share: number, auto: boolean) => void;
+  shareUpdating?: boolean;
   readOnly?: boolean;
 }
 
@@ -85,7 +86,6 @@ function ShareInput({
   }, [local, value, onChange]);
 
   const toggleAuto = useCallback(() => {
-    console.log('[ShareInput] toggleAuto clicked', { value, autoCalculated, hasOnChange: !!onChange });
     onChange?.(value, !autoCalculated);
   }, [value, autoCalculated, onChange]);
 
@@ -128,6 +128,7 @@ export function GhostDeveloperTable({
   orderId,
   highlightedEmail,
   onShareChange,
+  shareUpdating,
   readOnly,
 }: GhostDeveloperTableProps) {
   const t = useTranslations('orders.metrics');
@@ -186,6 +187,12 @@ export function GhostDeveloperTable({
   };
 
   return (
+    <div className="relative">
+      {shareUpdating && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60 rounded-md">
+          <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+        </div>
+      )}
     <Table>
       <TableHeader className="sticky top-0 z-10 bg-background">
         <TableRow>
@@ -389,5 +396,6 @@ export function GhostDeveloperTable({
         })}
       </TableBody>
     </Table>
+    </div>
   );
 }

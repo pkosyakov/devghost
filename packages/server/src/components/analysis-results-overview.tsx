@@ -22,6 +22,7 @@ interface AnalysisResultsOverviewProps {
   period: GhostEligiblePeriod;
   onPeriodChange: (period: GhostEligiblePeriod) => void;
   onShareChange: (email: string, share: number, auto: boolean) => void;
+  shareUpdating?: boolean;
   highlightedEmail: string | null;
   demoMode?: boolean;
 }
@@ -41,6 +42,7 @@ export function AnalysisResultsOverview({
   period,
   onPeriodChange,
   onShareChange,
+  shareUpdating,
   highlightedEmail,
   demoMode,
 }: AnalysisResultsOverviewProps) {
@@ -146,6 +148,7 @@ export function AnalysisResultsOverview({
               orderId={orderId}
               highlightedEmail={highlightedEmail ?? undefined}
               onShareChange={demoMode ? undefined : onShareChange}
+              shareUpdating={shareUpdating}
               readOnly={demoMode}
             />
           </CardContent>
