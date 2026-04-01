@@ -337,7 +337,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     mutationFn: ({ email, share, auto }: { email: string; share: number; auto: boolean }) =>
       updateShare(id, email, share, auto),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+      queryClient.refetchQueries({ queryKey: ['metrics', id] });
+    },
+    onError: () => {
+      toast({ title: 'Failed to update share', variant: 'destructive' });
     },
   });
 
