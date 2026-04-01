@@ -14,6 +14,7 @@ import {
   calcGhostPercent,
   calcAutoShare,
   spreadEffort,
+  computeFteDays,
   MIN_WORK_DAYS_FOR_GHOST,
 } from '@devghost/shared';
 import type { GhostMetric, SpreadCommit } from '@devghost/shared';
@@ -122,8 +123,15 @@ export class GhostMetricsService {
     const hasEnoughData = workDays >= MIN_WORK_DAYS_FOR_GHOST;
     const overheadHours = spreadResult.totalOverhead;
 
+    // FTE mode: count all weekdays in [earliest spread day, last commit] + weekend commit days
+    const fteDays = computeFteDays(
+      Array.from(spreadResult.dayMap.keys()),
+      workset.commits.map(c => c.authorDate),
+    );
+    const fteAvgDaily = fteDays > 0 ? totalEffort / fteDays : 0;
+
     log.info(
-      { orderId, email, totalEffort, workDays, overheadHours, commitCount: workset.commitCount },
+      { orderId, email, totalEffort, workDays, fteDays, overheadHours, commitCount: workset.commitCount },
       'Spread effort computed',
     );
 
@@ -141,6 +149,9 @@ export class GhostMetricsService {
     const ghostRaw = calcGhostPercentRaw(totalEffort, workDays);
     const ghost = calcGhostPercent(totalEffort, workDays, share);
 
+    const fteGhostRaw = calcGhostPercentRaw(totalEffort, fteDays);
+    const fteGhost = calcGhostPercent(totalEffort, fteDays, share);
+
     const devName = workset.name || email;
     const metric: GhostMetric = {
       developerId: email,
@@ -157,6 +168,10 @@ export class GhostMetricsService {
       commitCount: workset.commitCount,
       hasEnoughData,
       overheadHours,
+      fteWorkDays: fteDays,
+      fteAvgDailyEffort: fteAvgDaily,
+      fteGhostPercentRaw: fteGhostRaw,
+      fteGhostPercent: fteGhost,
     };
 
     // Idempotent for resumable post-processing: duplicate rows are skipped.
@@ -205,6 +220,10 @@ export class GhostMetricsService {
       shareAutoCalculated: shareAuto,
       commitCount: workset.commitCount,
       calculatedAt: new Date(),
+      fteWorkDays: fteDays,
+      fteAvgDailyEffort: fteAvgDaily,
+      fteGhostPercentRaw: fteGhostRaw,
+      fteGhostPercent: fteGhost,
     };
 
     if (existing) {
