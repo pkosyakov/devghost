@@ -144,6 +144,18 @@ export async function GET(
 
   const events = await prisma.analysisJobEvent.findMany(eventsQuery);
 
+  // Determine failure class for paused/failed jobs
+  let failureClass: string | null = null;
+  if (job.status === 'FAILED_RETRYABLE' || job.status === 'FAILED_FATAL' || job.status === 'FAILED') {
+    const latestFailureEvent = await prisma.analysisJobEvent.findFirst({
+      where: { jobId: job.id, code: { startsWith: 'FAILURE_CLASS_' } },
+      orderBy: { id: 'desc' },
+      select: { code: true },
+    });
+    failureClass = latestFailureEvent?.code?.replace('FAILURE_CLASS_', '') ?? null;
+  }
+  const isPaused = job.status === 'FAILED_RETRYABLE' && failureClass === 'EXTERNAL_QUOTA';
+
   let cloneSizeKb = meta?.totalCloneSizeKb ?? 0;
   if (cloneSizeKb <= 0) {
     const cloneEvents = await prisma.analysisJobEvent.findMany({
@@ -229,6 +241,9 @@ export async function GET(
         createdAt: job.createdAt,
         retryCount: job.retryCount,
         maxRetries: job.maxRetries,
+        failureClass,
+        isPaused,
+        pauseReason: isPaused ? 'Provider quota or rate limit reached' : null,
         currentRepoName: job.order.currentRepoName,
         orderStatus: job.order.status,
         log: logEntries,
