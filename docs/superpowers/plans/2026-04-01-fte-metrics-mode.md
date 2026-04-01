@@ -220,20 +220,20 @@ In `packages/server/prisma/schema.prisma`, add after the `ghostPercent` field (a
   fteGhostPercent     Decimal? @db.Decimal(10, 2)
 ```
 
-- [ ] **Step 2: Generate Prisma client**
+- [ ] **Step 2: Create migration**
+
+Run: `cd packages/server && pnpm db:migrate -- --name add_fte_metrics_to_order_metric`
+Expected: Migration created in `prisma/migrations/` directory
+
+- [ ] **Step 3: Generate Prisma client**
 
 Run: `cd packages/server && pnpm db:generate`
 Expected: Prisma client generated successfully
 
-- [ ] **Step 3: Push schema to database**
-
-Run: `cd packages/server && pnpm db:push`
-Expected: Schema pushed, new columns added with defaults (non-destructive)
-
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/server/prisma/schema.prisma
+git add packages/server/prisma/schema.prisma packages/server/prisma/migrations/
 git commit -m "feat: add FTE columns to OrderMetric schema"
 ```
 
@@ -359,27 +359,11 @@ Add to `GhostMetricsService` class, before `calculateAndSave()` (line 233):
       },
     }) as InScopeCommitRow[];
 
-    // Group commit dates by developer
-    const commitDatesByDev = new Map<string, Date[]>();
-    for (const ca of commitAnalyses) {
-      const dates = commitDatesByDev.get(ca.authorEmail) ?? [];
-      dates.push(new Date(ca.authorDate));
-      commitDatesByDev.set(ca.authorEmail, dates);
-    }
-
-    // Load all DailyEffort dates grouped by developer
+    // Load all DailyEffort rows with dates
     const dailyEfforts = await prisma.dailyEffort.findMany({
       where: { orderId },
       select: { developerEmail: true, date: true },
     });
-
-    const dayMapKeysByDev = new Map<string, Set<string>>();
-    for (const de of dailyEfforts) {
-      const email = de.developerEmail;
-      const dateStr = new Date(de.date).toISOString().slice(0, 10);
-      if (!dayMapKeysByDev.has(email)) dayMapKeysByDev.set(email, new Set());
-      dayMapKeysByDev.get(email)!.add(dateStr);
-    }
 
     // Load all OrderMetric records
     const orderMetrics = await prisma.orderMetric.findMany({
@@ -390,12 +374,30 @@ Add to `GhostMetricsService` class, before `calculateAndSave()` (line 233):
 
     for (const m of orderMetrics) {
       const email = m.developerEmail;
-      const dayMapKeys = Array.from(dayMapKeysByDev.get(email) ?? []);
-      const commitDates = commitDatesByDev.get(email) ?? [];
 
-      if (dayMapKeys.length === 0 || commitDates.length === 0) continue;
+      // Filter commits and daily effort dates for this metric's period bucket
+      const bucketCommitDates: Date[] = [];
+      for (const ca of commitAnalyses) {
+        if (ca.authorEmail !== email) continue;
+        const d = new Date(ca.authorDate);
+        if (this.dateMatchesBucket(d, m.periodType, m.year, m.month)) {
+          bucketCommitDates.push(d);
+        }
+      }
 
-      const fteDays = computeFteDays(dayMapKeys, commitDates);
+      const bucketDayMapKeys: Set<string> = new Set();
+      for (const de of dailyEfforts) {
+        if (de.developerEmail !== email) continue;
+        const d = new Date(de.date);
+        if (this.dateMatchesBucket(d, m.periodType, m.year, m.month)) {
+          bucketDayMapKeys.add(d.toISOString().slice(0, 10));
+        }
+      }
+
+      const dayMapKeys = Array.from(bucketDayMapKeys);
+      if (dayMapKeys.length === 0 || bucketCommitDates.length === 0) continue;
+
+      const fteDays = computeFteDays(dayMapKeys, bucketCommitDates);
       const totalEffort = Number(m.totalEffortHours ?? 0);
       const share = Number(m.share ?? 1);
       const fteAvgDaily = fteDays > 0 ? totalEffort / fteDays : 0;
@@ -416,6 +418,26 @@ Add to `GhostMetricsService` class, before `calculateAndSave()` (line 233):
 
     log.info({ orderId, updated }, 'FTE metrics recalculated');
     return updated;
+  }
+
+  /** Check if a date falls within the given period bucket. */
+  private dateMatchesBucket(
+    date: Date,
+    periodType: string,
+    year: number | null,
+    month: number | null,
+  ): boolean {
+    if (periodType === 'ALL_TIME') return true;
+    const y = date.getUTCFullYear();
+    const m = date.getUTCMonth() + 1;
+    if (periodType === 'YEAR') return y === year;
+    if (periodType === 'MONTH') return y === year && m === month;
+    if (periodType === 'QUARTER') {
+      const q = Math.ceil(m / 3);
+      const bucketQ = month != null ? Math.ceil(month / 3) : null;
+      return y === year && q === bucketQ;
+    }
+    return true;
   }
 ```
 
@@ -665,7 +687,7 @@ Add FTE readiness check and the recalculation mutation. Place these near other m
       return json.data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['order-metrics', id] });
+      queryClient.invalidateQueries({ queryKey: ['metrics', id] });
       toast.success(t('detail.fteRecalculated'));
     },
     onError: (error: Error) => {
