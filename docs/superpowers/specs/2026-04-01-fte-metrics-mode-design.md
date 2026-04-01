@@ -8,6 +8,10 @@ New display mode for Ghost% metrics that calculates developer efficiency as if t
 
 Current "Spread" mode counts only days where effort was placed by the spreading algorithm. This rewards burst activity — a developer who commits heavily in 3 days looks more productive per-day than one who works steadily across 20 days. FTE mode provides a complementary view: what would Ghost% look like if this developer was a full-time employee for the entire period?
 
+## Scope
+
+FTE mode applies **only to the order results page** (`/orders/[id]`). Public dashboards, developer profiles, explore pages, and publication metrics are out of scope and will not display FTE data.
+
 ## Formula
 
 ### FTE Days
@@ -51,6 +55,8 @@ No new tables. FTE reuses existing DailyEffort and CommitAnalysis data.
 
 ## Shared Package
 
+### `computeFteDays()`
+
 New function in `@devghost/shared`:
 
 ```ts
@@ -68,6 +74,24 @@ Logic:
    - If weekday (Mon-Fri): count it
    - If weekend: count only if date is in dayMapKeys set
 4. Return count
+
+### `GhostMetric` type extension
+
+FTE fields are **optional** in `GhostMetric`:
+
+```ts
+// existing fields unchanged...
+
+// FTE mode (optional — only populated on order results page)
+fteWorkDays?: number;
+fteAvgDailyEffort?: number;
+fteGhostPercentRaw?: number | null;
+fteGhostPercent?: number | null;
+```
+
+Optional because `GhostMetric` is used across multiple paths (order page, public profiles via `publication-metrics.ts`, dev profiles). Only the order metrics API guarantees these fields are present; other consumers (publications, explore) do not populate them.
+
+The `GET /api/orders/[id]/metrics` endpoint always returns all four FTE fields (non-optional in that response).
 
 ## Service Changes
 
@@ -90,14 +114,15 @@ Save all four FTE fields to OrderMetric alongside existing fields.
 
 New method in GhostMetricsService:
 
-1. Load all `OrderMetric` records for order
-2. For each developer (by email + periodType):
-   a. Load unique dates from `DailyEffort` (these are the dayMap dates)
-   b. Load commit dates from `CommitAnalysis`
+1. Use `loadOrderScope()` + `getInScopeCommits()` — identical scope filtering as `calculateAndSaveBatch()` — to get the canonical commit set (excludes benchmark jobs, respects period/date range scope)
+2. Load all `OrderMetric` records for order
+3. For each metric record (keyed by `email + periodType + year + month` — the full unique identity from schema):
+   a. Filter in-scope commits for this developer + period bucket
+   b. Load unique dates from `DailyEffort` for this developer + period bucket (these are the dayMap dates)
    c. `fteDays = computeFteDays(dailyEffortDates, commitDates)`
    d. `avgDaily = totalEffortHours / fteDays`
-   e. Compute FTE Ghost% using existing calc functions
-   f. Update OrderMetric record
+   e. Compute FTE Ghost% using existing calc functions with the metric's existing `share` and `totalEffortHours`
+   f. Update OrderMetric FTE fields
 
 ## API Changes
 
@@ -110,7 +135,7 @@ Response gains four fields per metric:
   // existing (unchanged)
   ghostPercent, ghostPercentRaw, actualWorkDays, avgDailyEffort, ...
 
-  // new
+  // new (always present in this endpoint)
   fteWorkDays: number,
   fteAvgDailyEffort: number,
   fteGhostPercentRaw: number | null,
@@ -128,25 +153,58 @@ Both sets always returned. Client chooses which to display.
 
 ## UI Changes
 
+### Data transformation approach
+
+Toggle state lives at the page level (`page.tsx`). Instead of modifying each child component, a single transform function swaps FTE values into the standard fields before passing metrics downstream:
+
+```ts
+function applyFteView(metrics: GhostMetric[]): GhostMetric[] {
+  return metrics.map(m => ({
+    ...m,
+    actualWorkDays: m.fteWorkDays ?? m.actualWorkDays,
+    avgDailyEffort: m.fteAvgDailyEffort ?? m.avgDailyEffort,
+    ghostPercentRaw: m.fteGhostPercentRaw ?? m.ghostPercentRaw,
+    ghostPercent: m.fteGhostPercent ?? m.ghostPercent,
+    hasEnoughData: (m.fteWorkDays ?? 0) >= MIN_WORK_DAYS_FOR_GHOST,
+  }));
+}
+```
+
+`hasEnoughData` is recalculated from `fteWorkDays` so eligibility reflects FTE days, not spread days.
+
+All downstream components (`AnalysisResultsSummary`, `GhostKpiCards`, `AnalysisResultsOverview`, `GhostDistributionPanel`, `GhostBubbleChart`, `GhostStripChart`, `GhostDeveloperTable`) receive already-transformed metrics — **zero changes in child components**.
+
+Median norm calculation in `AnalysisResultsOverview` automatically uses `fteAvgDailyEffort` because it reads from `m.avgDailyEffort` which has been swapped.
+
 ### Toggle
 
-- Location: order results page, near period selector
+- Location: order results page, near period selector (inside `AnalysisResultsOverview` toolbar area)
 - States: "Spread" (default) | "FTE"
 - Client-side state only (useState), not persisted
 
-### Components affected
+### FTE readiness and legacy orders
 
-**GhostKpiCards:** When FTE active, display `fteGhostPercent` / `fteWorkDays` instead of `ghostPercent` / `workDays`.
+Toggle is **disabled** when FTE data is not available. Readiness condition:
 
-**GhostDeveloperTable:** Columns Ghost%, work days, avg daily switch to FTE variants.
+```ts
+const fteReady = metrics.length > 0 && metrics.every(m => (m.fteWorkDays ?? 0) > 0);
+```
 
-**Color thresholds:** Same `ghostColor()` function, same thresholds (EXCELLENT >= 120%, GOOD >= 100%, WARNING >= 80%, LOW < 80%).
+If `!fteReady`:
+- Toggle is disabled with tooltip explaining FTE data is not calculated
+- A "Calculate FTE" button is shown next to the toggle
+- Button calls `POST /api/orders/[id]/recalculate-fte`, then refetches metrics
+- After successful recalc, toggle becomes active
+
+This handles: legacy orders (all zeros), partial backfill (some developers recalculated, others not), and new orders (always have FTE data from analysis).
 
 ### Components NOT affected
 
-- Effort timeline / heatmap — visualization of spreading, stays as-is
-- CommitAnalysis / raw commit estimates
-- Share% settings and logic
+- **Effort timeline / heatmap** — visualization of effort spreading, remains spread-based even in FTE mode
+- **Daily effort drilldown** in developer table — shows placed hours per day, stays spread-based
+- **overheadHours display** — remains spread-based (overhead is a property of the spreading algorithm, not FTE)
+- **CommitAnalysis / raw commit estimates** — unchanged
+- **Share% settings and logic** — unchanged
 
 ## Edge Cases
 
@@ -154,4 +212,5 @@ Both sets always returned. Client chooses which to display.
 - **All commits on same day:** fteDays = 1
 - **Period with no weekday commits:** only weekend days in dayMap counted
 - **fteDays = 0:** ghostPercent_fte = null (shouldn't happen if there are commits)
-- **Existing orders without FTE fields:** all default to 0/null until recalculated
+- **Existing orders without FTE fields:** toggle disabled, "Calculate FTE" button shown
+- **Partial backfill:** readiness requires ALL metrics to have fteWorkDays > 0
