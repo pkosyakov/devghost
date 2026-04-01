@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
          Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import type { GhostMetric } from '@devghost/shared';
@@ -19,13 +19,55 @@ interface ChartPoint {
   realDays: number; realGhost: number;
 }
 
+const CHART_MARGIN = { top: 45, right: 45, bottom: 20, left: 20 };
+
 /* ---------- component ---------- */
 
 export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartProps) {
+  const [showLabels, setShowLabels] = useState(false);
   const [hoveredEmail, setHoveredEmail] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const chartHeight = 400;
-  const chartMargin = { top: 45, right: 45, bottom: 20, left: 20 };
+  const [containerWidth, setContainerWidth] = useState(700);
+  const [chartHeight, setChartHeight] = useState(400);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setContainerWidth(el.clientWidth || 700);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const heightRef = useRef(chartHeight);
+  heightRef.current = chartHeight;
+  const dragRef = useRef<{ startY: number; startH: number; pointerId: number; target: HTMLElement } | null>(null);
+  const dragCleanupRef = useRef<(() => void) | null>(null);
+  const onResizeStart = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    const target = e.target as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    dragRef.current = { startY: e.clientY, startH: heightRef.current, pointerId: e.pointerId, target };
+    const onMove = (ev: PointerEvent) => {
+      if (!dragRef.current) return;
+      const newH = Math.max(250, Math.min(900, dragRef.current.startH + ev.clientY - dragRef.current.startY));
+      setChartHeight(newH);
+    };
+    const onUp = () => {
+      if (dragRef.current) {
+        try { dragRef.current.target.releasePointerCapture(dragRef.current.pointerId); } catch {}
+      }
+      dragRef.current = null;
+      dragCleanupRef.current = null;
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    };
+    document.addEventListener('pointermove', onMove);
+    document.addEventListener('pointerup', onUp);
+    dragCleanupRef.current = onUp;
+  }, []);
+  useEffect(() => () => { dragCleanupRef.current?.(); }, []);
 
   if (metrics.length === 0) {
     return (
@@ -77,22 +119,28 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     ? Math.max(...allPoints.map((point) => point.r))
     : 8;
 
-  // Recharts domains are based on point centers, so large bubbles near edges
-  // can get clipped. Add a heuristic axis padding that also covers hover growth.
+  // Convert max bubble radius (px) to axis-unit padding so the full circle
+  // (center +/- radius) stays within the rendered plot area.
+  // Formula: pad_units = R_px * data_range / (plot_px - 2*R_px)
+  const plotWidth = containerWidth - CHART_MARGIN.left - CHART_MARGIN.right;
+  const plotHeight = chartHeight - CHART_MARGIN.top - CHART_MARGIN.bottom;
+
   const minDays = allPoints.length > 0
     ? Math.min(...allPoints.map((point) => point.x))
     : 0;
   const maxDays = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.x))
     : 1;
-  const xPadding = Math.max(0.5, maxBubbleRadius / 90);
+  const dataXRange = (maxDays - minDays) || 1;
+  const xPadding = maxBubbleRadius * dataXRange / Math.max(plotWidth - 2 * maxBubbleRadius, 100);
   const xDomainMin = Math.max(0, Math.floor(minDays - xPadding));
   const xDomainMax = Math.max(xDomainMin + 1, Math.ceil(maxDays + xPadding));
 
   const maxGhost = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.y))
     : 100;
-  const yPadding = Math.max(120, Math.ceil(maxBubbleRadius * 3.2));
+  const dataYRange = maxGhost || 100;
+  const yPadding = maxBubbleRadius * dataYRange / Math.max(plotHeight - 2 * maxBubbleRadius, 100);
   const yDomainMax = Math.max(120, Math.ceil((maxGhost + yPadding) / 50) * 50);
 
   const makeBubbleRenderer = (opts: {
@@ -107,21 +155,20 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     const isHovered = hoveredEmail === payload.email;
     const isDimmed = hoveredEmail != null && !isHovered;
     const opacity = isDimmed ? opts.dimOpacity : opts.baseOpacity;
-    const chartWidth = containerRef.current?.clientWidth ?? 800;
-    const plotWidth = chartWidth - chartMargin.left - chartMargin.right;
-    const plotHeight = chartHeight - chartMargin.top - chartMargin.bottom;
+    const pW = containerWidth - CHART_MARGIN.left - CHART_MARGIN.right;
+    const pH = chartHeight - CHART_MARGIN.top - CHART_MARGIN.bottom;
     const baseRadius = payload.r;
     const desiredHoverRadius = payload.r * 2;
     const maxRadiusInsidePlot = Math.min(
-      cx - chartMargin.left,
-      chartMargin.left + plotWidth - cx,
-      cy - chartMargin.top,
-      chartMargin.top + plotHeight - cy,
+      cx - CHART_MARGIN.left,
+      CHART_MARGIN.left + pW - cx,
+      cy - CHART_MARGIN.top,
+      CHART_MARGIN.top + pH - cy,
     ) - 1;
     const radius = isHovered
       ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadiusInsidePlot))
       : baseRadius;
-    const labelLeft = cx > chartWidth * 0.6;
+    const labelLeft = cx > containerWidth * 0.6;
     return (
       <g>
         <circle
@@ -149,6 +196,19 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             {payload.name}
           </text>
         )}
+        {showLabels && !isHovered && (
+          <text
+            x={cx}
+            y={cy - radius - 4}
+            textAnchor="middle"
+            fontSize={10}
+            fill={opts.labelColor}
+            fillOpacity={isDimmed ? 0.3 : 0.8}
+            pointerEvents="none"
+          >
+            {payload.name}
+          </text>
+        )}
       </g>
     );
   };
@@ -171,8 +231,17 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
 
   return (
     <div ref={containerRef}>
+      <label className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1 select-none cursor-pointer w-fit">
+        <input
+          type="checkbox"
+          checked={showLabels}
+          onChange={e => setShowLabels(e.target.checked)}
+          className="accent-primary"
+        />
+        Names
+      </label>
       <ResponsiveContainer width="100%" height={chartHeight} style={{ overflow: 'visible' }}>
-        <ScatterChart margin={chartMargin}>
+        <ScatterChart margin={CHART_MARGIN}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="x"
@@ -220,6 +289,12 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
           />
         </ScatterChart>
       </ResponsiveContainer>
+      {/* resize handle */}
+      <div
+        onPointerDown={onResizeStart}
+        className="mx-auto mt-0.5 w-16 h-2 rounded-full bg-muted hover:bg-muted-foreground/30 cursor-ns-resize transition-colors"
+        title="Drag to resize"
+      />
     </div>
   );
 }
