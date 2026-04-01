@@ -3,6 +3,7 @@ import { NextRequest } from 'next/server';
 
 const mockJobFindFirst = vi.fn();
 const mockEventFindMany = vi.fn();
+const mockEventFindFirst = vi.fn();
 const mockCommitAnalysisCount = vi.fn();
 
 vi.mock('@/lib/db', () => ({
@@ -12,6 +13,7 @@ vi.mock('@/lib/db', () => ({
     },
     analysisJobEvent: {
       findMany: (...args: unknown[]) => mockEventFindMany(...args),
+      findFirst: (...args: unknown[]) => mockEventFindFirst(...args),
     },
     commitAnalysis: {
       count: (...args: unknown[]) => mockCommitAnalysisCount(...args),
@@ -86,6 +88,7 @@ describe('GET /api/orders/[id]/progress', () => {
     } as never);
     mockGetJobMeta.mockReturnValue(null);
     mockEventFindMany.mockResolvedValue([]);
+    mockEventFindFirst.mockResolvedValue(null);
     mockCommitAnalysisCount.mockResolvedValue(0);
   });
 
