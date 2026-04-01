@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { analysisLogger, billingLogger } from '@/lib/logger';
@@ -12,6 +13,7 @@ export const maxDuration = 60;
 const HEARTBEAT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const POST_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_PENDING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const TRIGGER_CLAIM_TTL_MS = 120_000; // 2 minutes
 const TIME_BUDGET_MS = 45_000; // 45s — leave 15s buffer before 60s maxDuration
 const POST_PROCESSING_MIN_REMAINING_MS = 12_000;
 const POST_PROCESSING_LEASE_HEARTBEAT_MS = 15_000;
@@ -102,7 +104,7 @@ export async function GET(request: NextRequest) {
     processed++;
   }
 
-  // 2. Retry: FAILED_RETRYABLE → PENDING → re-trigger
+  // 2. Retry: FAILED_RETRYABLE → PENDING → re-trigger (failure-class aware)
   const retryJobs = await prisma.analysisJob.findMany({
     where: { status: 'FAILED_RETRYABLE', executionMode: 'modal' },
   });
@@ -112,6 +114,27 @@ export async function GET(request: NextRequest) {
       log.info({ processed }, 'Time budget exceeded in retry loop');
       return Response.json({ ok: true, processed, partial: true });
     }
+
+    // Check failure class from latest event
+    const latestFailureEvent = await prisma.analysisJobEvent.findFirst({
+      where: { jobId: job.id, code: { startsWith: 'FAILURE_CLASS_' } },
+      orderBy: { id: 'desc' },
+    });
+    const failureClass = latestFailureEvent?.code?.replace('FAILURE_CLASS_', '') ?? 'UNKNOWN';
+
+    if (failureClass === 'EXTERNAL_QUOTA') {
+      await appendJobEvent({
+        jobId: job.id,
+        level: 'warn',
+        phase: 'watchdog',
+        code: 'RETRY_SKIPPED_QUOTA',
+        message: 'Watchdog skipped retry: external quota exhausted',
+        payload: { failureClass },
+      });
+      log.warn({ jobId: job.id, failureClass }, 'Retry skipped: EXTERNAL_QUOTA');
+      continue;
+    }
+
     await prisma.analysisJob.update({
       where: { id: job.id },
       data: {
@@ -128,11 +151,11 @@ export async function GET(request: NextRequest) {
       phase: 'watchdog',
       code: 'RETRY_SCHEDULED',
       message: 'Watchdog reset retryable job to PENDING and re-triggered modal',
-      payload: { retryCount: job.retryCount + 1 },
+      payload: { retryCount: job.retryCount + 1, failureClass },
     });
 
-    await triggerModal(job.id);
-    log.info({ jobId: job.id, retry: job.retryCount + 1 }, 'Job retried');
+    await claimAndTriggerModal(job.id);
+    log.info({ jobId: job.id, retry: job.retryCount + 1, failureClass }, 'Job retried');
     processed++;
   }
 
@@ -154,14 +177,14 @@ export async function GET(request: NextRequest) {
       return Response.json({ ok: true, processed, partial: true });
     }
     const previousModalCallId = job.modalCallId;
+    // Clear stale modalCallId so the claim protocol can acquire the job
     if (previousModalCallId) {
-      // Force a fresh call id so diagnostics clearly show latest trigger attempt.
       await prisma.analysisJob.update({
         where: { id: job.id },
-        data: { modalCallId: null },
+        data: { modalCallId: null, updatedAt: new Date() },
       });
     }
-    await triggerModal(job.id);
+    const triggered = await claimAndTriggerModal(job.id);
     await appendJobEvent({
       jobId: job.id,
       level: 'warn',
@@ -171,21 +194,47 @@ export async function GET(request: NextRequest) {
         ? 'Watchdog re-triggered stale PENDING modal job (worker was not acquired)'
         : 'Watchdog re-triggered orphan PENDING modal job',
       payload: previousModalCallId
-        ? { previousModalCallId }
-        : undefined,
+        ? { previousModalCallId, triggered }
+        : { triggered },
     });
     log.info(
-      { jobId: job.id, previousModalCallId },
+      { jobId: job.id, previousModalCallId, triggered },
       'Re-triggered stale PENDING job',
     );
     processed++;
   }
 
-  // 3.5. Recovery note:
+  // 3.5. Stale trigger placeholder cleanup
+  const stalePlaceholders = await prisma.analysisJob.findMany({
+    where: {
+      status: 'PENDING',
+      executionMode: 'modal',
+      modalCallId: { startsWith: 'triggering:' },
+      updatedAt: { lt: new Date(Date.now() - TRIGGER_CLAIM_TTL_MS) },
+    },
+  });
+  for (const job of stalePlaceholders) {
+    await prisma.analysisJob.update({
+      where: { id: job.id },
+      data: { modalCallId: null, updatedAt: new Date() },
+    });
+    await appendJobEvent({
+      jobId: job.id,
+      level: 'warn',
+      phase: 'watchdog',
+      code: 'TRIGGER_PLACEHOLDER_CLEARED',
+      message: 'Watchdog cleared stale trigger placeholder',
+      payload: { stalePlaceholder: job.modalCallId, ttlMs: TRIGGER_CLAIM_TTL_MS },
+    });
+    log.warn({ jobId: job.id, stale: job.modalCallId }, 'Cleared stale trigger placeholder');
+    processed++;
+  }
+
+  // 3.6. Recovery note:
   // LLM_COMPLETE jobs can keep resumable post_processing checkpoints in currentStep.
   // Re-claim logic below treats stale checkpoints as recoverable without resetting.
 
-  // 3.6. Recovery: latest job is COMPLETED but order still PROCESSING.
+  // 3.7. Recovery: latest job is COMPLETED but order still PROCESSING.
   // This can happen after a partial finalization failure. Reconcile order state.
   const inconsistentCompleted = await prisma.$queryRaw<{ id: string; orderId: string }[]>`
     SELECT j.id, j."orderId"
@@ -661,13 +710,43 @@ function parsePostProcessingState(step: string | null | undefined): PostProcessi
 }
 
 
-async function triggerModal(jobId: string) {
+async function claimAndTriggerModal(jobId: string): Promise<boolean> {
+  const claimId = `triggering:${crypto.randomUUID()}`;
+  // Atomic claim: only succeeds if modalCallId is NULL
+  const claimed = await prisma.analysisJob.updateMany({
+    where: { id: jobId, status: 'PENDING', modalCallId: null },
+    data: { modalCallId: claimId, updatedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    log.info({ jobId }, 'Trigger claim failed (already claimed or status changed)');
+    return false;
+  }
+  // Now trigger Modal
+  const success = await triggerModal(jobId);
+  if (!success) {
+    // Clear placeholder on trigger failure
+    await prisma.analysisJob.updateMany({
+      where: { id: jobId, modalCallId: claimId },
+      data: { modalCallId: null, updatedAt: new Date() },
+    });
+    await appendJobEvent({
+      jobId,
+      level: 'warn',
+      phase: 'watchdog',
+      code: 'TRIGGER_CLAIM_CLEARED',
+      message: 'Trigger claim cleared after modal trigger failure',
+    });
+  }
+  return success;
+}
+
+async function triggerModal(jobId: string): Promise<boolean> {
   const url = process.env.MODAL_ENDPOINT_URL;
   const secret = process.env.MODAL_WEBHOOK_SECRET;
 
   if (!url) {
     log.error({ jobId }, 'MODAL_ENDPOINT_URL not configured');
-    return;
+    return false;
   }
 
   try {
@@ -679,6 +758,7 @@ async function triggerModal(jobId: string) {
 
     if (resp.ok) {
       const data = await resp.json();
+      // Replace the placeholder claim with the real modalCallId
       await prisma.analysisJob.update({
         where: { id: jobId },
         data: { modalCallId: data.modal_call_id },
@@ -690,6 +770,7 @@ async function triggerModal(jobId: string) {
         message: 'Watchdog triggered modal job',
         payload: { modalCallId: data.modal_call_id },
       });
+      return true;
     } else {
       await appendJobEvent({
         jobId,
@@ -700,6 +781,7 @@ async function triggerModal(jobId: string) {
         payload: { httpStatus: resp.status },
       });
       log.warn({ jobId, status: resp.status }, 'Modal trigger failed');
+      return false;
     }
   } catch (err) {
     await appendJobEvent({
@@ -711,5 +793,6 @@ async function triggerModal(jobId: string) {
       payload: { error: String(err) },
     });
     log.warn({ err, jobId }, 'Modal trigger network error');
+    return false;
   }
 }
