@@ -19,7 +19,14 @@ interface ChartPoint {
   realDays: number; realGhost: number;
 }
 
-const CHART_MARGIN = { top: 45, right: 45, bottom: 20, left: 20 };
+const BASE_MARGIN = { top: 20, right: 20, bottom: 30, left: 20 };
+
+/** CSS to disable Recharts internal SVG clip-path so bubbles/labels can overflow
+ *  the plot area into the chart margins. Scoped by a unique wrapper class. */
+const OVERFLOW_STYLE = `
+.ghost-bubble-no-clip .recharts-surface { overflow: visible; }
+.ghost-bubble-no-clip [clip-path] { clip-path: none; }
+`;
 
 /* ---------- component ---------- */
 
@@ -80,7 +87,11 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   const isLargeSet = metrics.length >= LARGE_SET_THRESHOLD;
   const maxEffort = Math.max(...metrics.map(m => m.totalEffortHours), 1);
 
-  const data = applyJitter(
+  // Clamp jittered Y >= 0 so bubbles don't render below the X axis.
+  const clampY = <T extends { y: number }>(pts: T[]): T[] =>
+    pts.map(p => (p.y < 0 ? { ...p, y: 0 } : p));
+
+  const data = clampY(applyJitter(
     metrics
       .filter(m => m.hasEnoughData && m.ghostPercent != null)
       .map(m => ({
@@ -95,9 +106,9 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
         realGhost: Math.round(m.ghostPercent!),
       })),
     metrics.length,
-  );
+  ));
 
-  const dimmed = applyJitter(
+  const dimmed = clampY(applyJitter(
     metrics
       .filter(m => !m.hasEnoughData)
       .map(m => ({
@@ -112,40 +123,31 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
         realGhost: Math.round(m.ghostPercent ?? 0),
       })),
     metrics.length,
-  );
+  ));
 
   const allPoints = [...data, ...dimmed];
   const maxBubbleRadius = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.r))
     : 8;
 
-  // Convert max bubble radius (px) to axis-unit padding so the full circle
-  // (center +/- radius) stays within the rendered plot area.
-  // Formula: pad_units = R_px * data_range / (plot_px - 2*R_px)
-  const plotWidth = containerWidth - CHART_MARGIN.left - CHART_MARGIN.right;
-  const plotHeight = chartHeight - CHART_MARGIN.top - CHART_MARGIN.bottom;
+  // Dynamic margins: ensure the SVG viewport has enough room for bubbles
+  // and labels that overflow the plot area (clip-path is disabled via CSS).
+  const labelExtra = showLabels ? 14 : 0; // 10px font + 4px gap
+  const chartMargin = {
+    top:    Math.max(BASE_MARGIN.top,    maxBubbleRadius + labelExtra),
+    right:  Math.max(BASE_MARGIN.right,  maxBubbleRadius + 5),
+    bottom: Math.max(BASE_MARGIN.bottom, maxBubbleRadius + 5),
+    left:   Math.max(BASE_MARGIN.left, maxBubbleRadius + 5),
+  };
 
-  const minDays = allPoints.length > 0
-    ? Math.min(...allPoints.map((point) => point.x))
-    : 0;
+  // Axis domains: no artificial padding — clip-path override lets bubbles overflow.
   const maxDays = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.x))
     : 1;
-  const dataXRange = (maxDays - minDays) || 1;
-  const xPadding = maxBubbleRadius * dataXRange / Math.max(plotWidth - 2 * maxBubbleRadius, 100);
-  const xDomainMin = Math.max(0, Math.floor(minDays - xPadding));
-  const xDomainMax = Math.max(xDomainMin + 1, Math.ceil(maxDays + xPadding));
-
-  const minGhost = allPoints.length > 0
-    ? Math.min(...allPoints.map((point) => point.y))
-    : 0;
   const maxGhost = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.y))
     : 100;
-  const dataYRange = (maxGhost - minGhost) || 100;
-  const yPadding = maxBubbleRadius * dataYRange / Math.max(plotHeight - 2 * maxBubbleRadius, 100);
-  const yDomainMin = Math.min(0, Math.floor(minGhost - yPadding));
-  const yDomainMax = Math.max(120, Math.ceil((maxGhost + yPadding) / 50) * 50);
+  const yDomainMax = Math.max(120, Math.ceil(maxGhost / 50) * 50);
 
   const makeBubbleRenderer = (opts: {
     baseOpacity: number;
@@ -159,18 +161,12 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     const isHovered = hoveredEmail === payload.email;
     const isDimmed = hoveredEmail != null && !isHovered;
     const opacity = isDimmed ? opts.dimOpacity : opts.baseOpacity;
-    const pW = containerWidth - CHART_MARGIN.left - CHART_MARGIN.right;
-    const pH = chartHeight - CHART_MARGIN.top - CHART_MARGIN.bottom;
     const baseRadius = payload.r;
     const desiredHoverRadius = payload.r * 2;
-    const maxRadiusInsidePlot = Math.min(
-      cx - CHART_MARGIN.left,
-      CHART_MARGIN.left + pW - cx,
-      cy - CHART_MARGIN.top,
-      CHART_MARGIN.top + pH - cy,
-    ) - 1;
+    // Clamp to SVG viewport (not plot area — clip-path is disabled).
+    const maxRadius = Math.max(0, Math.min(cx, containerWidth - cx, cy, chartHeight - cy) - 1);
     const radius = isHovered
-      ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadiusInsidePlot))
+      ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadius))
       : baseRadius;
     const labelLeft = cx > containerWidth * 0.6;
     return (
@@ -234,7 +230,8 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   });
 
   return (
-    <div ref={containerRef}>
+    <div ref={containerRef} className="ghost-bubble-no-clip">
+      <style>{OVERFLOW_STYLE}</style>
       <label className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1 select-none cursor-pointer w-fit">
         <input
           type="checkbox"
@@ -245,14 +242,13 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
         Names
       </label>
       <ResponsiveContainer width="100%" height={chartHeight} style={{ overflow: 'visible' }}>
-        <ScatterChart margin={CHART_MARGIN}>
+        <ScatterChart margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="x"
             name="Work Days"
             type="number"
-            domain={[xDomainMin, xDomainMax]}
-            allowDataOverflow
+            domain={[0, Math.ceil(maxDays)]}
             allowDecimals={false}
             tickFormatter={(value: number) => `${Math.round(value)}`}
             label={{ value: 'Work Days', position: 'insideBottom', offset: -6 }}
@@ -261,8 +257,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             dataKey="y"
             name="Ghost %"
             type="number"
-            domain={[yDomainMin, yDomainMax]}
-            allowDataOverflow
+            domain={[0, yDomainMax]}
             allowDecimals={false}
             tickFormatter={(value: number) => `${Math.round(value)}`}
             label={{ value: 'Ghost %', angle: -90, position: 'insideLeft' }}
