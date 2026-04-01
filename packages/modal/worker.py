@@ -55,11 +55,11 @@ from db import (
     load_demo_live_settings,
     get_existing_shas, get_base_commit_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
-    set_job_status, set_job_error, increment_total_commits,
+    set_job_status, set_job_error, set_total_commits,
     is_job_cancelled,
     update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
     delete_benchmark_analyses,
-    append_job_event,
+    append_job_event, clear_force_recalculate,
 )
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
 from rate_limiter import RateLimiter
@@ -110,6 +110,74 @@ def _env_bool(name: str, default: bool) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+## ---------------------------------------------------------------------------
+# Failure classification — three-class taxonomy for structured error handling
+# ---------------------------------------------------------------------------
+
+# Failure classes (used as suffixes in FAILURE_CLASS_* event codes)
+FAILURE_TRANSIENT = "TRANSIENT"
+FAILURE_EXTERNAL_QUOTA = "EXTERNAL_QUOTA"
+FAILURE_CONFIG_FATAL = "CONFIG_FATAL"
+
+# Keywords for each failure class (checked against lowercased error message)
+_TRANSIENT_KEYWORDS = [
+    "timeout", "timed out", "timedout",
+    "connection reset", "connection refused", "connection aborted",
+    "connectionerror", "connecttimeout",
+    "temporary failure", "temporarily unavailable",
+    "econnreset", "econnrefused", "epipe",
+    "broken pipe", "network", "socket",
+    "502", "503", "504",  # HTTP server error codes
+    "bad gateway", "service unavailable", "gateway timeout",
+    "retry", "retryable",
+]
+
+_QUOTA_KEYWORDS = [
+    "402", "403", "429",  # HTTP quota/auth/rate-limit codes
+    "quota", "rate limit", "rate_limit", "ratelimit",
+    "billing", "credits exhausted", "credit limit",
+    "budget", "insufficient funds", "payment required",
+    "too many requests", "exceeded",
+]
+
+_FATAL_KEYWORDS = [
+    "fatal_llm:",
+    "llm_snapshot_invalid",
+    "missing llmconfigsnapshot",
+    "all providers have been ignored",
+    "authentication", "permission", "invalid token",
+    "schema", "column", "relation",  # DB schema issues
+    "invalid api key", "unauthorized",
+]
+
+
+def classify_failure(error_msg: str, error_type: str = "") -> str:
+    """Classify an exception into one of three failure classes.
+
+    Returns one of: TRANSIENT, EXTERNAL_QUOTA, CONFIG_FATAL.
+
+    Priority: CONFIG_FATAL > EXTERNAL_QUOTA > TRANSIENT > default (CONFIG_FATAL).
+    CONFIG_FATAL wins over EXTERNAL_QUOTA because e.g. "authentication" + "403"
+    means the key is wrong (config issue), not a temporary quota hit.
+    """
+    combined = f"{error_type}: {error_msg}".lower()
+
+    # Check CONFIG_FATAL first (highest priority)
+    if any(kw in combined for kw in _FATAL_KEYWORDS):
+        return FAILURE_CONFIG_FATAL
+
+    # Check EXTERNAL_QUOTA next
+    if any(kw in combined for kw in _QUOTA_KEYWORDS):
+        return FAILURE_EXTERNAL_QUOTA
+
+    # Check TRANSIENT
+    if any(kw in combined for kw in _TRANSIENT_KEYWORDS):
+        return FAILURE_TRANSIENT
+
+    # Default: unknown errors are fatal (safe default -- don't retry blindly)
+    return FAILURE_CONFIG_FATAL
 
 
 DEMO_LIVE_CHUNK_SIZE_ENV_FALLBACK = _env_positive_int("DEMO_LIVE_CHUNK_SIZE", 10)
@@ -304,7 +372,9 @@ def run_analysis(job_id: str):
         )
 
         # If forceRecalculate -- delete existing CommitAnalysis for this order
-        # so intra-order dedup doesn't skip them
+        # so intra-order dedup doesn't skip them.
+        # One-shot: clear the flag immediately after applying the delete so that
+        # retries/resumes don't wipe the analyses again.
         if force_recalculate:
             append_job_event(
                 conn,
@@ -315,18 +385,24 @@ def run_analysis(job_id: str):
                 payload={"orderId": order["id"]},
             )
             delete_existing_analyses(conn, order["id"])
+            clear_force_recalculate(conn, job_id)
             append_job_event(
                 conn,
                 job_id,
-                "Existing analyses removed for force recalculate",
+                "forceRecalculate consumed (one-shot); existing analyses removed",
                 phase="worker",
-                code="FORCE_RECALCULATE_DONE",
+                code="FORCE_RECALC_CONSUMED",
                 payload={"orderId": order["id"]},
             )
 
         rate_limiter = RateLimiter(max_qps=float(os.environ.get("LLM_MAX_QPS", "5")))
         total_analyzed = 0
         total_cache_hits = 0
+        total_commit_plan = 0  # Accumulated count for deterministic totalCommits
+
+        # Deterministic totalCommits: reset to 0 at run start so retries don't
+        # accumulate on top of stale values from prior attempts.
+        set_total_commits(conn, job_id, 0)
 
         is_last_n = scope.get("is_last_n", False)
 
@@ -516,10 +592,10 @@ def run_analysis(job_id: str):
                 continue
 
             # Non-LAST_N: process immediately
-            total_analyzed, total_cache_hits = _process_repo_commits(
+            total_analyzed, total_cache_hits, total_commit_plan = _process_repo_commits(
                 conn, job_id, order, repo_full_name, repo_path, language,
                 commits, cache_mode, current_llm_model, llm_config,
-                rate_limiter, total_analyzed, total_cache_hits,
+                rate_limiter, total_analyzed, total_cache_hits, total_commit_plan,
                 repo_idx, len(repos), skip_billing=skip_billing,
                 demo_live_mode=demo_live_mode,
                 demo_live_chunk_size=demo_live_chunk_size,
@@ -575,10 +651,10 @@ def run_analysis(job_id: str):
                 if not repo_commits:
                     continue
 
-                total_analyzed, total_cache_hits = _process_repo_commits(
+                total_analyzed, total_cache_hits, total_commit_plan = _process_repo_commits(
                     conn, job_id, order, er["repo_full_name"], er["repo_path"],
                     er["language"], repo_commits, cache_mode, current_llm_model,
-                    llm_config, rate_limiter, total_analyzed, total_cache_hits,
+                    llm_config, rate_limiter, total_analyzed, total_cache_hits, total_commit_plan,
                     er["repo_idx"], len(repos), skip_billing=skip_billing,
                     demo_live_mode=demo_live_mode,
                     demo_live_chunk_size=demo_live_chunk_size,
@@ -652,35 +728,69 @@ def run_analysis(job_id: str):
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
-        error_lower = error_msg.lower()
+        error_type = type(e).__name__
 
-        # Classify error: retryable vs fatal
-        is_fatal = any(keyword in error_lower for keyword in [
-            "fatal_llm:",
-            "openrouter",
-            "llm_snapshot_invalid",
-            "missing llmconfigsnapshot",
-            "all providers have been ignored",
-            "authentication", "permission", "invalid token",
-            "schema", "column", "relation",  # DB schema issues
-        ])
+        # Three-class failure taxonomy
+        failure_class = classify_failure(error_msg, error_type)
+        is_fatal = failure_class == FAILURE_CONFIG_FATAL
 
+        append_job_event(
+            conn,
+            job_id,
+            f"Failure classified as {failure_class}",
+            level="error",
+            phase="worker",
+            code=f"FAILURE_CLASS_{failure_class}",
+            payload={
+                "failureClass": failure_class,
+                "errorType": error_type,
+                "error": error_msg[:500],
+            },
+        )
+
+        # Rollback gating by failure class:
+        # - CONFIG_FATAL: rollback partial analyses (config is wrong, results are suspect)
+        # - TRANSIENT / EXTERNAL_QUOTA: preserve partial results for resume
+        # - Benchmark: always rollback (benchmark results must be complete)
         rollback_deleted = 0
         if order_id:
             try:
                 if is_benchmark:
                     rollback_deleted = delete_benchmark_analyses(conn, order_id, job_id)
-                elif job_started_at:
-                    rollback_deleted = delete_analyses_since(conn, order_id, job_started_at)
-                if rollback_deleted > 0:
+                    if rollback_deleted > 0:
+                        append_job_event(
+                            conn,
+                            job_id,
+                            "Rolled back benchmark analyses from failed run",
+                            level="warn",
+                            phase="worker",
+                            code="ANALYSES_ROLLBACK_OK",
+                            payload={"deletedCount": rollback_deleted, "benchmark": True},
+                        )
+                elif failure_class == FAILURE_CONFIG_FATAL:
+                    # Fatal config error: results produced under bad config are untrustworthy
+                    if job_started_at:
+                        rollback_deleted = delete_analyses_since(conn, order_id, job_started_at)
+                    if rollback_deleted > 0:
+                        append_job_event(
+                            conn,
+                            job_id,
+                            "Rolled back partial analyses from fatal config failure",
+                            level="warn",
+                            phase="worker",
+                            code="ANALYSES_ROLLBACK_OK",
+                            payload={"deletedCount": rollback_deleted, "failureClass": failure_class},
+                        )
+                else:
+                    # TRANSIENT / EXTERNAL_QUOTA: preserve partial results for resume
                     append_job_event(
                         conn,
                         job_id,
-                        "Rolled back partial analyses from failed run",
-                        level="warn",
+                        f"Rollback skipped: partial results preserved for {failure_class} failure",
+                        level="info",
                         phase="worker",
-                        code="ANALYSES_ROLLBACK_OK",
-                        payload={"deletedCount": rollback_deleted, "benchmark": is_benchmark},
+                        code="ROLLBACK_SKIPPED",
+                        payload={"failureClass": failure_class},
                     )
             except Exception as rollback_err:
                 try:
@@ -704,6 +814,7 @@ def run_analysis(job_id: str):
             phase="worker",
             code="WORKER_EXCEPTION",
             payload={
+                "failureClass": failure_class,
                 "fatal": is_fatal,
                 "error": error_msg[:500],
                 "rollbackDeleted": rollback_deleted,
@@ -743,13 +854,13 @@ def run_analysis(job_id: str):
 def _process_repo_commits(
     conn, job_id, order, repo_full_name, repo_path, language,
     commits, cache_mode, current_llm_model, llm_config,
-    rate_limiter, total_analyzed, total_cache_hits,
+    rate_limiter, total_analyzed, total_cache_hits, total_commit_plan,
     repo_idx, total_repos, skip_billing=False, demo_live_mode=False,
     demo_live_chunk_size=DEMO_LIVE_CHUNK_SIZE_ENV_FALLBACK,
     is_benchmark=False, benchmark_job_id=None,
 ):
     """Process commits for a single repo: dedup -> cache -> LLM -> save.
-    Returns updated (total_analyzed, total_cache_hits) counters.
+    Returns updated (total_analyzed, total_cache_hits, total_commit_plan) counters.
     """
     repo_started = time.time()
     initial_commit_count = len(commits)
@@ -818,7 +929,7 @@ def _process_repo_commits(
             repo_name=repo_full_name,
             payload={"durationSec": round(time.time() - repo_started, 2)},
         )
-        return total_analyzed, total_cache_hits
+        return total_analyzed, total_cache_hits, total_commit_plan
 
     # Cross-order cache lookup
     all_shas = [c["sha"] for c in commits]
@@ -863,16 +974,9 @@ def _process_repo_commits(
         )
 
     commits = [c for c in commits if c["sha"] not in cached_sha_set]
-    increment_total_commits(conn, job_id, len(all_shas))
-    append_job_event(
-        conn,
-        job_id,
-        "Updated total commit counter for repository",
-        phase="repo",
-        code="TOTAL_COMMITS_INCREMENTED",
-        repo_name=repo_full_name,
-        payload={"added": len(all_shas), "remainingForLlm": len(commits)},
-    )
+    # Deterministic totalCommits: accumulate absolute count, set (not increment)
+    total_commit_plan += len(all_shas)
+    set_total_commits(conn, job_id, total_commit_plan)
 
     if not commits:
         append_job_event(
@@ -884,7 +988,7 @@ def _process_repo_commits(
             repo_name=repo_full_name,
             payload={"durationSec": round(time.time() - repo_started, 2)},
         )
-        return total_analyzed, total_cache_hits
+        return total_analyzed, total_cache_hits, total_commit_plan
 
     # Process via evaluate_chunk
     update_progress(conn, job_id, step="analyzing")
@@ -1087,7 +1191,7 @@ def _process_repo_commits(
         },
     )
 
-    return total_analyzed, total_cache_hits
+    return total_analyzed, total_cache_hits, total_commit_plan
 
 
 def _touch_chunk_heartbeat(

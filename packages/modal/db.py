@@ -416,7 +416,11 @@ def save_commit_analyses(conn, analyses: list[dict], job_id: str | None = None):
 
 
 def increment_total_commits(conn, job_id: str, count: int):
-    """Increment totalCommits counter on the job."""
+    """Increment totalCommits counter on the job.
+
+    DEPRECATED: Prefer set_total_commits() for deterministic total at job start.
+    Kept for backward compatibility -- callers should migrate to set_total_commits.
+    """
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE "AnalysisJob"
@@ -424,6 +428,35 @@ def increment_total_commits(conn, job_id: str, count: int):
                 "updatedAt" = NOW()
             WHERE id = %s
         """, (count, job_id))
+    conn.commit()
+
+
+def set_total_commits(conn, job_id: str, total: int):
+    """Set totalCommits to an absolute value (deterministic, idempotent).
+
+    Called once at job start after the commit plan is computed.
+    Safe on retry: always overwrites with the freshly computed total.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE "AnalysisJob"
+            SET "totalCommits" = %s,
+                "updatedAt" = NOW()
+            WHERE id = %s
+        """, (total, job_id))
+    conn.commit()
+
+
+def clear_force_recalculate(conn, job_id: str):
+    """Clear the forceRecalculate flag so retries don't re-delete analyses.
+
+    Must be called immediately after delete_existing_analyses() applies the wipe.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "AnalysisJob" SET "forceRecalculate" = false WHERE id = %s',
+            (job_id,),
+        )
     conn.commit()
 
 
