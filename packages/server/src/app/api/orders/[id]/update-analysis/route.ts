@@ -3,7 +3,7 @@ import prisma from '@/lib/db';
 import { Prisma } from '@prisma/client';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
-import { getLlmConfig, getConcurrencySnapshot } from '@/lib/llm-config';
+import { getLlmConfig, getConcurrencyConfig } from '@/lib/llm-config';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
 import { analysisLogger } from '@/lib/logger';
 
@@ -45,7 +45,7 @@ export async function POST(
     if (cloned.openrouter && typeof cloned.openrouter === 'object') {
       (cloned.openrouter as Record<string, unknown>).apiKey = undefined;
     }
-    cloned.concurrency = getConcurrencySnapshot();
+    cloned.concurrency = await getConcurrencyConfig();
     snapshotConfig = cloned as Prisma.InputJsonValue;
   } else if (prevSnapshot) {
     // Snapshot exists but lacks context — resolve against the snapshot's model,
@@ -63,7 +63,7 @@ export async function POST(
       }
       enriched.contextLength = rawContextLength;
       enriched.effectiveContextLength = effectiveContextLength;
-      enriched.concurrency = getConcurrencySnapshot();
+      enriched.concurrency = await getConcurrencyConfig();
       snapshotConfig = enriched as Prisma.InputJsonValue;
     } catch (err) {
       analysisLogger.warn({ err, orderId: id }, 'Update-analysis: failed to resolve context from snapshot model');
@@ -80,7 +80,7 @@ export async function POST(
         openrouter: { ...llmConfig.openrouter, apiKey: undefined },
         contextLength: rawContextLength,
         effectiveContextLength,
-        concurrency: getConcurrencySnapshot(),
+        concurrency: await getConcurrencyConfig(),
       } as unknown as Prisma.InputJsonValue;
     } catch (err) {
       analysisLogger.warn({ err, orderId: id }, 'Update-analysis: failed to resolve context');

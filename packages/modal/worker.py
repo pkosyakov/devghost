@@ -1434,6 +1434,20 @@ def setup_llm_env(llm_config):
     if llm_config.get("fdLargeProvider"):
         os.environ["FD_LARGE_LLM_PROVIDER"] = llm_config["fdLargeProvider"]
 
+    # Pipeline concurrency from snapshot (admin-set DB values or env fallback).
+    # Must explicitly clear when null/auto to avoid stale values from prior jobs.
+    concurrency = llm_config.get("concurrency") or {}
+    for key, field in [
+        ("LLM_CONCURRENCY", "llm"),
+        ("FD_LLM_CONCURRENCY", "fd"),
+        ("FD_LLM_CONCURRENCY_CAP", "fdCap"),
+    ]:
+        val = concurrency.get(field)
+        if val:
+            os.environ[key] = str(val)
+        else:
+            os.environ.pop(key, None)
+
 
 def _utc_iso_days_ago(days: int) -> str:
     dt = datetime.now(timezone.utc) - timedelta(days=days)

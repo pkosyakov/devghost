@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getAvailableBalance, isBillingEnabled, runExpiryGuard } from '@/lib/services/credit-service';
-import { getLlmConfig, getConcurrencySnapshot } from '@/lib/llm-config';
+import { getLlmConfig, getConcurrencyFromConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext } from '@/lib/services/model-context';
 import { computeBillingPreview, type BillingPreviewScope } from '@/lib/services/analysis-billing-preview';
@@ -296,7 +296,7 @@ export async function POST(
         },
         ...(rawContextLength != null && { contextLength: rawContextLength }),
         ...(effectiveContextLength != null && { effectiveContextLength }),
-        concurrency: getConcurrencySnapshot(),
+        concurrency: getConcurrencyFromConfig(llmConfig),
       };
       await prisma.analysisJob.update({
         where: { id: job.id },
@@ -395,7 +395,7 @@ export async function POST(
         openrouter: { ...llmConfigLocal.openrouter, apiKey: undefined },
         ...(rawContextLength != null && { contextLength: rawContextLength }),
         ...(effectiveContextLength != null && { effectiveContextLength }),
-        concurrency: getConcurrencySnapshot(),
+        concurrency: getConcurrencyFromConfig(llmConfigLocal),
       };
       await prisma.analysisJob.update({
         where: { id: job.id },

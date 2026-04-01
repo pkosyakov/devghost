@@ -192,8 +192,10 @@ export async function GET(
       ? Math.min(99, Math.floor((effectiveCurrentCommit / effectiveTotalCommits) * 90))
       : 0;
   const effectiveProgress = Math.max(rawProgress ?? 0, progressFromCommits);
-  const llmConcurrency = envPositiveInt('LLM_CONCURRENCY', 1);
-  const fdLlmConcurrency = envPositiveInt('FD_LLM_CONCURRENCY', llmConcurrency);
+  // Prefer snapshot concurrency (persisted at analysis time), fall back to env
+  const snapConcurrency = (job.llmConfigSnapshot as Record<string, unknown> | null)?.concurrency as Record<string, unknown> | undefined;
+  const llmConcurrency = toPositiveNumber(snapConcurrency?.llm) ?? envPositiveInt('LLM_CONCURRENCY', 1);
+  const fdLlmConcurrency = toPositiveNumber(snapConcurrency?.fd) ?? envPositiveInt('FD_LLM_CONCURRENCY', llmConcurrency);
 
   // No browser caching — this endpoint is polled for real-time progress
   return NextResponse.json(

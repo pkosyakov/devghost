@@ -48,7 +48,7 @@ const mockGetLlmConfig = vi.fn().mockResolvedValue({
 });
 vi.mock('@/lib/llm-config', () => ({
   getLlmConfig: (...a: unknown[]) => mockGetLlmConfig(...a),
-  getConcurrencySnapshot: () => ({ llm: 5, fd: null, fdCap: null }),
+  getConcurrencyConfig: vi.fn().mockResolvedValue({ llm: 5, fd: null, fdCap: null }),
 }));
 
 const mockResolveEffectiveContext = vi.fn().mockResolvedValue({

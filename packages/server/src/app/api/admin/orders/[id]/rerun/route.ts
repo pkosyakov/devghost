@@ -5,7 +5,7 @@ import { apiResponse, apiError, requireAdmin, isErrorResponse } from '@/lib/api-
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { auditLog } from '@/lib/audit';
 import { analysisLogger } from '@/lib/logger';
-import { getLlmConfig, getConcurrencySnapshot } from '@/lib/llm-config';
+import { getLlmConfig, getConcurrencyConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
 import { z } from 'zod';
@@ -125,7 +125,7 @@ export async function POST(
   }
 
   // Always stamp current concurrency — pipeline reads env at runtime
-  (snapshotConfig as Record<string, unknown>).concurrency = getConcurrencySnapshot();
+  (snapshotConfig as Record<string, unknown>).concurrency = await getConcurrencyConfig();
 
   // Atomically: check status + create job + mark order PROCESSING.
   const job = await prisma.$transaction(async (tx) => {

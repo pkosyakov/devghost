@@ -6,6 +6,12 @@ import prisma from '@/lib/db';
 
 export type LlmProvider = 'ollama' | 'openrouter';
 
+export type ConcurrencyConfig = {
+  llm: number | null;
+  fd: number | null;
+  fdCap: number | null;
+};
+
 export interface LlmConfig {
   provider: LlmProvider;
   ollama: {
@@ -22,6 +28,7 @@ export interface LlmConfig {
     allowFallbacks: boolean;
     requireParameters: boolean;
   };
+  concurrency?: ConcurrencyConfig;
 }
 
 function parseCsv(value: string | undefined | null, fallbackCsv: string): string[] {
@@ -33,6 +40,13 @@ function parseBool(value: string | undefined | null, fallback: boolean): boolean
   if (!value) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(value.toLowerCase());
 }
+
+function parsePositiveInt(v: string | undefined | null): number | null {
+  const n = parseInt(v ?? '', 10);
+  return n > 0 ? n : null;
+}
+
+const DEFAULT_CONCURRENCY: ConcurrencyConfig = { llm: null, fd: null, fdCap: null };
 
 /**
  * Read LLM config from DB (SystemSettings singleton).
@@ -101,6 +115,11 @@ export async function getLlmConfig(): Promise<LlmConfig> {
       requireParameters: settingsAny.openrouterRequireParameters ??
         parseBool(process.env.OPENROUTER_REQUIRE_PARAMETERS, true),
     },
+    concurrency: {
+      llm: settings.llmConcurrency ?? parsePositiveInt(process.env.LLM_CONCURRENCY),
+      fd: settings.fdLlmConcurrency ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY),
+      fdCap: settings.fdLlmConcurrencyCap ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP),
+    },
   };
 
   if (provider === 'openrouter' && !config.openrouter.apiKey) {
@@ -114,25 +133,43 @@ export async function getLlmConfig(): Promise<LlmConfig> {
 }
 
 /**
+ * Lightweight concurrency reader — reads only concurrency from SystemSettings + env.
+ * No provider/key validation. Safe to call when global LLM config may be broken.
+ * Used by rerun/update-analysis to stamp snapshot without risking getLlmConfig() failures.
+ */
+export async function getConcurrencyConfig(): Promise<ConcurrencyConfig> {
+  try {
+    const settings = await prisma.systemSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { llmConcurrency: true, fdLlmConcurrency: true, fdLlmConcurrencyCap: true },
+    });
+    return {
+      llm: settings?.llmConcurrency ?? parsePositiveInt(process.env.LLM_CONCURRENCY),
+      fd: settings?.fdLlmConcurrency ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY),
+      fdCap: settings?.fdLlmConcurrencyCap ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP),
+    };
+  } catch {
+    // DB unreachable — fall back to env
+    return {
+      llm: parsePositiveInt(process.env.LLM_CONCURRENCY),
+      fd: parsePositiveInt(process.env.FD_LLM_CONCURRENCY),
+      fdCap: parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP),
+    };
+  }
+}
+
+/**
+ * Extract concurrency from a loaded LlmConfig.
+ * Returns default (all null) when config lacks concurrency.
+ */
+export function getConcurrencyFromConfig(config: LlmConfig): ConcurrencyConfig {
+  return config.concurrency ?? DEFAULT_CONCURRENCY;
+}
+
+/**
  * Synchronous fallback — reads only from env vars.
  * Use only when async is not possible (e.g. module-level init).
  */
-/**
- * Snapshot of concurrency env vars at launch time.
- * Persisted in llmConfigSnapshot so we can see what was used for a given run.
- */
-export function getConcurrencySnapshot(): { llm: number | null; fd: number | null; fdCap: number | null } {
-  const parse = (v: string | undefined) => {
-    const n = parseInt(v ?? '', 10);
-    return n > 0 ? n : null;
-  };
-  return {
-    llm: parse(process.env.LLM_CONCURRENCY),
-    fd: parse(process.env.FD_LLM_CONCURRENCY),
-    fdCap: parse(process.env.FD_LLM_CONCURRENCY_CAP),
-  };
-}
-
 export function getLlmConfigSync(): LlmConfig {
   const provider = (process.env.LLM_PROVIDER || 'openrouter') as LlmProvider;
 
@@ -157,6 +194,11 @@ export function getLlmConfigSync(): LlmConfig {
       providerIgnore: parseCsv(process.env.OPENROUTER_PROVIDER_IGNORE, ''),
       allowFallbacks: parseBool(process.env.OPENROUTER_ALLOW_FALLBACKS, true),
       requireParameters: parseBool(process.env.OPENROUTER_REQUIRE_PARAMETERS, true),
+    },
+    concurrency: {
+      llm: parsePositiveInt(process.env.LLM_CONCURRENCY),
+      fd: parsePositiveInt(process.env.FD_LLM_CONCURRENCY),
+      fdCap: parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP),
     },
   };
 }

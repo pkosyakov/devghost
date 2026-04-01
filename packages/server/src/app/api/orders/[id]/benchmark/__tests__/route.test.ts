@@ -24,11 +24,12 @@ vi.mock('@/lib/api-utils', () => ({
 }));
 
 vi.mock('@/lib/llm-config', () => ({
-  getConcurrencySnapshot: () => ({ llm: 5, fd: null, fdCap: null }),
+  getConcurrencyFromConfig: () => ({ llm: 5, fd: null, fdCap: null }),
   getLlmConfig: vi.fn().mockResolvedValue({
     provider: 'openrouter',
     ollama: { url: 'http://localhost:11434', model: 'test' },
     openrouter: { apiKey: 'sk-test', model: 'test', providerOrder: [], providerIgnore: [], allowFallbacks: false, requireParameters: true },
+    concurrency: { llm: 5, fd: null, fdCap: null },
   }),
 }));
 

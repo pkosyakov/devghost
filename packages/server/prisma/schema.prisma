@@ -311,6 +311,11 @@ model SystemSettings {
   openrouterInputPrice  Decimal @default(0.03) @db.Decimal(12, 8)
   openrouterOutputPrice Decimal @default(0.11) @db.Decimal(12, 8)
 
+  // Pipeline concurrency (null = auto: 10 for openrouter, 1 for ollama)
+  llmConcurrency      Int?
+  fdLlmConcurrency    Int?
+  fdLlmConcurrencyCap Int?
+
   // Monetization
   defaultFreeCredits      Int @default(100)
   referralBonusMultiplier Int @default(2)

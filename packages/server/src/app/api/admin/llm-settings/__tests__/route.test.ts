@@ -58,6 +58,9 @@ describe('GET /api/admin/llm-settings', () => {
     delete process.env.FD_LARGE_LLM_PROVIDER;
     delete process.env.FD_LARGE_LLM_MODEL;
     delete process.env.OPENROUTER_API_KEY;
+    delete process.env.LLM_CONCURRENCY;
+    delete process.env.FD_LLM_CONCURRENCY;
+    delete process.env.FD_LLM_CONCURRENCY_CAP;
   });
 
   it('returns new defaults when no SystemSettings record exists', async () => {
@@ -71,6 +74,16 @@ describe('GET /api/admin/llm-settings', () => {
     expect(body.data.openrouterModel).toBe('qwen/qwen3-coder-next');
     expect(body.data.openrouterInputPrice).toBe(0.12);
     expect(body.data.openrouterOutputPrice).toBe(0.75);
+    // Concurrency defaults: all null/auto when no DB record and no env
+    expect(body.data.llmConcurrency).toBeNull();
+    expect(body.data.llmConcurrencyEffective).toBeNull();
+    expect(body.data.llmConcurrencySource).toBe('auto');
+    expect(body.data.fdLlmConcurrency).toBeNull();
+    expect(body.data.fdLlmConcurrencyEffective).toBeNull(); // no LLM_CONCURRENCY to inherit
+    expect(body.data.fdLlmConcurrencySource).toBe('auto');
+    expect(body.data.fdLlmConcurrencyCap).toBeNull();
+    expect(body.data.fdLlmConcurrencyCapEffective).toBe(32); // Python default
+    expect(body.data.fdLlmConcurrencyCapSource).toBe('auto');
   });
 
   it('includes FD v3 diagnostics when env vars are set', async () => {
@@ -97,6 +110,52 @@ describe('GET /api/admin/llm-settings', () => {
     expect(body.data.fdV3Enabled).toBe(false);
     expect(body.data.fdLargeLlmProvider).toBe('');
     expect(body.data.fdLargeLlmModel).toBe('');
+  });
+
+  it('returns concurrency from DB with source=db when set', async () => {
+    mockFindUnique.mockResolvedValue({
+      llmProvider: 'openrouter',
+      ollamaUrl: 'http://localhost:11434',
+      ollamaModel: 'qwen2.5-coder:32b',
+      openrouterApiKey: '',
+      openrouterModel: 'qwen/qwen3-coder-next',
+      openrouterInputPrice: 0.12,
+      openrouterOutputPrice: 0.75,
+      demoLiveMode: false,
+      demoLiveChunkSize: 10,
+      llmConcurrency: 20,
+      fdLlmConcurrency: 15,
+      fdLlmConcurrencyCap: 8,
+    });
+
+    const res = await GET();
+    const body = await jsonResponse(res);
+
+    expect(body.data.llmConcurrency).toBe(20);
+    expect(body.data.llmConcurrencyEffective).toBe(20);
+    expect(body.data.llmConcurrencySource).toBe('db');
+    expect(body.data.fdLlmConcurrency).toBe(15);
+    expect(body.data.fdLlmConcurrencySource).toBe('db');
+    expect(body.data.fdLlmConcurrencyCap).toBe(8);
+    expect(body.data.fdLlmConcurrencyCapSource).toBe('db');
+  });
+
+  it('returns concurrency source=env when env var set but DB is null', async () => {
+    process.env.LLM_CONCURRENCY = '12';
+    mockFindUnique.mockResolvedValue(null);
+
+    const res = await GET();
+    const body = await jsonResponse(res);
+
+    expect(body.data.llmConcurrency).toBeNull();
+    expect(body.data.llmConcurrencyEffective).toBe(12);
+    expect(body.data.llmConcurrencySource).toBe('env');
+    // FD inherits from LLM_CONCURRENCY when no FD-specific override
+    expect(body.data.fdLlmConcurrencyEffective).toBe(12);
+    // Cap defaults to Python default (32)
+    expect(body.data.fdLlmConcurrencyCapEffective).toBe(32);
+
+    delete process.env.LLM_CONCURRENCY;
   });
 
   it('includes FD v3 diagnostics with existing DB settings', async () => {
@@ -138,6 +197,9 @@ describe('PATCH /api/admin/llm-settings', () => {
     delete process.env.FD_LARGE_LLM_PROVIDER;
     delete process.env.FD_LARGE_LLM_MODEL;
     delete process.env.OPENROUTER_API_KEY;
+    delete process.env.LLM_CONCURRENCY;
+    delete process.env.FD_LLM_CONCURRENCY;
+    delete process.env.FD_LLM_CONCURRENCY_CAP;
   });
 
   it('does not persist FD v3 fields (Zod strips unknown keys)', async () => {
@@ -212,6 +274,77 @@ describe('PATCH /api/admin/llm-settings', () => {
     // Masked key should be stripped — not sent to DB
     const upsertCall = mockUpsert.mock.calls[0][0];
     expect(upsertCall.update).not.toHaveProperty('openrouterApiKey');
+  });
+
+  it('persists concurrency values via PATCH', async () => {
+    const dbRecord = {
+      llmProvider: 'openrouter',
+      ollamaUrl: 'http://localhost:11434',
+      ollamaModel: 'qwen2.5-coder:32b',
+      openrouterApiKey: 'sk-key',
+      openrouterModel: 'qwen/qwen3-coder-next',
+      openrouterProviderOrder: '',
+      openrouterProviderIgnore: '',
+      openrouterAllowFallbacks: true,
+      openrouterRequireParameters: true,
+      openrouterInputPrice: 0.12,
+      openrouterOutputPrice: 0.75,
+      demoLiveMode: false,
+      demoLiveChunkSize: 10,
+      llmConcurrency: 20,
+      fdLlmConcurrency: null,
+      fdLlmConcurrencyCap: null,
+    };
+    mockUpsert.mockResolvedValue(dbRecord);
+
+    const req = new NextRequest('http://localhost/api/admin/llm-settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ llmConcurrency: 20 }),
+    });
+
+    const res = await PATCH(req);
+    const body = await jsonResponse(res);
+
+    expect(body.success).toBe(true);
+    expect(body.data.llmConcurrency).toBe(20);
+    expect(body.data.llmConcurrencySource).toBe('db');
+
+    const upsertCall = mockUpsert.mock.calls[0][0];
+    expect(upsertCall.update.llmConcurrency).toBe(20);
+  });
+
+  it('resets concurrency to auto via PATCH with null', async () => {
+    const dbRecord = {
+      llmProvider: 'openrouter',
+      ollamaUrl: 'http://localhost:11434',
+      ollamaModel: 'qwen2.5-coder:32b',
+      openrouterApiKey: 'sk-key',
+      openrouterModel: 'qwen/qwen3-coder-next',
+      openrouterProviderOrder: '',
+      openrouterProviderIgnore: '',
+      openrouterAllowFallbacks: true,
+      openrouterRequireParameters: true,
+      openrouterInputPrice: 0.12,
+      openrouterOutputPrice: 0.75,
+      demoLiveMode: false,
+      demoLiveChunkSize: 10,
+      llmConcurrency: null,
+      fdLlmConcurrency: null,
+      fdLlmConcurrencyCap: null,
+    };
+    mockUpsert.mockResolvedValue(dbRecord);
+
+    const req = new NextRequest('http://localhost/api/admin/llm-settings', {
+      method: 'PATCH',
+      body: JSON.stringify({ llmConcurrency: null }),
+    });
+
+    const res = await PATCH(req);
+    const body = await jsonResponse(res);
+
+    expect(body.success).toBe(true);
+    expect(body.data.llmConcurrency).toBeNull();
+    expect(body.data.llmConcurrencySource).toBe('auto');
   });
 
   it('allows partial PATCH update', async () => {

@@ -176,7 +176,9 @@ export async function spawnPipeline(
           MODEL_CONTEXT_LENGTH: String(
             Math.max(4096, Math.min(262144, options?.contextLength || 32768)),
           ),
-          LLM_CONCURRENCY: process.env.LLM_CONCURRENCY || '',
+          LLM_CONCURRENCY: llmConfig.concurrency?.llm != null ? String(llmConfig.concurrency.llm) : '',
+          FD_LLM_CONCURRENCY: llmConfig.concurrency?.fd != null ? String(llmConfig.concurrency.fd) : '',
+          FD_LLM_CONCURRENCY_CAP: llmConfig.concurrency?.fdCap != null ? String(llmConfig.concurrency.fdCap) : '',
           PYTHONIOENCODING: 'utf-8',
         },
         stdio: ['ignore', 'pipe', 'pipe'],

@@ -19,6 +19,9 @@ const updateSchema = z.object({
   openrouterOutputPrice: z.number().min(0).optional(),
   demoLiveMode: z.boolean().optional(),
   demoLiveChunkSize: z.number().int().min(1).max(200).optional(),
+  llmConcurrency: z.number().int().min(1).max(100).nullable().optional(),
+  fdLlmConcurrency: z.number().int().min(1).max(100).nullable().optional(),
+  fdLlmConcurrencyCap: z.number().int().min(1).max(64).nullable().optional(),
 });
 
 function normalizeCsv(value: string): string {
@@ -33,6 +36,17 @@ function envBool(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (!raw) return fallback;
   return ['1', 'true', 'yes', 'on'].includes(raw.toLowerCase());
+}
+
+function parsePositiveInt(v: string | undefined): number | null {
+  const n = parseInt(v ?? '', 10);
+  return n > 0 ? n : null;
+}
+
+function concurrencySource(dbValue: number | null | undefined, envName: string): 'db' | 'env' | 'auto' {
+  if (dbValue != null) return 'db';
+  if (process.env[envName]) return 'env';
+  return 'auto';
 }
 
 /** Read-only FD v3 large-path diagnostics from env. */
@@ -59,6 +73,9 @@ function formatSettings(settings: {
   openrouterOutputPrice: unknown;
   demoLiveMode?: boolean;
   demoLiveChunkSize?: number;
+  llmConcurrency?: number | null;
+  fdLlmConcurrency?: number | null;
+  fdLlmConcurrencyCap?: number | null;
 }) {
   const hasEnvKey = !!process.env.OPENROUTER_API_KEY;
   const hasDbKey = !!settings.openrouterApiKey;
@@ -82,6 +99,24 @@ function formatSettings(settings: {
     openrouterOutputPrice: Number(settings.openrouterOutputPrice),
     demoLiveMode: settings.demoLiveMode ?? false,
     demoLiveChunkSize: settings.demoLiveChunkSize ?? 10,
+    // Concurrency: raw DB values (null = auto) + effective (resolved) + source
+    // FD effective mirrors Python fallback: FD_LLM_CONCURRENCY → LLM_CONCURRENCY → auto
+    // FD cap defaults to 32 in Python when not set
+    llmConcurrency: settings.llmConcurrency ?? null,
+    llmConcurrencyEffective: settings.llmConcurrency ?? parsePositiveInt(process.env.LLM_CONCURRENCY) ?? null,
+    llmConcurrencySource: concurrencySource(settings.llmConcurrency, 'LLM_CONCURRENCY'),
+    fdLlmConcurrency: settings.fdLlmConcurrency ?? null,
+    fdLlmConcurrencyEffective: settings.fdLlmConcurrency
+      ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY)
+      ?? settings.llmConcurrency
+      ?? parsePositiveInt(process.env.LLM_CONCURRENCY)
+      ?? null,
+    fdLlmConcurrencySource: concurrencySource(settings.fdLlmConcurrency, 'FD_LLM_CONCURRENCY'),
+    fdLlmConcurrencyCap: settings.fdLlmConcurrencyCap ?? null,
+    fdLlmConcurrencyCapEffective: settings.fdLlmConcurrencyCap
+      ?? parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP)
+      ?? 32,
+    fdLlmConcurrencyCapSource: concurrencySource(settings.fdLlmConcurrencyCap, 'FD_LLM_CONCURRENCY_CAP'),
     ...getFdV3Diagnostics(),
   };
 }
@@ -110,6 +145,17 @@ export async function GET() {
       openrouterOutputPrice: 0.75,
       demoLiveMode: false,
       demoLiveChunkSize: 10,
+      llmConcurrency: null,
+      llmConcurrencyEffective: parsePositiveInt(process.env.LLM_CONCURRENCY) ?? null,
+      llmConcurrencySource: concurrencySource(null, 'LLM_CONCURRENCY'),
+      fdLlmConcurrency: null,
+      fdLlmConcurrencyEffective: parsePositiveInt(process.env.FD_LLM_CONCURRENCY)
+        ?? parsePositiveInt(process.env.LLM_CONCURRENCY)
+        ?? null,
+      fdLlmConcurrencySource: concurrencySource(null, 'FD_LLM_CONCURRENCY'),
+      fdLlmConcurrencyCap: null,
+      fdLlmConcurrencyCapEffective: parsePositiveInt(process.env.FD_LLM_CONCURRENCY_CAP) ?? 32,
+      fdLlmConcurrencyCapSource: concurrencySource(null, 'FD_LLM_CONCURRENCY_CAP'),
       ...getFdV3Diagnostics(),
     });
   }

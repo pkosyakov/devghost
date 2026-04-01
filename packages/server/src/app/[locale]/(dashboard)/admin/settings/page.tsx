@@ -18,7 +18,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, Settings2, AlertCircle, ChevronsUpDown, RefreshCw, Database, Trash2, Layers } from 'lucide-react';
+import { Loader2, Settings2, AlertCircle, ChevronsUpDown, RefreshCw, Database, Trash2, Layers, Cpu } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
 
@@ -40,6 +40,18 @@ interface LlmSettings {
   fdV3Enabled?: boolean;
   fdLargeLlmProvider?: string;
   fdLargeLlmModel?: string;
+  // Pipeline concurrency (raw DB values, null = auto)
+  llmConcurrency: number | null;
+  fdLlmConcurrency: number | null;
+  fdLlmConcurrencyCap: number | null;
+  // Read-only: resolved effective values
+  llmConcurrencyEffective: number | null;
+  fdLlmConcurrencyEffective: number | null;
+  fdLlmConcurrencyCapEffective: number | null;
+  // Read-only: source indicator
+  llmConcurrencySource?: string;
+  fdLlmConcurrencySource?: string;
+  fdLlmConcurrencyCapSource?: string;
 }
 
 interface OpenRouterModel {
@@ -174,6 +186,12 @@ export default function AdminSettingsPage() {
     openrouterOutputPrice: 0.75,
     demoLiveMode: false,
     demoLiveChunkSize: 10,
+    llmConcurrency: null,
+    fdLlmConcurrency: null,
+    fdLlmConcurrencyCap: null,
+    llmConcurrencyEffective: null,
+    fdLlmConcurrencyEffective: null,
+    fdLlmConcurrencyCapEffective: null,
   });
   const [llmLoading, setLlmLoading] = useState(true);
   const [llmSaving, setLlmSaving] = useState(false);
@@ -339,8 +357,13 @@ export default function AdminSettingsPage() {
     setLlmSaving(true);
     setLlmError('');
     try {
-      // Strip read-only FD v3 fields before sending
-      const { fdV3Enabled, fdLargeLlmProvider, fdLargeLlmModel, ...editableSettings } = llmSettings;
+      // Strip read-only fields before sending
+      const {
+        fdV3Enabled, fdLargeLlmProvider, fdLargeLlmModel,
+        llmConcurrencyEffective, fdLlmConcurrencyEffective, fdLlmConcurrencyCapEffective,
+        llmConcurrencySource, fdLlmConcurrencySource, fdLlmConcurrencyCapSource,
+        ...editableSettings
+      } = llmSettings;
       const response = await fetch('/api/admin/llm-settings', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -949,6 +972,117 @@ export default function AdminSettingsPage() {
                 </Button>
               </div>
             </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Pipeline Concurrency */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Cpu className="h-5 w-5" />
+            <CardTitle>{t('concurrencyTitle')}</CardTitle>
+          </div>
+          <CardDescription>
+            {t('concurrencyDescription')}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {llmLoading ? (
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm text-muted-foreground">{t('loadingSettings')}</span>
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-3">
+              <div className="space-y-2">
+                <Label htmlFor="llm-concurrency">{t('concurrencyLlm')}</Label>
+                <Input
+                  id="llm-concurrency"
+                  type="number"
+                  min={1}
+                  max={100}
+                  placeholder={
+                    llmSettings.llmConcurrencySource === 'env' && llmSettings.llmConcurrencyEffective != null
+                      ? `env: ${llmSettings.llmConcurrencyEffective}`
+                      : t('concurrencyAuto')
+                  }
+                  value={llmSettings.llmConcurrency ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') {
+                      setLlmSettings((prev) => ({ ...prev, llmConcurrency: null }));
+                      return;
+                    }
+                    const parsed = parseInt(v, 10);
+                    if (!Number.isNaN(parsed)) {
+                      setLlmSettings((prev) => ({ ...prev, llmConcurrency: Math.max(1, Math.min(100, parsed)) }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t('concurrencyLlmHint')}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="fd-llm-concurrency">{t('concurrencyFd')}</Label>
+                <Input
+                  id="fd-llm-concurrency"
+                  type="number"
+                  min={1}
+                  max={100}
+                  placeholder={
+                    llmSettings.fdLlmConcurrencySource === 'env' && llmSettings.fdLlmConcurrencyEffective != null
+                      ? `env: ${llmSettings.fdLlmConcurrencyEffective}`
+                      : t('concurrencyAuto')
+                  }
+                  value={llmSettings.fdLlmConcurrency ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') {
+                      setLlmSettings((prev) => ({ ...prev, fdLlmConcurrency: null }));
+                      return;
+                    }
+                    const parsed = parseInt(v, 10);
+                    if (!Number.isNaN(parsed)) {
+                      setLlmSettings((prev) => ({ ...prev, fdLlmConcurrency: Math.max(1, Math.min(100, parsed)) }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t('concurrencyFdHint')}
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="fd-llm-concurrency-cap">{t('concurrencyFdCap')}</Label>
+                <Input
+                  id="fd-llm-concurrency-cap"
+                  type="number"
+                  min={1}
+                  max={64}
+                  placeholder={
+                    llmSettings.fdLlmConcurrencyCapSource === 'env' && llmSettings.fdLlmConcurrencyCapEffective != null
+                      ? `env: ${llmSettings.fdLlmConcurrencyCapEffective}`
+                      : t('concurrencyAuto')
+                  }
+                  value={llmSettings.fdLlmConcurrencyCap ?? ''}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === '') {
+                      setLlmSettings((prev) => ({ ...prev, fdLlmConcurrencyCap: null }));
+                      return;
+                    }
+                    const parsed = parseInt(v, 10);
+                    if (!Number.isNaN(parsed)) {
+                      setLlmSettings((prev) => ({ ...prev, fdLlmConcurrencyCap: Math.max(1, Math.min(64, parsed)) }));
+                    }
+                  }}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t('concurrencyFdCapHint')}
+                </p>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>
