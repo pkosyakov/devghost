@@ -912,6 +912,21 @@ export async function processAnalysisJob(
     setTimeout(() => clearPipelineLogs(jobId), 30_000);
 
   } catch (error) {
+    // If cancellation was requested, the cancel API already set job=CANCELLED
+    // and order=READY_FOR_ANALYSIS. Don't overwrite with FAILED.
+    if (isCancelRequested(jobId)) {
+      log.info('Job cancelled (caught in error handler)');
+      if (!skipBilling) {
+        try {
+          await releaseReservedCredits(userId, jobId, order.id);
+        } catch (releaseErr) {
+          billingLogger.error({ err: releaseErr, userId, jobId, orderId: order.id }, 'Failed to release credits on cancel');
+        }
+      }
+      setTimeout(() => clearPipelineLogs(jobId), 30_000);
+      return;
+    }
+
     const message = error instanceof Error ? error.message : 'Unknown error';
     log.error({ err: error }, 'Job FAILED');
 
