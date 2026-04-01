@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { analysisLogger, billingLogger } from '@/lib/logger';
@@ -7,6 +6,7 @@ import { releaseReservedCredits, debitCredit, isBillingEnabled } from '@/lib/ser
 import { countInScopeCommits, type ScopeConfig } from '@/lib/services/scope-filter';
 import { getLlmConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
+import { claimAndTriggerModal } from '@/lib/services/modal-trigger';
 
 export const maxDuration = 60;
 
@@ -707,92 +707,4 @@ function parsePostProcessingState(step: string | null | undefined): PostProcessi
   }
 
   return { stage: 'debit', metricsOffset: 0 };
-}
-
-
-async function claimAndTriggerModal(jobId: string): Promise<boolean> {
-  const claimId = `triggering:${crypto.randomUUID()}`;
-  // Atomic claim: only succeeds if modalCallId is NULL
-  const claimed = await prisma.analysisJob.updateMany({
-    where: { id: jobId, status: 'PENDING', modalCallId: null },
-    data: { modalCallId: claimId, updatedAt: new Date() },
-  });
-  if (claimed.count === 0) {
-    log.info({ jobId }, 'Trigger claim failed (already claimed or status changed)');
-    return false;
-  }
-  // Now trigger Modal
-  const success = await triggerModal(jobId);
-  if (!success) {
-    // Clear placeholder on trigger failure
-    await prisma.analysisJob.updateMany({
-      where: { id: jobId, modalCallId: claimId },
-      data: { modalCallId: null, updatedAt: new Date() },
-    });
-    await appendJobEvent({
-      jobId,
-      level: 'warn',
-      phase: 'watchdog',
-      code: 'TRIGGER_CLAIM_CLEARED',
-      message: 'Trigger claim cleared after modal trigger failure',
-    });
-  }
-  return success;
-}
-
-async function triggerModal(jobId: string): Promise<boolean> {
-  const url = process.env.MODAL_ENDPOINT_URL;
-  const secret = process.env.MODAL_WEBHOOK_SECRET;
-
-  if (!url) {
-    log.error({ jobId }, 'MODAL_ENDPOINT_URL not configured');
-    return false;
-  }
-
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: jobId, auth_token: secret }),
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      // Replace the placeholder claim with the real modalCallId
-      await prisma.analysisJob.update({
-        where: { id: jobId },
-        data: { modalCallId: data.modal_call_id },
-      });
-      await appendJobEvent({
-        jobId,
-        phase: 'watchdog',
-        code: 'MODAL_TRIGGER_ACCEPTED',
-        message: 'Watchdog triggered modal job',
-        payload: { modalCallId: data.modal_call_id },
-      });
-      return true;
-    } else {
-      await appendJobEvent({
-        jobId,
-        level: 'warn',
-        phase: 'watchdog',
-        code: 'MODAL_TRIGGER_HTTP_FAIL',
-        message: 'Watchdog modal trigger failed (HTTP)',
-        payload: { httpStatus: resp.status },
-      });
-      log.warn({ jobId, status: resp.status }, 'Modal trigger failed');
-      return false;
-    }
-  } catch (err) {
-    await appendJobEvent({
-      jobId,
-      level: 'warn',
-      phase: 'watchdog',
-      code: 'MODAL_TRIGGER_NETWORK_FAIL',
-      message: 'Watchdog modal trigger network error',
-      payload: { error: String(err) },
-    });
-    log.warn({ err, jobId }, 'Modal trigger network error');
-    return false;
-  }
 }

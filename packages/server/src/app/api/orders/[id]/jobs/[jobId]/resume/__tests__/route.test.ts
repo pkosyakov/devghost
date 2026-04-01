@@ -41,6 +41,10 @@ vi.mock('@/lib/services/job-event-service', () => ({
   appendJobEvent: (...args: unknown[]) => mockAppendJobEvent(...args),
 }));
 
+vi.mock('@/lib/services/modal-trigger', () => ({
+  claimAndTriggerModal: vi.fn().mockResolvedValue(true),
+}));
+
 vi.mock('@/lib/logger', () => {
   const noop = () => {};
   const child = () => mockLogger;
@@ -156,7 +160,13 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
       }),
     );
 
-    // appendJobEvent called with MANUAL_RESUME_ACCEPTED
+    // appendJobEvent called with both MANUAL_RESUME_REQUESTED (before CAS) and MANUAL_RESUME_ACCEPTED
+    expect(mockAppendJobEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-1',
+        code: 'MANUAL_RESUME_REQUESTED',
+      }),
+    );
     expect(mockAppendJobEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         jobId: 'job-1',
@@ -179,7 +189,15 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
 
     const res = await POST(makeRequest(), params);
     expect(res.status).toBe(409);
-    expect(mockAppendJobEvent).not.toHaveBeenCalled();
+    // MANUAL_RESUME_REQUESTED is logged before CAS for audit trail
+    expect(mockAppendJobEvent).toHaveBeenCalledTimes(1);
+    expect(mockAppendJobEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'MANUAL_RESUME_REQUESTED' }),
+    );
+    // MANUAL_RESUME_ACCEPTED must NOT be emitted on CAS failure
+    expect(mockAppendJobEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'MANUAL_RESUME_ACCEPTED' }),
+    );
   });
 
   it('does not increment retryCount', async () => {

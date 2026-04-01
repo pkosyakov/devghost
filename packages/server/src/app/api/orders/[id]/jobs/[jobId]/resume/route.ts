@@ -3,6 +3,7 @@ import prisma from '@/lib/db';
 import { apiResponse, apiError, getOrderWithAuth, orderAuthError } from '@/lib/api-utils';
 import { analysisLogger } from '@/lib/logger';
 import { appendJobEvent } from '@/lib/services/job-event-service';
+import { claimAndTriggerModal } from '@/lib/services/modal-trigger';
 
 const log = analysisLogger.child({ module: 'resume-api' });
 
@@ -47,6 +48,14 @@ export async function POST(
     'Manual resume requested',
   );
 
+  // 5a. Log resume attempt (for audit trail even if CAS fails)
+  await appendJobEvent({
+    jobId,
+    phase: 'resume',
+    code: 'MANUAL_RESUME_REQUESTED',
+    message: 'Manual resume requested by user',
+  });
+
   // 5. CAS transition: atomic conditional update
   const resumed = await prisma.analysisJob.updateMany({
     where: { id: jobId, status: 'FAILED_RETRYABLE' },
@@ -56,6 +65,7 @@ export async function POST(
       lockedBy: null,
       heartbeatAt: null,
       modalCallId: null,
+      updatedAt: new Date(),
     },
   });
   if (resumed.count === 0) {
@@ -70,28 +80,9 @@ export async function POST(
     message: 'Manual resume requested and accepted',
   });
 
-  // 7. Trigger Modal (for modal execution mode only)
+  // 7. Trigger Modal via shared claim protocol
   if (job.executionMode === 'modal') {
-    const url = process.env.MODAL_ENDPOINT_URL;
-    const secret = process.env.MODAL_WEBHOOK_SECRET;
-    if (url) {
-      try {
-        const resp = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ job_id: jobId, auth_token: secret }),
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          await prisma.analysisJob.update({
-            where: { id: jobId },
-            data: { modalCallId: data.modal_call_id },
-          });
-        }
-      } catch (err) {
-        log.warn({ err, jobId }, 'Modal trigger failed on resume, watchdog will retry');
-      }
-    }
+    await claimAndTriggerModal(jobId);
   }
 
   // 8. Ensure order is in PROCESSING state (only from expected pre-resume states)

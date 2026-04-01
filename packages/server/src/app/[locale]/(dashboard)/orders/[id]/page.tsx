@@ -1348,7 +1348,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                   <span className="text-amber-700">{t('detail.analysisPausedQuota')}</span>
                 </CardTitle>
                 <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-                  {progress.pauseReason ?? 'Paused'}
+                  {isPaused ? t('detail.analysisPausedQuota') : 'Paused'}
                 </Badge>
               </div>
             </CardHeader>

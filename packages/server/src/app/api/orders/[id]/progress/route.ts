@@ -243,7 +243,7 @@ export async function GET(
         maxRetries: job.maxRetries,
         failureClass,
         isPaused,
-        pauseReason: isPaused ? 'Provider quota or rate limit reached' : null,
+        pauseReason: isPaused ? 'EXTERNAL_QUOTA' : null,
         currentRepoName: job.order.currentRepoName,
         orderStatus: job.order.status,
         log: logEntries,
