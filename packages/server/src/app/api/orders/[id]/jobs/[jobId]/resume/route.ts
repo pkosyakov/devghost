@@ -94,9 +94,9 @@ export async function POST(
     }
   }
 
-  // 8. Ensure order is in PROCESSING state
+  // 8. Ensure order is in PROCESSING state (only from expected pre-resume states)
   await prisma.order.updateMany({
-    where: { id, status: { not: 'PROCESSING' } },
+    where: { id, status: { in: ['FAILED', 'READY_FOR_ANALYSIS'] } },
     data: { status: 'PROCESSING', errorMessage: null },
   });
 
