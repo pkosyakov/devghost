@@ -58,10 +58,17 @@ function maskText(text: string): string {
   return text.replace(/\w{2,}/g, w => w[0] + '*'.repeat(w.length - 1));
 }
 
+function maskName(name: string): string {
+  return name.split(/\s+/).map(part => {
+    if (part.length <= 2) return part[0] + '*';
+    return part.slice(0, 2) + '*'.repeat(part.length - 2);
+  }).join(' ');
+}
+
 function maskMetrics(metrics: GhostMetric[]): GhostMetric[] {
   return metrics.map((m, i) => ({
     ...m,
-    developerName: `Developer ${String.fromCharCode(65 + (i % 26))}${i >= 26 ? Math.floor(i / 26) + 1 : ''}`,
+    developerName: maskName(m.developerName || `Developer ${i + 1}`),
     developerEmail: `dev-${String.fromCharCode(97 + (i % 26))}@masked`,
   }));
 }
