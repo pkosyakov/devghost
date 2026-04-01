@@ -54,6 +54,18 @@ async function fetchMetrics(id: string, period: GhostEligiblePeriod): Promise<Gh
   return json.data ?? [];
 }
 
+function maskText(text: string): string {
+  return text.replace(/\w{2,}/g, w => w[0] + '*'.repeat(w.length - 1));
+}
+
+function maskMetrics(metrics: GhostMetric[]): GhostMetric[] {
+  return metrics.map((m, i) => ({
+    ...m,
+    developerName: `Developer ${String.fromCharCode(65 + (i % 26))}${i >= 26 ? Math.floor(i / 26) + 1 : ''}`,
+    developerEmail: `dev-${String.fromCharCode(97 + (i % 26))}@masked`,
+  }));
+}
+
 function applyFteView(metrics: GhostMetric[]): GhostMetric[] {
   return metrics.map(m => ({
     ...m,
@@ -270,6 +282,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
   const [fteMode, setFteMode] = useState(true);
+  const [demoMode, setDemoMode] = useState(false);
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Contributor selection state
@@ -334,12 +347,18 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   });
 
   const shareMutation = useMutation({
-    mutationFn: ({ email, share, auto }: { email: string; share: number; auto: boolean }) =>
-      updateShare(id, email, share, auto),
+    mutationFn: async ({ email, share, auto }: { email: string; share: number; auto: boolean }) => {
+      console.log('[shareMutation] mutationFn called', { email, share, auto });
+      const result = await updateShare(id, email, share, auto);
+      console.log('[shareMutation] PATCH response', result);
+      return result;
+    },
     onSuccess: () => {
+      console.log('[shareMutation] onSuccess — refetching metrics');
       queryClient.refetchQueries({ queryKey: ['metrics', id] });
     },
-    onError: () => {
+    onError: (err) => {
+      console.error('[shareMutation] onError', err);
       toast({ title: 'Failed to update share', variant: 'destructive' });
     },
   });
@@ -934,6 +953,12 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const repoCount = Array.isArray(order.selectedRepos) ? order.selectedRepos.length : 0;
 
+  // Demo mode: mask developer names/emails and order name
+  const finalMetrics = demoMode ? maskMetrics(displayMetrics) : displayMetrics;
+  const finalOrderName = demoMode ? maskText(order.name) : order.name;
+  const overviewMetrics = (fteMode && fteReady) ? applyFteView(metrics) : metrics;
+  const finalOverviewMetrics = demoMode ? maskMetrics(overviewMetrics) : overviewMetrics;
+
   return (
     <div className="space-y-6 p-6">
       {/* Header */}
@@ -942,8 +967,17 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
           <ChevronLeft className="h-4 w-4 mr-1" /> {t('detail.back')}
         </Button>
         <div className="flex-1">
-          <h1 className="text-2xl font-bold">{order.name}</h1>
+          <h1 className="text-2xl font-bold">{finalOrderName}</h1>
         </div>
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground select-none cursor-pointer">
+          <input
+            type="checkbox"
+            checked={demoMode}
+            onChange={e => setDemoMode(e.target.checked)}
+            className="accent-primary"
+          />
+          Demo
+        </label>
         <Badge className={statusColors[order.status] ?? ''}>
           {tStatus(order.status)}
         </Badge>
@@ -1529,7 +1563,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {order.status === 'COMPLETED' && !analysisStarted && (
         <div className="space-y-6">
           <AnalysisResultsSummary
-            orderName={order.name}
+            orderName={finalOrderName}
             repoCount={completedRepoCount}
             contributorCount={completedContributorCount}
             commitCount={completedCommitCount}
@@ -1596,10 +1630,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
           <AnalysisResultsOverview
             orderId={id}
-            metrics={(fteMode && fteReady) ? applyFteView(metrics) : metrics}
+            metrics={finalOverviewMetrics}
             period={period}
             onPeriodChange={setPeriod}
-            onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}
+            onShareChange={(email, share, auto) => {
+              console.log('[OrderPage] onShareChange', { email, share, auto });
+              shareMutation.mutate({ email, share, auto });
+            }}
             highlightedEmail={highlightedEmail ?? null}
           />
 
@@ -1631,7 +1668,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             cancelIsPending={cancelJobMutation.isPending}
             onScopeSubmit={(settings) => handleScopeSubmit(settings, false)}
             scopeIsPending={scopeMutation.isPending}
-            metrics={displayMetrics}
+            metrics={finalMetrics}
             shareToken={shareToken}
             onShareTokenChange={setShareToken}
           />

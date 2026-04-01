@@ -85,6 +85,7 @@ function ShareInput({
   }, [local, value, onChange]);
 
   const toggleAuto = useCallback(() => {
+    console.log('[ShareInput] toggleAuto clicked', { value, autoCalculated, hasOnChange: !!onChange });
     onChange?.(value, !autoCalculated);
   }, [value, autoCalculated, onChange]);
 
