@@ -5,6 +5,9 @@ const withNextIntl = createNextIntlPlugin('./src/i18n/request.ts');
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Pino uses worker threads; its transports must stay outside the bundle
+  serverExternalPackages: ['pino', 'pino-pretty', 'pino-abstract-transport', 'pino-roll'],
+
   // Experimental features
   experimental: {
     // Enable server actions
