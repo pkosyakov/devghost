@@ -516,7 +516,14 @@
       "scopeLastNCommits": "Последние {count} коммитов",
       "scopeLastNCommitsFallback": "Последние N коммитов",
       "scopeAllCommits": "Все коммиты",
-      "modeChangeWarning": "Этот анализ использует режим «Выбранные годы» ({years}). Сохранение изменит режим на выбранный ниже."
+      "modeChangeWarning": "Этот анализ использует режим «Выбранные годы» ({years}). Сохранение изменит режим на выбранный ниже.",
+      "fteToggleSpread": "Spread",
+      "fteToggleFte": "FTE",
+      "fteCalculateButton": "Рассчитать FTE",
+      "fteCalculating": "Расчёт...",
+      "fteRecalculated": "FTE метрики рассчитаны",
+      "fteRecalcFailed": "Ошибка расчёта FTE",
+      "fteNotAvailableTooltip": "FTE метрики не рассчитаны для этого заказа"
     },
     "metrics": {
       "developer": "Разработчик",

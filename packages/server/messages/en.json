@@ -516,7 +516,14 @@
       "scopeLastNCommits": "Last {count} commits",
       "scopeLastNCommitsFallback": "Last N commits",
       "scopeAllCommits": "All commits",
-      "modeChangeWarning": "This analysis uses Selected Years mode ({years}). Saving will change the mode to the one selected below."
+      "modeChangeWarning": "This analysis uses Selected Years mode ({years}). Saving will change the mode to the one selected below.",
+      "fteToggleSpread": "Spread",
+      "fteToggleFte": "FTE",
+      "fteCalculateButton": "Calculate FTE",
+      "fteCalculating": "Calculating...",
+      "fteRecalculated": "FTE metrics calculated",
+      "fteRecalcFailed": "FTE calculation failed",
+      "fteNotAvailableTooltip": "FTE metrics not calculated for this order"
     },
     "metrics": {
       "developer": "Developer",

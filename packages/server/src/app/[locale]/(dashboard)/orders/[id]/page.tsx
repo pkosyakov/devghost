@@ -22,7 +22,7 @@ import { AnalysisResultsSummary } from '@/components/analysis-results-summary';
 import { AnalysisHandoffCard } from '@/components/analysis-handoff-card';
 import { AnalysisResultsOverview } from '@/components/analysis-results-overview';
 import { AnalysisTechnicalPanel } from '@/components/analysis-technical-panel';
-import { GHOST_NORM, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
+import { GHOST_NORM, MIN_WORK_DAYS_FOR_GHOST, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
 import { Link } from '@/i18n/navigation';
 import {
   Loader2,
@@ -52,6 +52,17 @@ async function fetchMetrics(id: string, period: GhostEligiblePeriod): Promise<Gh
   if (!res.ok) return [];
   const json = await res.json();
   return json.data ?? [];
+}
+
+function applyFteView(metrics: GhostMetric[]): GhostMetric[] {
+  return metrics.map(m => ({
+    ...m,
+    actualWorkDays: m.fteWorkDays ?? m.actualWorkDays,
+    avgDailyEffort: m.fteAvgDailyEffort ?? m.avgDailyEffort,
+    ghostPercentRaw: m.fteGhostPercentRaw !== undefined ? m.fteGhostPercentRaw : m.ghostPercentRaw,
+    ghostPercent: m.fteGhostPercent !== undefined ? m.fteGhostPercent : m.ghostPercent,
+    hasEnoughData: (m.fteWorkDays ?? 0) >= MIN_WORK_DAYS_FOR_GHOST,
+  }));
 }
 
 // Update developer share
@@ -258,6 +269,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
+  const [fteMode, setFteMode] = useState(false);
   const isAdmin = session?.user?.role === 'ADMIN';
 
   // Contributor selection state
@@ -847,6 +859,24 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     },
   });
 
+  const fteReady = metrics.length > 0 && metrics.every((m: GhostMetric) => (m.fteWorkDays ?? 0) > 0);
+
+  const fteRecalcMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/orders/${id}/recalculate-fte`, { method: 'POST' });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) throw new Error(json?.error ?? 'Recalculation failed');
+      return json.data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+      toast.success(t('detail.fteRecalculated'));
+    },
+    onError: (error: Error) => {
+      toast.error(t('detail.fteRecalcFailed'), error.message);
+    },
+  });
+
   // --- Render ---
 
   if (orderLoading) {
@@ -864,7 +894,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   // Ghost norm for orchestrator-level KPIs (fixed baseline).
   // Interactive norm selection lives inside AnalysisResultsOverview.
   const effectiveGhostNorm = GHOST_NORM;
-  const displayMetrics: GhostMetric[] = metrics.map((metric: GhostMetric) => {
+  const sourceMetrics = fteMode ? applyFteView(metrics) : metrics;
+  const displayMetrics: GhostMetric[] = sourceMetrics.map((metric: GhostMetric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
       return metric;
     }
@@ -1509,6 +1540,45 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             isPartialScope={order.analysisPeriodMode !== 'ALL_TIME'}
           />
 
+          {/* FTE Mode Toggle */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center rounded-md border p-0.5 text-sm">
+              <button
+                className={cn(
+                  'px-3 py-1 rounded-sm transition-colors',
+                  !fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                )}
+                onClick={() => setFteMode(false)}
+              >
+                {t('detail.fteToggleSpread')}
+              </button>
+              <button
+                className={cn(
+                  'px-3 py-1 rounded-sm transition-colors',
+                  fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                  !fteReady && 'opacity-50 cursor-not-allowed',
+                )}
+                onClick={() => fteReady && setFteMode(true)}
+                disabled={!fteReady}
+                title={!fteReady ? t('detail.fteNotAvailableTooltip') : undefined}
+              >
+                {t('detail.fteToggleFte')}
+              </button>
+            </div>
+            {!fteReady && order.status === 'COMPLETED' && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => fteRecalcMutation.mutate()}
+                disabled={fteRecalcMutation.isPending}
+              >
+                {fteRecalcMutation.isPending
+                  ? t('detail.fteCalculating')
+                  : t('detail.fteCalculateButton')}
+              </Button>
+            )}
+          </div>
+
           <AnalysisHandoffCard
             analysisId={id}
             workspaceStage={stageData?.workspaceStage ?? 'first_data'}
@@ -1518,7 +1588,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
           <AnalysisResultsOverview
             orderId={id}
-            metrics={metrics}
+            metrics={fteMode ? applyFteView(metrics) : metrics}
             period={period}
             onPeriodChange={setPeriod}
             onShareChange={(email, share, auto) => shareMutation.mutate({ email, share, auto })}
