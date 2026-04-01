@@ -4,7 +4,7 @@ import prisma from '@/lib/db';
 import { apiResponse, apiError, parseBody, requireAdmin, isErrorResponse } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { checkOllamaHealth } from '@/lib/services/pipeline-bridge';
-import { getLlmConfig } from '@/lib/llm-config';
+import { getLlmConfig, getConcurrencySnapshot } from '@/lib/llm-config';
 import type { LlmConfig } from '@/lib/llm-config';
 import { analysisLogger } from '@/lib/logger';
 import { benchmarkSchema } from '@/lib/schemas';
@@ -227,6 +227,7 @@ export async function POST(
     fdLargeProvider,
     benchmarkProfile,
     benchmarkProfileLabel,
+    concurrency: getConcurrencySnapshot(),
   };
 
   // Fingerprint: hash of config-relevant fields

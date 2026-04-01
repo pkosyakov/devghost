@@ -48,6 +48,7 @@ const mockGetLlmConfig = vi.fn().mockResolvedValue({
 });
 vi.mock('@/lib/llm-config', () => ({
   getLlmConfig: (...a: unknown[]) => mockGetLlmConfig(...a),
+  getConcurrencySnapshot: () => ({ llm: 5, fd: null, fdCap: null }),
 }));
 
 const mockResolveEffectiveContext = vi.fn().mockResolvedValue({
@@ -128,6 +129,8 @@ describe('POST /api/orders/[id]/update-analysis', () => {
     expect(createCall.data.llmConfigSnapshot.contextLength).toBe(131072);
     // API key must be stripped
     expect(createCall.data.llmConfigSnapshot.openrouter.apiKey).toBeUndefined();
+    // Concurrency should be stamped with current env values
+    expect(createCall.data.llmConfigSnapshot.concurrency).toEqual({ llm: 5, fd: null, fdCap: null });
   });
 
   it('resolves context via configFromSnapshot when snapshot lacks effectiveContextLength', async () => {

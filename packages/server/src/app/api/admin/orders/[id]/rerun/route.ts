@@ -93,7 +93,6 @@ export async function POST(
           ...llmConfig.openrouter,
           apiKey: undefined,
         },
-        concurrency: getConcurrencySnapshot(),
       } as unknown as Prisma.InputJsonValue;
     } catch (err) {
       analysisLogger.error({ err, orderId: id }, 'Admin rerun failed to build llm snapshot');
@@ -124,6 +123,9 @@ export async function POST(
       analysisLogger.warn({ err, orderId: id }, 'Admin rerun: failed to resolve context');
     }
   }
+
+  // Always stamp current concurrency — pipeline reads env at runtime
+  (snapshotConfig as Record<string, unknown>).concurrency = getConcurrencySnapshot();
 
   // Atomically: check status + create job + mark order PROCESSING.
   const job = await prisma.$transaction(async (tx) => {

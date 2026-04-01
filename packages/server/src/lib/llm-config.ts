@@ -117,6 +117,22 @@ export async function getLlmConfig(): Promise<LlmConfig> {
  * Synchronous fallback — reads only from env vars.
  * Use only when async is not possible (e.g. module-level init).
  */
+/**
+ * Snapshot of concurrency env vars at launch time.
+ * Persisted in llmConfigSnapshot so we can see what was used for a given run.
+ */
+export function getConcurrencySnapshot(): { llm: number | null; fd: number | null; fdCap: number | null } {
+  const parse = (v: string | undefined) => {
+    const n = parseInt(v ?? '', 10);
+    return n > 0 ? n : null;
+  };
+  return {
+    llm: parse(process.env.LLM_CONCURRENCY),
+    fd: parse(process.env.FD_LLM_CONCURRENCY),
+    fdCap: parse(process.env.FD_LLM_CONCURRENCY_CAP),
+  };
+}
+
 export function getLlmConfigSync(): LlmConfig {
   const provider = (process.env.LLM_PROVIDER || 'openrouter') as LlmProvider;
 

@@ -52,6 +52,7 @@ vi.mock('@/lib/services/credit-service', () => ({
 }));
 
 vi.mock('@/lib/llm-config', () => ({
+  getConcurrencySnapshot: () => ({ llm: 5, fd: null, fdCap: null }),
   getLlmConfig: vi.fn().mockResolvedValue({
     provider: 'openrouter',
     ollama: { url: 'http://localhost:11434', model: 'qwen2.5-coder:32b' },
@@ -226,6 +227,7 @@ describe('POST /api/orders/[id]/analyze', () => {
     expect(snapshotUpdate.data.llmConfigSnapshot.openrouter.apiKey).toBeUndefined();
     expect(snapshotUpdate.data.llmConfigSnapshot.contextLength).toBe(65536);
     expect(snapshotUpdate.data.llmConfigSnapshot.effectiveContextLength).toBe(49152);
+    expect(snapshotUpdate.data.llmConfigSnapshot.concurrency).toEqual({ llm: 5, fd: null, fdCap: null });
 
     // Third update: modalCallId from successful trigger
     const modalUpdate = mockJobUpdate.mock.calls[2][0];

@@ -227,6 +227,11 @@ describe('POST /api/admin/orders/[id]/rerun', () => {
     expect(processAnalysisJob).toHaveBeenCalledWith('job-rerun', expect.objectContaining({
       contextLength: 49152,
     }));
+
+    // Concurrency snapshot should be stamped
+    const createData = mockJobCreate.mock.calls[0][0].data;
+    expect((createData.llmConfigSnapshot as Record<string, unknown>).concurrency)
+      .toEqual({ llm: 5, fd: null, fdCap: null });
   });
 
   it('accepts admin-selected cache and recalculation options', async () => {

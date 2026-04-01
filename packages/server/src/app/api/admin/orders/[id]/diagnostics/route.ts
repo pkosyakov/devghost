@@ -355,6 +355,9 @@ export async function GET(
   }
   const cloneSizeMb = cloneSizeKb > 0 ? +(cloneSizeKb / 1024).toFixed(1) : null;
 
+  const snapshot = job.llmConfigSnapshot as Record<string, unknown> | null;
+  const snapshotConcurrency = snapshot?.concurrency as { llm?: number; fd?: number; fdCap?: number } | undefined;
+
   return apiResponse({
     access: auth.mode,
     order,
@@ -383,11 +386,12 @@ export async function GET(
       totalLlmCalls: job.totalLlmCalls,
       totalCostUsd: job.totalCostUsd != null ? Number(job.totalCostUsd) : null,
       cloneSizeMb,
-      llmConcurrency: envPositiveInt('LLM_CONCURRENCY', 1),
-      fdLlmConcurrency: envPositiveInt(
+      llmConcurrency: snapshotConcurrency?.llm ?? envPositiveInt('LLM_CONCURRENCY', 1),
+      fdLlmConcurrency: snapshotConcurrency?.fd ?? envPositiveInt(
         'FD_LLM_CONCURRENCY',
         envPositiveInt('LLM_CONCURRENCY', 1),
       ),
+      fdLlmConcurrencyCap: snapshotConcurrency?.fdCap ?? envPositiveInt('FD_LLM_CONCURRENCY_CAP', 32),
       logSource,
       log: logEntries,
       events,
