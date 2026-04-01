@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { randomBytes } from 'crypto';
 import { getUserSession } from '@/lib/api-utils';
@@ -7,9 +7,28 @@ import { gitLogger } from '@/lib/logger';
 const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID?.trim();
 const AUTH_URL = (process.env.AUTH_URL || 'http://localhost:3000').trim();
 
-// GET /api/github/oauth - Initiate GitHub OAuth flow for linking account
-export async function GET() {
+function normalizeReturnTo(raw: string | null): string {
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) {
+    return '/settings';
+  }
+
   try {
+    const authBase = new URL(AUTH_URL);
+    const resolved = new URL(raw, AUTH_URL);
+    if (resolved.origin !== authBase.origin) {
+      return '/settings';
+    }
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  } catch {
+    return '/settings';
+  }
+}
+
+// GET /api/github/oauth - Initiate GitHub OAuth flow for linking account
+export async function GET(request: NextRequest) {
+  try {
+    const returnTo = normalizeReturnTo(request.nextUrl.searchParams.get('returnTo'));
+
     // Must be logged in to link GitHub
     const session = await getUserSession();
     if (!session) {
@@ -33,6 +52,13 @@ export async function GET() {
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       maxAge: 600, // 10 minutes
+      path: '/',
+    });
+    cookieStore.set('github_oauth_return_to', returnTo, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'lax',
+      maxAge: 600,
       path: '/',
     });
 

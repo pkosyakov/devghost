@@ -37,6 +37,7 @@ export async function POST(request: NextRequest) {
           { url: 'https://github.com/example/backend-api', name: 'backend-api' },
         ],
         analyzedAt: new Date(),
+        completedAt: new Date(),
       },
     });
 

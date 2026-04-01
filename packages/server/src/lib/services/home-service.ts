@@ -13,15 +13,17 @@ import type { ActiveScopeQuery } from '@/lib/schemas/scope';
 export async function getLatestCompletedAnalysis(userId: string) {
   const order = await prisma.order.findFirst({
     where: { userId, status: 'COMPLETED' },
-    orderBy: { completedAt: 'desc' },
+    orderBy: [{ completedAt: { sort: 'desc', nulls: 'last' } }, { analyzedAt: 'desc' }],
     select: {
       id: true,
       name: true,
       completedAt: true,
+      analyzedAt: true,
     },
   });
 
-  if (!order || !order.completedAt) return null;
+  const completionDate = order?.completedAt ?? order?.analyzedAt;
+  if (!order || !completionDate) return null;
 
   // contributorCount: distinct emails from completed ALL_TIME metrics
   const metricRows = await prisma.orderMetric.findMany({
@@ -47,7 +49,7 @@ export async function getLatestCompletedAnalysis(userId: string) {
   return {
     id: order.id,
     name: order.name,
-    completedAt: order.completedAt.toISOString(),
+    completedAt: completionDate.toISOString(),
     repoCount,
     contributorCount: distinctContributors.size,
     commitCount,

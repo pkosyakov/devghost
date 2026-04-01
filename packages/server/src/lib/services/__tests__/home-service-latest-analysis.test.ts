@@ -30,9 +30,42 @@ describe('getLatestCompletedAnalysis', () => {
     expect(mockOrderFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { userId: 'user-1', status: 'COMPLETED' },
-        orderBy: { completedAt: 'desc' },
+        orderBy: [{ completedAt: { sort: 'desc', nulls: 'last' } }, { analyzedAt: 'desc' }],
       })
     );
+  });
+
+  it('falls back to analyzedAt when completedAt is null', async () => {
+    mockOrderFindFirst.mockResolvedValue({
+      id: 'order-2',
+      name: 'Legacy Analysis',
+      completedAt: null,
+      analyzedAt: new Date('2026-03-10T08:00:00Z'),
+    });
+    mockOrderMetricFindMany.mockResolvedValue([{ developerEmail: 'c@test.com' }]);
+    mockCommitAnalysisCount.mockResolvedValue(10);
+    mockCommitAnalysisFindMany.mockResolvedValue([{ repository: 'org/repo3' }]);
+
+    const result = await getLatestCompletedAnalysis('user-1');
+    expect(result).toEqual({
+      id: 'order-2',
+      name: 'Legacy Analysis',
+      completedAt: new Date('2026-03-10T08:00:00Z').toISOString(),
+      repoCount: 1,
+      contributorCount: 1,
+      commitCount: 10,
+    });
+  });
+
+  it('returns null when both completedAt and analyzedAt are null', async () => {
+    mockOrderFindFirst.mockResolvedValue({
+      id: 'order-3',
+      name: 'Broken Order',
+      completedAt: null,
+      analyzedAt: null,
+    });
+    const result = await getLatestCompletedAnalysis('user-1');
+    expect(result).toBeNull();
   });
 
   it('returns completed-result counts (not raw extraction-era counts)', async () => {

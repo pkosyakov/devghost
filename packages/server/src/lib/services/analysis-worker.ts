@@ -557,7 +557,10 @@ export async function processAnalysisJob(
       });
 
       if (!options.isBenchmark) {
-        // Reset order to previous usable state
+        // Reset order to previous usable state.
+        // Note: completedAt/analyzedAt are not touched — they retain values
+        // from the prior successful run. This is safe because hasMetrics > 0
+        // implies a previous analysis already set these timestamps.
         const hasMetrics = await prisma.orderMetric.count({ where: { orderId: order.id } });
         await prisma.order.update({
           where: { id: order.id },
@@ -871,9 +874,10 @@ export async function processAnalysisJob(
         analysisCommitLimit: order.analysisCommitLimit,
       };
       const inScopeCount = await countInScopeCommits(order.id, scopeConfig);
+      const now = new Date();
       await prisma.order.update({
         where: { id: order.id },
-        data: { status: 'COMPLETED', analyzedAt: new Date(), totalCommits: inScopeCount },
+        data: { status: 'COMPLETED', analyzedAt: now, completedAt: now, totalCommits: inScopeCount },
       });
     }
 

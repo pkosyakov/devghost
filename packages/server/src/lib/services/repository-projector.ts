@@ -78,6 +78,7 @@ export async function projectRepositoriesFromOrder(orderId: string): Promise<num
       userId: true,
       selectedRepos: true,
       completedAt: true,
+      analyzedAt: true,
     },
   });
 
@@ -85,6 +86,8 @@ export async function projectRepositoriesFromOrder(orderId: string): Promise<num
     log.warn({ orderId }, 'Order not found for repository projection');
     return 0;
   }
+
+  const analysisTimestamp = order.completedAt ?? order.analyzedAt;
 
   const workspace = await ensureWorkspaceForUser(order.userId);
   const rawRepos = extractReposFromOrder(order);
@@ -156,8 +159,8 @@ export async function projectRepositoriesFromOrder(orderId: string): Promise<num
             contributorCount: canonicalStats?.contributorCount ?? 0,
             lastCommitAt: canonicalStats?.lastCommitAt ?? null,
             // Only advance lastAnalyzedAt forward (never regress)
-            ...(order.completedAt && (!existing.lastAnalyzedAt || order.completedAt > existing.lastAnalyzedAt)
-              ? { lastAnalyzedAt: order.completedAt } : {}),
+            ...(analysisTimestamp && (!existing.lastAnalyzedAt || analysisTimestamp > existing.lastAnalyzedAt)
+              ? { lastAnalyzedAt: analysisTimestamp } : {}),
           },
         });
       } else {
@@ -175,7 +178,7 @@ export async function projectRepositoriesFromOrder(orderId: string): Promise<num
             language: raw.language || null,
             stars: raw.stars ?? 0,
             isPrivate: raw.isPrivate ?? false,
-            lastAnalyzedAt: order.completedAt,
+            lastAnalyzedAt: analysisTimestamp,
             lastCommitAt: canonicalStats?.lastCommitAt ?? null,
             totalCommits: canonicalStats?.totalCommits ?? 0,
             contributorCount: canonicalStats?.contributorCount ?? 0,

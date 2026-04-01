@@ -53,7 +53,8 @@ export function GitHubConnectButton() {
   const handleConnect = () => {
     setConnecting(true);
     // Custom OAuth flow — does NOT replace the current session
-    window.location.href = '/api/github/oauth';
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    window.location.href = `/api/github/oauth?returnTo=${encodeURIComponent(returnTo)}`;
   };
 
   const handleDisconnect = async () => {

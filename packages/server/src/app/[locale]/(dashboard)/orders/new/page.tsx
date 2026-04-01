@@ -47,6 +47,7 @@ import type { RepositorySourceType } from '@/types/repository';
 import { ExploreTab } from '@/components/explore-tab';
 import type { ExploreSearchResult } from '@/types/repository';
 import { useTranslations } from 'next-intl';
+import { ScreenHelpTrigger } from '@/components/layout/screen-help-trigger';
 
 interface GitHubRepo {
   id: number;
@@ -147,6 +148,11 @@ export default function NewOrderPage() {
 
   useEffect(() => {
     checkGitHubConnection();
+  }, []);
+
+  const handleConnectGitHub = useCallback(() => {
+    const returnTo = `${window.location.pathname}${window.location.search}`;
+    window.location.href = `/api/github/oauth?returnTo=${encodeURIComponent(returnTo)}`;
   }, []);
 
   // Load repository history from localStorage
@@ -615,33 +621,44 @@ export default function NewOrderPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-4">
-        <Button variant="ghost" onClick={() => router.back()}>
-          <ChevronLeft className="h-4 w-4 mr-2" />
-          {t('back')}
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold">{t('title')}</h1>
-          <p className="text-muted-foreground">
-            {t('description')}
-          </p>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-start gap-4">
+          <Button variant="ghost" onClick={() => router.back()}>
+            <ChevronLeft className="h-4 w-4 mr-2" />
+            {t('back')}
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold">{t('title')}</h1>
+            <p className="text-muted-foreground">
+              {t('description')}
+            </p>
+          </div>
         </div>
+        <ScreenHelpTrigger
+          screenTitle={t('title')}
+          what={t('help.what')}
+          how={t('help.how')}
+          className="mt-1"
+        />
       </div>
 
-      {/* Analysis Name */}
-      <Card>
-        <CardHeader>
-          <CardTitle>{t('analysisName')}</CardTitle>
-          <CardDescription>{t('analysisNameDescription')}</CardDescription>
-        </CardHeader>
-        <CardContent>
+      <div className="rounded-lg border border-dashed bg-muted/20 p-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-1">
+            <Label htmlFor="analysis-name-input" className="text-sm font-medium">
+              {t('analysisNameOptional')}
+            </Label>
+            <p className="text-sm text-muted-foreground">{t('analysisNameHint')}</p>
+          </div>
           <Input
-            placeholder={t('analysisNameHint')}
+            id="analysis-name-input"
+            className="md:max-w-md"
+            placeholder={t('analysisNamePlaceholder')}
             value={orderName}
             onChange={(e) => setOrderName(e.target.value)}
           />
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Repository Selection */}
       <Card>
@@ -678,6 +695,31 @@ export default function NewOrderPage() {
               </TabsTrigger>
             </TabsList>
           </Tabs>
+
+          {githubConnected !== true && (
+            <Card className="border-dashed">
+              <CardContent className="grid gap-3 pt-6 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center">
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">{t('publicAccessTitle')}</p>
+                  <p className="text-sm text-muted-foreground">{t('publicAccessDescription')}</p>
+                </div>
+
+                <div className="hidden h-12 w-px bg-border md:block" />
+
+                <div className="flex flex-col gap-3 md:items-start">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">{t('privateAccessTitle')}</p>
+                    <p className="text-sm text-muted-foreground">{t('privateAccessDescription')}</p>
+                  </div>
+
+                  <Button variant="outline" size="sm" onClick={handleConnectGitHub}>
+                    <Github className="mr-2 h-4 w-4" />
+                    {t('connectGithubNow')}
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Public Repo Input (when public source selected) */}
           {sourceType === 'public' && (
@@ -794,13 +836,6 @@ export default function NewOrderPage() {
               {!githubConnected && (
                 <p className="text-xs text-muted-foreground">
                   {t('rateLimitWarning')}
-                  <Button
-                    variant="link"
-                    className="h-auto p-0 text-xs ml-1"
-                    onClick={() => router.push('/settings')}
-                  >
-                    {t('connectGithubHigherLimits')}
-                  </Button>
                 </p>
               )}
 
@@ -979,23 +1014,6 @@ export default function NewOrderPage() {
           {/* Connected repos section */}
           {sourceType === 'connected' && (
             <>
-              {/* GitHub not connected warning */}
-              {githubConnected === false && (
-                <Alert>
-                  <Github className="h-4 w-4" />
-                  <AlertDescription className="flex items-center justify-between">
-                    <span>{t('connectGithubAccess')}</span>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => router.push('/settings')}
-                    >
-                      {t('connect')}
-                    </Button>
-                  </AlertDescription>
-                </Alert>
-              )}
-
               {/* Search (only for connected repos) */}
               {githubConnected && (
                 <div className="relative">

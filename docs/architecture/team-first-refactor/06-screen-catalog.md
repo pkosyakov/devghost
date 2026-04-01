@@ -24,6 +24,7 @@ This document catalogs the target screens, their purpose, and the contracts they
 |---|---|---|---|---|---|
 | `Repository List` | Operational catalog of repositories | Tech Lead, Admin | Organization + filters | Freshness, active contributors, health state, ownership context | Repository summary read model |
 | `Repository Detail` | Repo-local drill-down and operational surface | Tech Lead, Repo Owner | Repository ID + date range | Freshness, PR flow, contributors, anomalies, repo rules | Repository detail read model |
+| `Analysis Results` | Transitional post-analysis insight landing and handoff surface | Manager, Tech Lead, New customer | Completed analysis / latest analysis context | Bubble chart, ghost highlights, top contributors, repo summary, next-step handoff | Transitional analysis result facade over legacy metrics + canonical links |
 | `Reports Library` | Entry surface for reusable saved analytical scopes | Manager, Director | Workspace + optional search | Saved view list, visibility, owner, scope preview, create CTA | SavedView summary read model |
 | `Saved View Detail` | Manage reusable analytical scope | Manager, Director | SavedView ID | Scope definition, filters, sharing, schedules, linked dashboards | SavedView read/write contract |
 | `Data Health` | Diagnostics and freshness management | Admin, Platform Owner | Organization | Snapshot freshness, ingestion gaps, reprocess controls | AnalysisSnapshot/DataHealth read model |
@@ -118,6 +119,26 @@ Must support:
 - repo-specific curation/rules;
 - sync health.
 
+### Analysis Results
+
+Purpose:
+
+- give customers a clear first view of what one completed analysis found before they move into canonical workspace surfaces.
+- act as a transitional migration landing while unique analysis-scoped value still lives in legacy result contracts.
+
+Must support:
+
+- bubble chart / ghost insight and other first-value analysis interpretation;
+- summary of imported contributors, repositories, and commits;
+- links into canonical `People` and `Repositories`;
+- a strong CTA into first-team creation when the workspace is still in the onboarding path.
+
+Must not:
+
+- become the main long-term workspace home;
+- become a permanent primary analytics object alongside the canonical workspace surfaces;
+- read like an infrastructure/debug console for first-run customers.
+
 ### Saved View Detail
 
 Purpose:
@@ -178,6 +199,7 @@ Must support:
 | Slice 2: Repository Read Model | `Repository List`, partial `Repository Detail`, freshness cards on `Home` |
 | Slice 3: Team Pivot | `Teams List`, `Team Detail`, team-scoped `Home` |
 | Slice 4: Global Scope and Saved Views | scope-aware `Home`, `Reports Library`, `Saved View Detail`, shared scope behavior across primary analytics screens |
+| Slice 4C: Analysis Results Landing | `Analysis Results` as explicit post-analysis value surface and handoff |
 | Slice 5: Curation and Diagnostics | `Data Health`, full `Curation Hub`, diagnostics affordances on other screens |
 
 ## Immediate spec-writing order

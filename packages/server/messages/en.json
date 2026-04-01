@@ -1207,7 +1207,10 @@
       "noRecentFailures": "No recent failures",
       "cacheCleared": "Cache cleared",
       "freedMb": "Freed {mb} MB",
-      "starting": "Starting..."
+      "starting": "Starting...",
+      "triggerWatchdog": "Trigger Watchdog",
+      "watchdogTriggered": "Watchdog executed",
+      "watchdogProcessed": "Jobs processed: {count}"
     },
     "audit": {
       "title": "Audit Log",

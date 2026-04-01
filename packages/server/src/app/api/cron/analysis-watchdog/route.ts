@@ -209,6 +209,7 @@ export async function GET(request: NextRequest) {
         data: {
           status: 'COMPLETED',
           analyzedAt: now,
+          completedAt: now,
         },
       });
       reconciledOrders.add(row.orderId);
@@ -527,6 +528,7 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
         data: {
           status: 'COMPLETED',
           analyzedAt: completedAt,
+          completedAt,
           totalCommits: inScopeCount,
         },
       }),

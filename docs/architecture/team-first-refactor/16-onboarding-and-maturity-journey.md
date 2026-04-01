@@ -170,6 +170,7 @@ Why:
 ```text
 Home
   -> Connect repositories / Run first analysis
+  -> Analysis Results
   -> People review
   -> Repositories review
   -> Create first team from repository
@@ -190,6 +191,22 @@ Important rule:
 
 - `Home` must change by maturity stage;
 - it must not be the same screen for empty, transitional, and operational workspaces.
+
+### `Analysis Results`
+
+Role:
+
+- first value moment after a completed analysis.
+
+Use it when:
+
+- the customer needs to see what the completed analysis found before moving into canonical workspace curation and management surfaces;
+- the product needs to explain the result of one analysis run without forcing the customer through infrastructure-heavy legacy UI.
+
+Important rule:
+
+- `Analysis Results` may remain analysis-scoped, but it must hand off clearly into canonical `People`, `Repositories`, and first-team creation;
+- it is a transitional insight surface, not the main long-term workspace home.
 
 ### `People`
 

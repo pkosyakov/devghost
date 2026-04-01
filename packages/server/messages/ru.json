@@ -1207,7 +1207,10 @@
       "noRecentFailures": "Недавних сбоев нет",
       "cacheCleared": "Кэш очищен",
       "freedMb": "Освобождено {mb} МБ",
-      "starting": "Запуск..."
+      "starting": "Запуск...",
+      "triggerWatchdog": "Запустить Watchdog",
+      "watchdogTriggered": "Watchdog выполнен",
+      "watchdogProcessed": "Обработано задач: {count}"
     },
     "audit": {
       "title": "Журнал аудита",

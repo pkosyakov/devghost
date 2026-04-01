@@ -8,10 +8,31 @@ const GITHUB_CLIENT_ID = process.env.GITHUB_CLIENT_ID?.trim();
 const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET?.trim();
 const AUTH_URL = (process.env.AUTH_URL || 'http://localhost:3000').trim();
 
+function normalizeReturnTo(raw: string | null | undefined): string {
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) {
+    return '/settings';
+  }
+
+  try {
+    const authBase = new URL(AUTH_URL);
+    const resolved = new URL(raw, AUTH_URL);
+    if (resolved.origin !== authBase.origin) {
+      return '/settings';
+    }
+    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+  } catch {
+    return '/settings';
+  }
+}
+
 // GET /api/github/callback - Handle GitHub OAuth callback
 export async function GET(request: NextRequest) {
-  const settingsUrl = (params?: string) =>
-    new URL(`/settings${params ? `?${params}` : ''}`, AUTH_URL);
+  const buildReturnUrl = (returnTo: string, params?: string) => {
+    const target = new URL(returnTo, AUTH_URL);
+    const extra = new URLSearchParams(params);
+    extra.forEach((value, key) => target.searchParams.set(key, value));
+    return target;
+  };
 
   try {
     // Must be logged in
@@ -24,33 +45,35 @@ export async function GET(request: NextRequest) {
     const code = searchParams.get('code');
     const state = searchParams.get('state');
     const error = searchParams.get('error');
+    const cookieStore = await cookies();
+    const returnTo = normalizeReturnTo(cookieStore.get('github_oauth_return_to')?.value);
 
     // GitHub returned an error (user denied access, etc.)
     if (error) {
       gitLogger.warn({ error, userId: session.user.id }, 'GitHub OAuth denied');
-      return NextResponse.redirect(settingsUrl('github=denied'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=denied'));
     }
 
     if (!code || !state) {
       gitLogger.warn({ userId: session.user.id }, 'GitHub OAuth callback missing code or state');
-      return NextResponse.redirect(settingsUrl('github=error'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error'));
     }
 
     // Verify CSRF state
-    const cookieStore = await cookies();
     const storedState = cookieStore.get('github_oauth_state')?.value;
 
     // Clear the state cookie regardless of outcome
     cookieStore.delete('github_oauth_state');
+    cookieStore.delete('github_oauth_return_to');
 
     if (!storedState || storedState !== state) {
       gitLogger.warn({ userId: session.user.id }, 'GitHub OAuth state mismatch');
-      return NextResponse.redirect(settingsUrl('github=error&reason=state_mismatch'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error&reason=state_mismatch'));
     }
 
     if (!GITHUB_CLIENT_ID || !GITHUB_CLIENT_SECRET) {
       gitLogger.error('GitHub OAuth credentials not configured');
-      return NextResponse.redirect(settingsUrl('github=error&reason=not_configured'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error&reason=not_configured'));
     }
 
     // Exchange code for access token
@@ -73,7 +96,7 @@ export async function GET(request: NextRequest) {
         { status: tokenResponse.status, userId: session.user.id },
         'GitHub token exchange failed'
       );
-      return NextResponse.redirect(settingsUrl('github=error&reason=token_exchange'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error&reason=token_exchange'));
     }
 
     const tokenData = await tokenResponse.json();
@@ -83,7 +106,7 @@ export async function GET(request: NextRequest) {
         { error: tokenData.error, userId: session.user.id },
         'GitHub token exchange returned error'
       );
-      return NextResponse.redirect(settingsUrl('github=error&reason=token_exchange'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error&reason=token_exchange'));
     }
 
     const accessToken = tokenData.access_token;
@@ -102,7 +125,7 @@ export async function GET(request: NextRequest) {
         { status: userResponse.status, userId: session.user.id },
         'GitHub token validation failed'
       );
-      return NextResponse.redirect(settingsUrl('github=error&reason=invalid_token'));
+      return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error&reason=invalid_token'));
     }
 
     const githubUser = await userResponse.json();
@@ -118,9 +141,12 @@ export async function GET(request: NextRequest) {
       'GitHub account linked successfully'
     );
 
-    return NextResponse.redirect(settingsUrl('github=connected'));
+    return NextResponse.redirect(buildReturnUrl(returnTo, 'github=connected'));
   } catch (error) {
     gitLogger.error({ err: error }, 'GitHub OAuth callback error');
-    return NextResponse.redirect(settingsUrl('github=error'));
+    const cookieStore = await cookies();
+    const returnTo = normalizeReturnTo(cookieStore.get('github_oauth_return_to')?.value);
+    cookieStore.delete('github_oauth_return_to');
+    return NextResponse.redirect(buildReturnUrl(returnTo, 'github=error'));
   }
 }

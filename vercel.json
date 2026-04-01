@@ -2,5 +2,11 @@
   "framework": "nextjs",
   "buildCommand": "pnpm --filter @devghost/server build",
   "outputDirectory": "packages/server/.next",
-  "installCommand": "pnpm install"
+  "installCommand": "pnpm install",
+  "crons": [
+    {
+      "path": "/api/cron/analysis-watchdog",
+      "schedule": "* * * * *"
+    }
+  ]
 }

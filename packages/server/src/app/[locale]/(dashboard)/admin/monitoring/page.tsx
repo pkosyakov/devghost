@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   XCircle,
   Clock3,
+  Play,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
@@ -138,6 +139,22 @@ export default function AdminMonitoringPage() {
     refetchInterval: 10_000,
   });
 
+  const triggerWatchdog = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/admin/watchdog/trigger', { method: 'POST' });
+      const json = await res.json();
+      if (!json.ok && !json.success) throw new Error(json.error ?? 'Watchdog trigger failed');
+      return json;
+    },
+    onSuccess: (responseData) => {
+      queryClient.invalidateQueries({ queryKey: ['admin-monitoring'] });
+      toast({ title: t('watchdogTriggered'), description: t('watchdogProcessed', { count: responseData.processed ?? 0 }) });
+    },
+    onError: (err: Error) => {
+      toast({ title: tc('errorTitle'), description: err.message, variant: 'destructive' });
+    },
+  });
+
   const clearCache = useMutation({
     mutationFn: async (level: string) => {
       const res = await fetch(`/api/cache?level=${level}`, { method: 'DELETE' });
@@ -187,9 +204,23 @@ export default function AdminMonitoringPage() {
       {/* Pipeline Health */}
       <Card>
         <CardHeader>
-          <div className="flex items-center gap-2">
-            <HeartPulse className="h-5 w-5" />
-            <CardTitle>{t('pipelineHealth')}</CardTitle>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <HeartPulse className="h-5 w-5" />
+              <CardTitle>{t('pipelineHealth')}</CardTitle>
+            </div>
+            <Button
+              size="sm"
+              disabled={triggerWatchdog.isPending}
+              onClick={() => triggerWatchdog.mutate()}
+            >
+              {triggerWatchdog.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Play className="mr-2 h-4 w-4" />
+              )}
+              {t('triggerWatchdog')}
+            </Button>
           </div>
           <CardDescription>{t('pipelineHealthDescription')}</CardDescription>
         </CardHeader>
