@@ -48,7 +48,7 @@ async function fetchOrder(id: string) {
 
 // Fetch metrics for analysis with period filter
 async function fetchMetrics(id: string, period: GhostEligiblePeriod): Promise<GhostMetric[]> {
-  const res = await fetch(`/api/orders/${id}/metrics?period=${period}`);
+  const res = await fetch(`/api/orders/${id}/metrics?period=${period}`, { cache: 'no-store' });
   if (!res.ok) return [];
   const json = await res.json();
   return json.data ?? [];
