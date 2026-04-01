@@ -456,6 +456,12 @@ model OrderMetric {
   ghostPercentRaw Decimal? @db.Decimal(10, 2)  // Raw ghost % before share adjustment
   ghostPercent    Decimal? @db.Decimal(10, 2)  // Final ghost % after share adjustment
 
+  // FTE metrics (full-time employee mode)
+  fteWorkDays         Int      @default(0)
+  fteAvgDailyEffort   Decimal? @db.Decimal(10, 4) @default(0)
+  fteGhostPercentRaw  Decimal? @db.Decimal(10, 2)
+  fteGhostPercent     Decimal? @db.Decimal(10, 2)
+
   // Share
   share               Decimal? @default(1.0) @db.Decimal(5, 4)
   shareAutoCalculated Boolean  @default(true)
