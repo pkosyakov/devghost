@@ -24,7 +24,7 @@ const CHART_MARGIN = { top: 45, right: 45, bottom: 20, left: 20 };
 /* ---------- component ---------- */
 
 export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartProps) {
-  const [showLabels, setShowLabels] = useState(false);
+  const [showLabels, setShowLabels] = useState(true);
   const [hoveredEmail, setHoveredEmail] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(700);
