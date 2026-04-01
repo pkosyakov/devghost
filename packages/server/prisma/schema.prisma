@@ -318,6 +318,10 @@ model SystemSettings {
   demoLiveMode            Boolean @default(false)
   demoLiveChunkSize       Int @default(10)
 
+  // Watchdog cron heartbeat
+  watchdogLastRunAt     DateTime?
+  watchdogLastRunResult Json?
+
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 }

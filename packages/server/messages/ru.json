@@ -1210,7 +1210,13 @@
       "starting": "Запуск...",
       "triggerWatchdog": "Запустить Watchdog",
       "watchdogTriggered": "Watchdog выполнен",
-      "watchdogProcessed": "Обработано задач: {count}"
+      "watchdogProcessed": "Обработано задач: {count}",
+      "scheduler": "Планировщик (Cron)",
+      "schedulerDescription": "Встроенный Vercel Cron вызывает watchdog каждую минуту для обработки застрявших и завершённых джобов.",
+      "schedulerLastRun": "Последний запуск",
+      "schedulerProcessed": "Обработано",
+      "schedulerDuration": "Длительность",
+      "schedulerInterval": "Интервал"
     },
     "audit": {
       "title": "Журнал аудита",

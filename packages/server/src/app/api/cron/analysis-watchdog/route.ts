@@ -323,7 +323,24 @@ export async function GET(request: NextRequest) {
     processed++;
   }
 
-  return Response.json({ ok: true, processed });
+  const durationMs = Date.now() - startTime;
+  const result = { ok: true, processed, durationMs };
+
+  // Fire-and-forget cron heartbeat
+  prisma.systemSettings.upsert({
+    where: { id: 'singleton' },
+    update: {
+      watchdogLastRunAt: new Date(),
+      watchdogLastRunResult: result,
+    },
+    create: {
+      id: 'singleton',
+      watchdogLastRunAt: new Date(),
+      watchdogLastRunResult: result,
+    },
+  }).catch(() => {});
+
+  return Response.json(result);
 }
 
 

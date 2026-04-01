@@ -264,6 +264,7 @@ export async function GET(request: NextRequest) {
     failedRetryableCount,
     watchdogLastEvent,
     endpointProbe,
+    systemSettings,
     repos,
     diffs,
     llm,
@@ -306,6 +307,10 @@ export async function GET(request: NextRequest) {
       select: { createdAt: true, code: true, level: true },
     }),
     probeModalEndpoint(endpointConfigured ? endpointTrimmed : null),
+    prisma.systemSettings.findUnique({
+      where: { id: 'singleton' },
+      select: { watchdogLastRunAt: true, watchdogLastRunResult: true },
+    }),
     ...(isLocalPipeline
       ? [
           cloneStats(CLONE_DIR),
@@ -595,8 +600,29 @@ export async function GET(request: NextRequest) {
     ? Math.round((repos.bytes + diffs.bytes + llm.bytes) / 1024 / 1024 * 10) / 10
     : 0;
 
+  const cronLastRunAt = systemSettings?.watchdogLastRunAt ?? null;
+  const cronResult = systemSettings?.watchdogLastRunResult as
+    | { ok?: boolean; processed?: number; durationMs?: number }
+    | null;
+  const cronLagSec = secondsSince(cronLastRunAt, nowMs);
+  const cronStatus: HealthStatus =
+    cronLagSec === null
+      ? 'fail'
+      : cronLagSec <= 120
+        ? 'pass'
+        : cronLagSec <= 300
+          ? 'warn'
+          : 'fail';
+
   return apiResponse({
     access: auth.mode,
+    scheduler: {
+      status: cronStatus,
+      lastRunAt: cronLastRunAt,
+      lastRunLagSec: cronLagSec,
+      lastProcessed: cronResult?.processed ?? null,
+      lastDurationMs: cronResult?.durationMs ?? null,
+    },
     activeJobs: activeJobs.map((job) => ({
       id: job.id,
       status: job.status,

@@ -15,6 +15,7 @@ import {
   XCircle,
   Clock3,
   Play,
+  Timer,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
@@ -48,6 +49,13 @@ interface MonitoringData {
     orderName: string;
     ownerEmail: string;
   }[];
+  scheduler: {
+    status: HealthStatus;
+    lastRunAt: string | null;
+    lastRunLagSec: number | null;
+    lastProcessed: number | null;
+    lastDurationMs: number | null;
+  };
   cache: { totalMb: number; repos: number; diffs: number; llm: number; available: boolean };
   pipeline: {
     checkedAt: string;
@@ -201,13 +209,16 @@ export default function AdminMonitoringPage() {
         <p className="text-muted-foreground">{t('description')}</p>
       </div>
 
-      {/* Pipeline Health */}
+      {/* Scheduler */}
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <HeartPulse className="h-5 w-5" />
-              <CardTitle>{t('pipelineHealth')}</CardTitle>
+              <Timer className="h-5 w-5" />
+              <CardTitle>{t('scheduler')}</CardTitle>
+              <Badge className={healthBadgeClass(data.scheduler.status)}>
+                {data.scheduler.status.toUpperCase()}
+              </Badge>
             </div>
             <Button
               size="sm"
@@ -221,6 +232,44 @@ export default function AdminMonitoringPage() {
               )}
               {t('triggerWatchdog')}
             </Button>
+          </div>
+          <CardDescription>{t('schedulerDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 md:grid-cols-4">
+            <div className="rounded-md border p-3 text-center">
+              <div className="flex items-center justify-center gap-1">
+                {healthIcon(data.scheduler.status)}
+                <p className="text-2xl font-bold">
+                  {data.scheduler.lastRunLagSec !== null ? formatAge(data.scheduler.lastRunLagSec) : '—'}
+                </p>
+              </div>
+              <p className="text-xs text-muted-foreground">{t('schedulerLastRun')}</p>
+            </div>
+            <div className="rounded-md border p-3 text-center">
+              <p className="text-2xl font-bold">{data.scheduler.lastProcessed ?? '—'}</p>
+              <p className="text-xs text-muted-foreground">{t('schedulerProcessed')}</p>
+            </div>
+            <div className="rounded-md border p-3 text-center">
+              <p className="text-2xl font-bold">
+                {data.scheduler.lastDurationMs !== null ? `${data.scheduler.lastDurationMs}ms` : '—'}
+              </p>
+              <p className="text-xs text-muted-foreground">{t('schedulerDuration')}</p>
+            </div>
+            <div className="rounded-md border p-3 text-center">
+              <p className="text-2xl font-bold">1m</p>
+              <p className="text-xs text-muted-foreground">{t('schedulerInterval')}</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Pipeline Health */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <HeartPulse className="h-5 w-5" />
+            <CardTitle>{t('pipelineHealth')}</CardTitle>
           </div>
           <CardDescription>{t('pipelineHealthDescription')}</CardDescription>
         </CardHeader>

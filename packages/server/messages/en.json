@@ -1210,7 +1210,13 @@
       "starting": "Starting...",
       "triggerWatchdog": "Trigger Watchdog",
       "watchdogTriggered": "Watchdog executed",
-      "watchdogProcessed": "Jobs processed: {count}"
+      "watchdogProcessed": "Jobs processed: {count}",
+      "scheduler": "Scheduler (Cron)",
+      "schedulerDescription": "Built-in Vercel Cron calls watchdog every minute to process stuck and completed jobs.",
+      "schedulerLastRun": "Last run",
+      "schedulerProcessed": "Processed",
+      "schedulerDuration": "Duration",
+      "schedulerInterval": "Interval"
     },
     "audit": {
       "title": "Audit Log",
