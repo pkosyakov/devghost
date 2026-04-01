@@ -35,22 +35,24 @@ if (enableFileTransport) {
   }
 }
 
-// Build transport targets
+// Build transport targets — only for local dev (worker threads crash on Vercel)
 const targets: TransportTargetOptions[] = [];
 
-// Console transport
-targets.push({
-  target: isDev ? 'pino-pretty' : 'pino/file',
-  level: isDev ? 'debug' : 'info',
-  options: isDev
-    ? {
-        colorize: true,
-        translateTime: 'HH:MM:ss.l',
-        ignore: 'pid,hostname,service',
-        singleLine: false,
-      }
-    : { destination: 1 }, // stdout
-});
+if (!isVercel) {
+  // Console transport
+  targets.push({
+    target: isDev ? 'pino-pretty' : 'pino/file',
+    level: isDev ? 'debug' : 'info',
+    options: isDev
+      ? {
+          colorize: true,
+          translateTime: 'HH:MM:ss.l',
+          ignore: 'pid,hostname,service',
+          singleLine: false,
+        }
+      : { destination: 1 }, // stdout
+  });
+}
 
 // File transport with daily rotation — only when not on Vercel (ephemeral FS)
 const logDirExists = enableFileTransport && fs.existsSync(LOG_DIR);
@@ -68,7 +70,7 @@ if (logDirExists) {
   });
 }
 
-export const logger = pino({
+const pinoOptions: pino.LoggerOptions = {
   level: process.env.LOG_LEVEL || (isDev ? 'debug' : 'info'),
   timestamp: pino.stdTimeFunctions.isoTime,
   base: { service: 'devghost' },
@@ -84,8 +86,13 @@ export const logger = pino({
     ],
     censor: '[REDACTED]',
   },
-  transport: { targets },
-});
+};
+
+// On Vercel: write JSON to stdout directly (no worker thread / transport).
+// Locally: use transport targets for pretty-printing and file rotation.
+export const logger = targets.length > 0
+  ? pino(pinoOptions, pino.transport({ targets }))
+  : pino(pinoOptions);
 
 // Convenience: tagged child loggers for subsystems
 export const analysisLogger = logger.child({ module: 'analysis' });
