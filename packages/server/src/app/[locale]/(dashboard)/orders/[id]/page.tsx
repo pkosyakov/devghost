@@ -1540,44 +1540,46 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             isPartialScope={order.analysisPeriodMode !== 'ALL_TIME'}
           />
 
-          {/* FTE Mode Toggle */}
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-md border p-0.5 text-sm">
-              <button
-                className={cn(
-                  'px-3 py-1 rounded-sm transition-colors',
-                  !fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                )}
-                onClick={() => setFteMode(false)}
-              >
-                {t('detail.fteToggleSpread')}
-              </button>
-              <button
-                className={cn(
-                  'px-3 py-1 rounded-sm transition-colors',
-                  fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                  !fteReady && 'opacity-50 cursor-not-allowed',
-                )}
-                onClick={() => fteReady && setFteMode(true)}
-                disabled={!fteReady}
-                title={!fteReady ? t('detail.fteNotAvailableTooltip') : undefined}
-              >
-                {t('detail.fteToggleFte')}
-              </button>
+          {/* FTE Mode Toggle — only for ALL_TIME (FTE data is only computed for this period) */}
+          {period === 'ALL_TIME' && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center rounded-md border p-0.5 text-sm">
+                <button
+                  className={cn(
+                    'px-3 py-1 rounded-sm transition-colors',
+                    !fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                  )}
+                  onClick={() => setFteMode(false)}
+                >
+                  {t('detail.fteToggleSpread')}
+                </button>
+                <button
+                  className={cn(
+                    'px-3 py-1 rounded-sm transition-colors',
+                    fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
+                    !fteReady && 'opacity-50 cursor-not-allowed',
+                  )}
+                  onClick={() => fteReady && setFteMode(true)}
+                  disabled={!fteReady}
+                  title={!fteReady ? t('detail.fteNotAvailableTooltip') : undefined}
+                >
+                  {t('detail.fteToggleFte')}
+                </button>
+              </div>
+              {!fteReady && order.status === 'COMPLETED' && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fteRecalcMutation.mutate()}
+                  disabled={fteRecalcMutation.isPending}
+                >
+                  {fteRecalcMutation.isPending
+                    ? t('detail.fteCalculating')
+                    : t('detail.fteCalculateButton')}
+                </Button>
+              )}
             </div>
-            {!fteReady && order.status === 'COMPLETED' && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => fteRecalcMutation.mutate()}
-                disabled={fteRecalcMutation.isPending}
-              >
-                {fteRecalcMutation.isPending
-                  ? t('detail.fteCalculating')
-                  : t('detail.fteCalculateButton')}
-              </Button>
-            )}
-          </div>
+          )}
 
           <AnalysisHandoffCard
             analysisId={id}
