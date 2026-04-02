@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useNow } from '@/hooks/use-now';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -23,16 +24,6 @@ function formatElapsed(ms: number): string {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
-}
-
-function useNow(enabled: boolean): number {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [enabled]);
-  return now;
 }
 
 // ── Odometer counter ───────────────────────────────────────────────
@@ -417,7 +408,7 @@ export function ClientAnalysisProgress({
             {groupedEvents.map((group, i) => {
               if (group.isMicroGroup) {
                 return (
-                  <div key={`micro-${i}`} className="flex flex-wrap gap-x-2 gap-y-0.5">
+                  <div key={`micro-${group.events[0].id}`} className="flex flex-wrap gap-x-2 gap-y-0.5">
                     {group.events.map(e => (
                       <FeedEvent key={e.id} event={e} t={t} />
                     ))}

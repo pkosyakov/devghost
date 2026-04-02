@@ -39,6 +39,7 @@ import {
 } from 'lucide-react';
 import { useTranslations, useLocale } from 'next-intl';
 import { useToast } from '@/hooks/use-toast';
+import { useNow } from '@/hooks/use-now';
 import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 
 // Fetch analysis details
@@ -240,16 +241,6 @@ function sumSelectedRepoSizeKb(selectedRepos: unknown): number {
 }
 
 /** Ticking clock — returns current timestamp updating every second. */
-function useNow(enabled: boolean): number {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!enabled) return;
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [enabled]);
-  return now;
-}
-
 // ==================== Pipeline Live Log ====================
 
 // PipelineLogEntry and PipelineLog imported from @/components/pipeline-log

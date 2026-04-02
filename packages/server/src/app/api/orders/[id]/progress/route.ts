@@ -223,14 +223,9 @@ export async function GET(
 
   let cloneSizeKb = meta?.totalCloneSizeKb ?? 0;
   if (cloneSizeKb <= 0) {
-    const cloneEvents = await prisma.analysisJobEvent.findMany({
-      where: { jobId: job.id, code: 'REPO_CLONE_DONE' },
-      select: { payload: true },
-    });
-    cloneSizeKb = cloneEvents.reduce(
-      (sum, event) => sum + cloneSizeKbFromPayload(event.payload),
-      0,
-    );
+    cloneSizeKb = events
+      .filter(e => e.code === 'REPO_CLONE_DONE')
+      .reduce((sum, e) => sum + cloneSizeKbFromPayload(e.payload), 0);
   }
   const cloneSizeMb = cloneSizeKb > 0 ? +(cloneSizeKb / 1024).toFixed(1) : null;
 
@@ -324,7 +319,7 @@ export async function GET(
     const displayName = emailToName.get(row.authorEmail) ?? row.authorEmail.split('@')[0];
     return {
       id: devId,
-      name: isAdmin ? displayName : (devNames.get(devId) ?? 'Developer'),
+      name: isAdmin ? displayName : (devNames.get(devId) ?? emailToName.get(row.authorEmail)?.split(' ')[0] ?? 'Developer'),
       totalHours: Math.round((row._sum.effortHours?.toNumber() ?? 0) * 100) / 100,
       commitCount: row._count._all,
     };
