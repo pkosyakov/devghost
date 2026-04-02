@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useRouter } from '@/i18n/navigation';
 import { useTranslations, useLocale } from 'next-intl';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -10,11 +11,18 @@ import { Badge } from '@/components/ui/badge';
 import { GhostDistributionPanel } from '@/components/ghost-distribution-panel';
 import { GhostDeveloperTable } from '@/components/ghost-developer-table';
 import { GhostPeriodSelector } from '@/components/ghost-period-selector';
+import { DateRangeFilter } from '@/components/date-range-filter';
 import { CommitAnalysisTable } from '@/components/commit-analysis-table';
 import { EffortTimeline } from '@/components/effort-timeline';
-import { GHOST_NORM, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
+import { GHOST_NORM, MIN_WORK_DAYS_FOR_GHOST, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
+import type { EffortRow, TimelineDeveloper } from '@/components/effort-timeline-utils';
 
 type GhostNormMode = 'fixed' | 'median';
+
+interface TimelineData {
+  rows: EffortRow[];
+  developers: TimelineDeveloper[];
+}
 
 interface AnalysisResultsOverviewProps {
   orderId: string;
@@ -36,6 +44,70 @@ function median(values: number[]): number | null {
     : (sorted[mid - 1] + sorted[mid]) / 2;
 }
 
+/** Recalculate GhostMetric[] from effort-timeline rows for a date sub-range. */
+function recalcMetrics(
+  rows: EffortRow[],
+  dateFrom: string,
+  dateTo: string,
+  originalMetrics: GhostMetric[],
+  ghostNorm: number,
+): GhostMetric[] {
+  const filtered = rows.filter(r => r.date >= dateFrom && r.date <= dateTo);
+
+  const byDev = new Map<string, {
+    totalEffort: number;
+    overheadEffort: number;
+    placedDates: Set<string>;
+  }>();
+  for (const r of filtered) {
+    let dev = byDev.get(r.email);
+    if (!dev) {
+      dev = { totalEffort: 0, overheadEffort: 0, placedDates: new Set() };
+      byDev.set(r.email, dev);
+    }
+    dev.totalEffort += r.effort;
+    if (r.type === 'placed') {
+      dev.placedDates.add(r.date);
+    } else {
+      dev.overheadEffort += r.effort;
+    }
+  }
+
+  const origMap = new Map(originalMetrics.map(m => [m.developerEmail, m]));
+  const result: GhostMetric[] = [];
+
+  for (const [email, dev] of byDev) {
+    const orig = origMap.get(email);
+    if (!orig) continue;
+
+    const workDays = dev.placedDates.size;
+    const totalEffort = Math.round(dev.totalEffort * 100) / 100;
+    const overheadHours = Math.round(dev.overheadEffort * 100) / 100;
+    const avgDaily = workDays > 0 ? totalEffort / workDays : 0;
+    const hasEnoughData = workDays >= MIN_WORK_DAYS_FOR_GHOST;
+    const share = orig.share;
+
+    const ghostPercentRaw = hasEnoughData ? (avgDaily / ghostNorm) * 100 : null;
+    const ghostPercent = hasEnoughData && share > 0
+      ? (avgDaily / (ghostNorm * share)) * 100
+      : null;
+
+    result.push({
+      ...orig,
+      totalEffortHours: totalEffort,
+      actualWorkDays: workDays,
+      avgDailyEffort: avgDaily,
+      ghostPercentRaw,
+      ghostPercent,
+      hasEnoughData,
+      overheadHours,
+      commitCount: orig.commitCount,
+    });
+  }
+
+  return result;
+}
+
 export function AnalysisResultsOverview({
   orderId,
   metrics,
@@ -52,7 +124,7 @@ export function AnalysisResultsOverview({
   const [activeTab, setActiveTab] = useState('overview');
   const [ghostNormMode, setGhostNormMode] = useState<GhostNormMode>('fixed');
 
-  // Ghost norm calculation
+  // ---- Ghost norm calculation ----
   const normCandidates = metrics
     .filter((m) => m.hasEnoughData && Number.isFinite(m.avgDailyEffort) && m.avgDailyEffort > 0)
     .map((m) => m.avgDailyEffort);
@@ -70,7 +142,7 @@ export function AnalysisResultsOverview({
   const medianGhostNormLabel = medianGhostNorm != null ? normFmt.format(medianGhostNorm) : null;
 
   // Apply ghost norm to metrics
-  const displayMetrics: GhostMetric[] = metrics.map((metric) => {
+  const displayMetrics = useMemo(() => metrics.map((metric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) return metric;
     const avgDailyEffort = metric.avgDailyEffort;
     const raw = (avgDailyEffort / effectiveGhostNorm) * 100;
@@ -81,7 +153,59 @@ export function AnalysisResultsOverview({
       ghostPercentRaw: Number.isFinite(raw) ? raw : null,
       ghostPercent: adjusted != null && Number.isFinite(adjusted) ? adjusted : null,
     };
+  }), [metrics, effectiveGhostNorm]);
+
+  // ---- Effort timeline data for date range filtering ----
+  const { data: timeline } = useQuery<TimelineData>({
+    queryKey: ['effort-timeline', orderId],
+    queryFn: async () => {
+      const res = await fetch(`/api/orders/${orderId}/effort-timeline`);
+      if (!res.ok) throw new Error('Failed to fetch effort timeline');
+      const json = await res.json();
+      return json.data;
+    },
+    enabled: !demoMode,
   });
+
+  const allDates = useMemo(() => {
+    if (!timeline?.rows?.length) return [];
+    const set = new Set<string>();
+    for (const r of timeline.rows) set.add(r.date);
+    return [...set].sort();
+  }, [timeline]);
+
+  const hasDateFilter = allDates.length >= 2 && !demoMode;
+
+  // ---- Date range slider state ----
+  const [sliderPos, setSliderPos] = useState<[number, number] | null>(null);
+  const [committedRange, setCommittedRange] = useState<[number, number] | null>(null);
+
+  // Reset on data change (use boundary dates + length for robust detection)
+  const firstDate = allDates[0] ?? '';
+  const lastDate = allDates[allDates.length - 1] ?? '';
+  useEffect(() => { setSliderPos(null); setCommittedRange(null); }, [orderId, firstDate, lastDate, allDates.length]);
+
+  const maxIdx = Math.max(0, allDates.length - 1);
+  const startIdx = committedRange ? Math.min(committedRange[0], maxIdx) : 0;
+  const endIdx = committedRange ? Math.min(committedRange[1], maxIdx) : maxIdx;
+  const isFullRange = startIdx === 0 && endIdx === maxIdx;
+
+  // ---- Filtered metrics (applied to both charts and table) ----
+  const filteredMetrics = useMemo(() => {
+    if (!hasDateFilter || isFullRange || !timeline?.rows) return displayMetrics;
+    return recalcMetrics(
+      timeline.rows,
+      allDates[startIdx],
+      allDates[endIdx],
+      displayMetrics,
+      effectiveGhostNorm,
+    );
+  }, [hasDateFilter, isFullRange, timeline, startIdx, endIdx, allDates, displayMetrics, effectiveGhostNorm]);
+
+  const handleSliderCommit = useCallback(([s, e]: [number, number]) => {
+    setSliderPos([s, e]);
+    setCommittedRange([s, e]);
+  }, []);
 
   return (
     <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -124,15 +248,24 @@ export function AnalysisResultsOverview({
           </p>
         )}
 
+        {/* Date range filter */}
+        {hasDateFilter && (
+          <DateRangeFilter
+            allDates={allDates}
+            sliderPos={sliderPos}
+            committedRange={committedRange}
+            onSliderChange={setSliderPos}
+            onSliderCommit={handleSliderCommit}
+          />
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle>{t('detail.ghostDistribution')}</CardTitle>
           </CardHeader>
           <CardContent>
             <GhostDistributionPanel
-              orderId={orderId}
-              metrics={displayMetrics}
-              effectiveGhostNorm={effectiveGhostNorm}
+              metrics={filteredMetrics}
               onDeveloperClick={demoMode ? undefined : (email) =>
                 router.push(`/orders/${orderId}/developers/${encodeURIComponent(email)}`)
               }
@@ -146,7 +279,7 @@ export function AnalysisResultsOverview({
           </CardHeader>
           <CardContent>
             <GhostDeveloperTable
-              metrics={displayMetrics}
+              metrics={filteredMetrics}
               orderId={orderId}
               highlightedEmail={highlightedEmail ?? undefined}
               onShareChange={demoMode ? undefined : onShareChange}
