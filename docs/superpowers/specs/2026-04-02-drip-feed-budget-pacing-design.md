@@ -93,14 +93,14 @@ overloaded = clampedSum > budget
 
 **Two-phase response:**
 
-1. **Scale-down** (soft): When `clampedSum > budget`, uniformly scale all delays so they sum to exactly `budget`:
+1. **Scale-down** (soft): When `clampedSum > budget`, uniformly scale all delays to move the total closer to `budget`:
 
 ```
 scaleFactor = budget / clampedSum
 delay(event) = max(HARD_FLOOR, clampedDelay × scaleFactor)
 ```
 
-`HARD_FLOOR = 10ms` — absolute minimum to avoid invisible events.
+`HARD_FLOOR = 10ms` — absolute minimum to avoid invisible events. Because of the floor, the actual sum may still exceed `budget` (see example below). This is acceptable — the goal is bounded lag, not exact timing.
 
 2. **Catch-up drain** (hard): If the queue depth exceeds a high-water mark (`queue.length > expectedBatchSize × 3`), the batch's events are stamped at `HARD_FLOOR` regardless of tier. This is a controlled flush that prevents unbounded lag. The high-water mark ensures this only triggers under sustained overload, not a single large batch.
 
@@ -245,19 +245,28 @@ When `isDraining` is set (terminal job status), the tick divides each event's pr
 - Pre-stamped delays in queue are preserved
 - When unpaused, events resume with their original delays
 
-**Resume (FAILED_RETRYABLE -> RUNNING, or PENDING -> RUNNING):**
-- Reset timing refs to fresh defaults:
+**Resume (FAILED_RETRYABLE -> RUNNING after quota pause):**
+
+Resume continues the **same job** — `allClientEvents` in the parent page stays intact, and the next poll returns only new events (via `sinceEventId` cursor). The hook must NOT clear `queueRef` or `seenIdsRef`, because:
+- Clearing `queueRef` drops queued-but-not-yet-shown events (data loss)
+- Clearing `seenIdsRef` causes replayed events to be re-enqueued and double-counted
+
+The correct reset is **timing refs only**:
   ```typescript
   lastBatchAtRef.current = 0;
   measuredIntervalRef.current = defaultIntervalMs;
   batchSizeEmaRef.current = 10;
   ```
-- Clear any stale pre-stamped items from previous run:
-  ```typescript
-  queueRef.current = [];
-  seenIdsRef.current.clear();
-  ```
-- First post-resume batch uses default budget, subsequent batches measure normally
+First post-resume batch uses default budget, subsequent batches measure normally. Any events already in the queue continue dripping with their pre-stamped delays.
+
+Note: the existing guard `(isDraining || isDrained)` is also wrong for quota-pause resume. A quota-paused job has `isPaused=true`, which blocks drain detection (line 87-91 in current code). So a paused `FAILED_RETRYABLE -> RUNNING` transition will have `isDraining=false, isDrained=false`, and the guard won't fire. The correct condition is simply `jobStatus === 'RUNNING' && (prev === 'FAILED_RETRYABLE' || prev === 'PENDING')` — the timing reset is safe regardless of drain state.
+
+**Fresh rerun (new job via prepareAnalysisLaunch):**
+
+A fresh rerun is handled by the parent (`page.tsx:510-519`), which clears `allClientEvents` and `clientEventSeenRef`. When `rawEvents` becomes `[]`, the enqueue effect sees no new events and does nothing. The hook effectively starts fresh because:
+- `queueRef` drains naturally (or is already empty)
+- `seenIdsRef` only matters for dedup — new job events have new DB IDs, so old IDs in the set are harmless (they'll never appear in `rawEvents` again)
+- Timing refs carry stale values, but the first batch from the new job resets `lastBatchAtRef` and `measuredIntervalRef` naturally
 
 ### Changes to useDripFeed
 
@@ -300,21 +309,23 @@ useEffect(() => {
   prevJobStatusRef.current = jobStatus;
   if (
     jobStatus === 'RUNNING' &&
-    (prev === 'FAILED_RETRYABLE' || prev === 'PENDING') &&
-    (isDraining || isDrained)
+    (prev === 'FAILED_RETRYABLE' || prev === 'PENDING')
   ) {
-    setIsDraining(false);
-    setIsDrained(false);
-    // Reset timing to defaults
+    // Reset drain state if it was active
+    if (isDraining || isDrained) {
+      setIsDraining(false);
+      setIsDrained(false);
+    }
+    // Reset timing refs only — queue and seenIds are preserved
+    // (resume continues the same job; parent keeps allClientEvents alive)
     lastBatchAtRef.current = 0;
     measuredIntervalRef.current = defaultIntervalMs;
     batchSizeEmaRef.current = 10;
-    // Clear stale queue from previous run
-    queueRef.current = [];
-    seenIdsRef.current.clear();
   }
 }, [jobStatus, isDraining, isDrained, defaultIntervalMs]);
 ```
+
+Note: the `(isDraining || isDrained)` guard is removed from the outer condition. A quota-paused `FAILED_RETRYABLE` has `isPaused=true`, which blocks drain detection, so `isDraining` and `isDrained` are both `false` at resume time. The timing reset must fire regardless.
 
 ### Constants
 
@@ -419,7 +430,9 @@ const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripF
 
 7. **First batch fallback**: Enqueue events with no prior batch, `defaultIntervalMs=300`. Verify delays use 300 × 1.2 = 360ms budget.
 
-8. **Resume reset**: Transition `FAILED_RETRYABLE -> RUNNING`. Verify `lastBatchAtRef`, `measuredIntervalRef`, `batchSizeEmaRef` are reset, queue is cleared, `seenIdsRef` is cleared.
+8. **Resume reset (timing only)**: Transition `FAILED_RETRYABLE -> RUNNING`. Verify `lastBatchAtRef`, `measuredIntervalRef`, `batchSizeEmaRef` are reset to defaults. Verify `queueRef` and `seenIdsRef` are **preserved** (not cleared). Verify queued events continue dripping with their original pre-stamped delays.
+
+9. **Resume from quota pause (no drain state)**: Set up a quota-paused state (`FAILED_RETRYABLE` + `isPaused=true`, so `isDraining=false, isDrained=false`). Transition to `RUNNING`. Verify timing refs are reset even though drain was never active. Verify `defaultIntervalMs=300` is applied correctly for admin demo poll rate.
 
 9. **Empty poll**: Call with rawEvents that are all already seen. Verify no budget recalculation, queue unchanged.
 
