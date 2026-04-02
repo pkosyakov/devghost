@@ -151,7 +151,30 @@ For the standard path (line ~567):
 
 Note: commits are sorted by `author_date` descending (newest first), so `commits[0]` is latest and `commits[-1]` is earliest.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: Add commitCount to `REPO_FULLY_CACHED` payload**
+
+In `_process_single_repo()`, find the `REPO_FULLY_CACHED` event (line ~1009). Replace the payload:
+
+```python
+    if not commits:
+        append_job_event(
+            conn,
+            job_id,
+            "Repository fully satisfied by cache (no LLM calls needed)",
+            phase="cache",
+            code="REPO_FULLY_CACHED",
+            repo_name=repo_full_name,
+            payload={
+                "commitCount": len(all_shas),
+                "durationSec": round(time.time() - repo_started, 2),
+            },
+        )
+        return total_analyzed, total_cache_hits, total_commit_plan
+```
+
+`all_shas` is in scope — it holds the full set of SHAs before cache filtering.
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add packages/modal/worker.py
@@ -159,7 +182,8 @@ git commit -m "feat(worker): enrich event payloads for client progress screen
 
 Add authorEmail, authorName, filesCount, additions, deletions to
 LLM_COMMIT_RESULT. Add totalHours to REPO_PROCESS_DONE. Add
-earliestDate/latestDate to REPO_EXTRACT_DONE."
+earliestDate/latestDate to REPO_EXTRACT_DONE. Add commitCount to
+REPO_FULLY_CACHED."
 ```
 
 ---
@@ -368,7 +392,7 @@ export type LeaderboardData = {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-function hashEmail(email: string): string {
+export function hashEmail(email: string): string {
   return createHash('sha256').update(email.toLowerCase().trim()).digest('hex').slice(0, 12);
 }
 
@@ -489,10 +513,12 @@ function mapSingleEvent(
         devNames.set(devId, name);
       }
 
+      const developerName = devId ? (devNames.get(devId) ?? 'Developer') : 'Developer';
+
       result.push({
         id: nextId('ce'), ts, tier: 'major', category: 'commit',
         text: 'clientProgress.commitAnalyzed',
-        params: { subject },
+        params: { subject, developerName },
         developerId: devId,
         effortHours: hours ?? undefined,
       });
@@ -530,7 +556,7 @@ function mapSingleEvent(
     }
 
     case 'CACHE_REUSED': {
-      const count = asNumber(p.count) ?? asNumber(p.reusedCount) ?? 0;
+      const count = asNumber(p.cacheHitCount) ?? 0;
       return [{
         id: nextId('ce'), ts, tier: 'micro', category: 'stat',
         text: 'clientProgress.cacheReused', params: { count },
@@ -658,14 +684,19 @@ Add to `packages/server/src/app/api/orders/[id]/progress/__tests__/route.test.ts
 ```typescript
 // Add at top with other mocks:
 const mockMapToClientEvents = vi.fn().mockReturnValue([]);
-const mockBuildLeaderboard = vi.fn().mockReturnValue({
-  developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0,
-});
+const mockHashEmail = vi.fn((email: string) => `h_${email}`);
+const mockCommitAnalysisGroupBy = vi.fn().mockResolvedValue([]);
+const mockOrderFindUnique = vi.fn().mockResolvedValue(null);
 
 vi.mock('@/lib/services/client-event-mapper', () => ({
   mapToClientEvents: (...args: unknown[]) => mockMapToClientEvents(...args),
-  buildLeaderboard: (...args: unknown[]) => mockBuildLeaderboard(...args),
+  hashEmail: (email: string) => mockHashEmail(email),
 }));
+
+// Extend the existing prisma mock to add groupBy and order lookup:
+// In the prisma mock object, add:
+//   commitAnalysis: { ...existing, groupBy: (...args) => mockCommitAnalysisGroupBy(...args) },
+//   order: { findUnique: (...args) => mockOrderFindUnique(...args) },
 
 // Add test:
 describe('role-based response filtering', () => {
@@ -741,7 +772,8 @@ Expected: FAIL
 Modify `packages/server/src/app/api/orders/[id]/progress/route.ts`. Add imports at top:
 
 ```typescript
-import { mapToClientEvents, buildLeaderboard } from '@/lib/services/client-event-mapper';
+import { mapToClientEvents, hashEmail } from '@/lib/services/client-event-mapper';
+import { GHOST_NORM } from '@devghost/shared';
 ```
 
 Before the `return NextResponse.json(...)` at the end of the GET handler, add mapper call and build the role-based response:
@@ -764,19 +796,42 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
     devNames,
   );
 
-  // Compute scope work days for ghost baseline
-  // For LAST_N: use earliestDate/latestDate from REPO_EXTRACT_DONE events
-  // For others: use order date range
-  const scopeWorkDays = 0; // TODO Task 3 Step 3 continued below
-
-  const leaderboard = buildLeaderboard(
-    clientEvents,
-    devNames,
-    scopeWorkDays,
-    effectiveProgress,
-  );
+  // ── Cumulative leaderboard from CommitAnalysis (always accurate) ──
+  // Queried from DB so it's independent of sinceEventId pagination.
+  const devAggRows = await prisma.commitAnalysis.groupBy({
+    by: ['authorEmail', 'authorName'],
+    where: {
+      orderId: id,
+      method: { not: 'error' },
+    },
+    _sum: { estimatedHours: true },
+    _count: { _all: true },
+  });
 
   const isAdmin = session.user.role === 'ADMIN';
+
+  const leaderboardDevs = devAggRows.map(row => {
+    const devId = hashEmail(row.authorEmail);
+    return {
+      id: devId,
+      name: isAdmin ? row.authorName : (devNames.get(devId) ?? row.authorName.split(' ')[0]),
+      totalHours: Math.round((row._sum.estimatedHours?.toNumber() ?? 0) * 100) / 100,
+      commitCount: row._count._all,
+    };
+  });
+
+  // ── Scope work days for ghost baseline ──
+  const scopeWorkDays = await computeScopeWorkDays(id, job.id);
+
+  const ghostTotalHours = Math.round(
+    GHOST_NORM * scopeWorkDays * (effectiveProgress / 100),
+  );
+
+  const leaderboard = {
+    developers: leaderboardDevs,
+    ghost: { totalHours: ghostTotalHours },
+    scopeWorkDays,
+  };
 
   if (!isAdmin) {
     // Sanitize error message for non-admin
@@ -805,7 +860,6 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
           pauseReason: isPaused ? 'EXTERNAL_QUOTA' : null,
           isRetrying: job.status === 'FAILED_RETRYABLE' && job.retryCount < job.maxRetries,
           currentRepoName: job.order.currentRepoName,
-          orderStatus: job.order.status,
           clientEvents,
           eventCursor,
           leaderboard,
@@ -851,7 +905,6 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
         isPaused,
         pauseReason: isPaused ? 'EXTERNAL_QUOTA' : null,
         currentRepoName: job.order.currentRepoName,
-        orderStatus: job.order.status,
         log: logEntries,
         events: events.map((event) => ({
           id: event.id.toString(),
@@ -874,54 +927,58 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
   );
 ```
 
-For `scopeWorkDays` computation, add a helper above the return:
+Add the `computeScopeWorkDays` helper above the GET handler:
 
 ```typescript
-  // Compute scope work days from order date range or extract events
-  let scopeWorkDays = 0;
-  {
-    const order = await prisma.order.findUnique({
-      where: { id },
-      select: {
-        analysisPeriodMode: true,
-        analysisStartDate: true,
-        analysisEndDate: true,
-        availableStartDate: true,
-        availableEndDate: true,
-      },
+/** Count weekdays in analysis scope. For LAST_N, aggregates ALL extract events. */
+async function computeScopeWorkDays(orderId: string, jobId: string): Promise<number> {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      analysisPeriodMode: true,
+      analysisStartDate: true,
+      analysisEndDate: true,
+      availableStartDate: true,
+      availableEndDate: true,
+    },
+  });
+  if (!order) return 0;
+
+  let startDate: Date | null = null;
+  let endDate: Date | null = null;
+
+  if (order.analysisPeriodMode === 'DATE_RANGE') {
+    startDate = order.analysisStartDate;
+    endDate = order.analysisEndDate;
+  } else if (order.analysisPeriodMode === 'LAST_N_COMMITS') {
+    // Aggregate ALL REPO_EXTRACT_DONE events — min(earliest), max(latest)
+    const extractEvents = await prisma.analysisJobEvent.findMany({
+      where: { jobId, code: 'REPO_EXTRACT_DONE' },
+      select: { payload: true },
     });
-    if (order) {
-      let startDate: Date | null = null;
-      let endDate: Date | null = null;
-      if (order.analysisPeriodMode === 'DATE_RANGE') {
-        startDate = order.analysisStartDate;
-        endDate = order.analysisEndDate;
-      } else {
-        startDate = order.availableStartDate;
-        endDate = order.availableEndDate;
-      }
-      // For LAST_N: try to get dates from extract events
-      if (order.analysisPeriodMode === 'LAST_N_COMMITS') {
-        const extractEvent = await prisma.analysisJobEvent.findFirst({
-          where: { jobId: job.id, code: 'REPO_EXTRACT_DONE' },
-          orderBy: { id: 'desc' },
-          select: { payload: true },
-        });
-        const ep = asPayload(extractEvent?.payload);
-        if (ep.earliestDate) startDate = new Date(ep.earliestDate as string);
-        if (ep.latestDate) endDate = new Date(ep.latestDate as string);
-      }
-      if (startDate && endDate) {
-        // Count weekdays between dates
-        const d = new Date(startDate);
-        while (d <= endDate) {
-          const day = d.getDay();
-          if (day !== 0 && day !== 6) scopeWorkDays++;
-          d.setDate(d.getDate() + 1);
-        }
-      }
+    for (const evt of extractEvents) {
+      const ep = asPayload(evt.payload);
+      const earliest = ep.earliestDate ? new Date(ep.earliestDate as string) : null;
+      const latest = ep.latestDate ? new Date(ep.latestDate as string) : null;
+      if (earliest && (!startDate || earliest < startDate)) startDate = earliest;
+      if (latest && (!endDate || latest > endDate)) endDate = latest;
     }
+  } else {
+    startDate = order.availableStartDate;
+    endDate = order.availableEndDate;
   }
+
+  if (!startDate || !endDate) return 0;
+
+  let count = 0;
+  const d = new Date(startDate);
+  while (d <= endDate) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
+}
 ```
 
 Add the `asPayload` helper at the top of the file (or import from mapper):
@@ -1104,7 +1161,7 @@ describe('useDripFeed', () => {
         rawEvents: [],
         rawLeaderboard: emptyLeaderboard,
         pollIntervalMs: 1000,
-        orderStatus: 'PROCESSING',
+        jobStatus: 'RUNNING',
       }),
     );
     expect(result.current.visibleEvents).toEqual([]);
@@ -1123,7 +1180,7 @@ describe('useDripFeed', () => {
         rawEvents: events,
         rawLeaderboard: emptyLeaderboard,
         pollIntervalMs: 1000,
-        orderStatus: 'PROCESSING',
+        jobStatus: 'RUNNING',
       }),
     );
 
@@ -1136,7 +1193,7 @@ describe('useDripFeed', () => {
     expect(result.current.visibleEvents.length).toBeLessThanOrEqual(events.length);
   });
 
-  it('sets isDraining when orderStatus becomes COMPLETED', () => {
+  it('sets isDraining when jobStatus becomes a terminal state', () => {
     const events = [
       makeClientEvent(),
       makeClientEvent(),
@@ -1150,13 +1207,13 @@ describe('useDripFeed', () => {
           rawEvents: events,
           rawLeaderboard: emptyLeaderboard,
           pollIntervalMs: 1000,
-          orderStatus: status,
+          jobStatus: status,
         }),
-      { initialProps: { status: 'PROCESSING' } },
+      { initialProps: { status: 'RUNNING' } },
     );
 
-    // Switch to COMPLETED
-    rerender({ status: 'COMPLETED' });
+    // Switch to LLM_COMPLETE (terminal job status)
+    rerender({ status: 'LLM_COMPLETE' });
     expect(result.current.isDraining).toBe(true);
 
     // Advance time to drain
@@ -1184,7 +1241,7 @@ describe('useDripFeed', () => {
         rawEvents: events,
         rawLeaderboard: emptyLeaderboard,
         pollIntervalMs: 1000,
-        orderStatus: 'PROCESSING',
+        jobStatus: 'RUNNING',
       }),
     );
 
@@ -1224,16 +1281,16 @@ function baseDelayFor(tier: string): number {
   return min + Math.random() * (max - min);
 }
 
-// ── Terminal statuses that trigger draining ─────────────────────────
+// ── Terminal job statuses that trigger draining ─────────────────────
 const DRAIN_STATUSES = new Set([
-  'COMPLETED', 'FAILED', 'FAILED_FATAL', 'FAILED_RETRYABLE', 'CANCELLED',
+  'COMPLETED', 'LLM_COMPLETE', 'FAILED', 'FAILED_FATAL', 'FAILED_RETRYABLE', 'CANCELLED',
 ]);
 
 interface UseDripFeedOpts {
   rawEvents: ClientEvent[];
   rawLeaderboard: LeaderboardData;
   pollIntervalMs: number;
-  orderStatus: string;
+  jobStatus: string;  // job-level status (RUNNING, COMPLETED, FAILED_FATAL, etc.)
 }
 
 interface UseDripFeedResult {
@@ -1245,13 +1302,25 @@ interface UseDripFeedResult {
 }
 
 export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
-  const { rawEvents, rawLeaderboard, pollIntervalMs, orderStatus } = opts;
+  const { rawEvents, rawLeaderboard, pollIntervalMs, jobStatus } = opts;
 
   const [visibleEvents, setVisibleEvents] = useState<ClientEvent[]>([]);
   const [counters, setCounters] = useState({ commits: 0, files: 0, lines: 0 });
-  const [leaderboard, setLeaderboard] = useState<LeaderboardData>(rawLeaderboard);
   const [isDraining, setIsDraining] = useState(false);
   const [isDrained, setIsDrained] = useState(false);
+
+  // Per-event leaderboard accumulation (not snapshot replacement)
+  const dripDevMapRef = useRef(new Map<string, { name: string; totalHours: number; commitCount: number }>());
+  const drippedCommitsRef = useRef(0);
+  const [dripLeaderboard, setDripLeaderboard] = useState<LeaderboardData>({
+    developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0,
+  });
+
+  // Keep latest raw leaderboard for ghost proportional calculation and final snap
+  const rawLeaderboardRef = useRef(rawLeaderboard);
+  useEffect(() => {
+    rawLeaderboardRef.current = rawLeaderboard;
+  }, [rawLeaderboard]);
 
   const queueRef = useRef<ClientEvent[]>([]);
   const seenIdsRef = useRef(new Set<string>());
@@ -1277,19 +1346,13 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
     }
   }, [rawEvents]);
 
-  // Update leaderboard from raw data (but only applies when event drips)
-  const pendingLeaderboardRef = useRef<LeaderboardData>(rawLeaderboard);
+  // Detect drain trigger (uses job status, NOT order status)
   useEffect(() => {
-    pendingLeaderboardRef.current = rawLeaderboard;
-  }, [rawLeaderboard]);
-
-  // Detect drain trigger
-  useEffect(() => {
-    if (DRAIN_STATUSES.has(orderStatus) && !isDraining && !isDrained) {
+    if (DRAIN_STATUSES.has(jobStatus) && !isDraining && !isDrained) {
       setIsDraining(true);
       targetSpeedRef.current = 5.0; // fast-forward
     }
-  }, [orderStatus, isDraining, isDrained]);
+  }, [jobStatus, isDraining, isDrained]);
 
   // Compute adaptive pressure
   const getExpectedBatchSize = useCallback(() => {
@@ -1297,6 +1360,37 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
     if (sizes.length === 0) return 10;
     return sizes.reduce((a, b) => a + b, 0) / sizes.length;
   }, []);
+
+  // Recompute dripLeaderboard from internal dev map + proportional ghost
+  const emitLeaderboardUpdate = useCallback(() => {
+    const raw = rawLeaderboardRef.current;
+    const devMap = dripDevMapRef.current;
+    const developers = Array.from(devMap.entries()).map(([id, d]) => ({
+      id,
+      name: d.name,
+      totalHours: Math.round(d.totalHours * 100) / 100,
+      commitCount: d.commitCount,
+    }));
+
+    // Ghost proportional to drip progress: fraction of dripped dev hours vs raw total
+    const rawDevTotal = raw.developers.reduce((s, d) => s + d.totalHours, 0);
+    const dripDevTotal = developers.reduce((s, d) => s + d.totalHours, 0);
+    const fraction = rawDevTotal > 0 ? Math.min(1, dripDevTotal / rawDevTotal) : 0;
+    const ghostHours = Math.round(raw.ghost.totalHours * fraction * 100) / 100;
+
+    setDripLeaderboard({
+      developers,
+      ghost: { totalHours: ghostHours },
+      scopeWorkDays: raw.scopeWorkDays,
+    });
+  }, []);
+
+  // On drain complete, snap to raw leaderboard to close rounding gaps
+  useEffect(() => {
+    if (isDrained) {
+      setDripLeaderboard(rawLeaderboardRef.current);
+    }
+  }, [isDrained]);
 
   // Main drip loop
   useEffect(() => {
@@ -1346,9 +1440,22 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
         setCounters(prev => ({ ...prev, lines: prev.lines + lc }));
       }
 
-      // Sync leaderboard on commit events
+      // Per-event leaderboard accumulation (not snapshot replacement)
       if (event.developerId && event.effortHours != null) {
-        setLeaderboard(pendingLeaderboardRef.current);
+        const devMap = dripDevMapRef.current;
+        const existing = devMap.get(event.developerId);
+        if (existing) {
+          existing.totalHours += event.effortHours;
+          existing.commitCount += 1;
+        } else {
+          devMap.set(event.developerId, {
+            name: (event.params.developerName as string) ?? 'Developer',
+            totalHours: event.effortHours,
+            commitCount: 1,
+          });
+        }
+        drippedCommitsRef.current += 1;
+        emitLeaderboardUpdate();
       }
 
       // Schedule next tick with adaptive delay
@@ -1361,9 +1468,9 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isDraining, getExpectedBatchSize]);
+  }, [isDraining, getExpectedBatchSize, emitLeaderboardUpdate]);
 
-  return { visibleEvents, counters, leaderboard, isDraining, isDrained };
+  return { visibleEvents, counters, leaderboard: dripLeaderboard, isDraining, isDrained };
 }
 ```
 
@@ -1380,7 +1487,7 @@ git commit -m "feat: add useDripFeed hook with adaptive speed and drain state ma
 
 Buffers client events and emits them with tier-based delays.
 Adapts speed based on queue pressure with lerp transitions.
-Drives LIVE→DRAINING→DONE state machine from orderStatus."
+Drives LIVE→DRAINING→DONE state machine from jobStatus."
 ```
 
 ---
@@ -1572,12 +1679,11 @@ interface ClientAnalysisProgressProps {
     pauseReason: string | null;
     isRetrying: boolean;
     currentRepoName: string | null;
-    orderStatus: string;
     clientEvents: ClientEvent[];
     eventCursor: string | null;
     leaderboard: LeaderboardData;
   } | null;
-  orderStatus: string;
+  allClientEvents: ClientEvent[];  // cumulative events accumulated by page
   repoSizeMb?: number | null;
   isAdmin: boolean;
   onToggleView: () => void;
@@ -1592,7 +1698,7 @@ interface ClientAnalysisProgressProps {
 
 export function ClientAnalysisProgress({
   progress,
-  orderStatus,
+  allClientEvents,
   repoSizeMb,
   isAdmin,
   onToggleView,
@@ -1607,6 +1713,9 @@ export function ClientAnalysisProgress({
   const t = useTranslations('orders');
   const feedRef = useRef<HTMLDivElement>(null);
 
+  // Derive job status from progress (NOT order status — job has the terminal states)
+  const jobStatus = progress?.status ?? 'PENDING';
+
   const {
     visibleEvents,
     counters,
@@ -1614,10 +1723,10 @@ export function ClientAnalysisProgress({
     isDraining,
     isDrained,
   } = useDripFeed({
-    rawEvents: progress?.clientEvents ?? [],
+    rawEvents: allClientEvents,
     rawLeaderboard: progress?.leaderboard ?? { developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0 },
     pollIntervalMs: 1000,
-    orderStatus,
+    jobStatus,
   });
 
   // Notify parent of drain start
@@ -1637,7 +1746,7 @@ export function ClientAnalysisProgress({
     }
   }, [visibleEvents.length]);
 
-  const now = useNow(orderStatus === 'PROCESSING');
+  const now = useNow(jobStatus === 'RUNNING' || jobStatus === 'PENDING');
   const startedAt = progress?.startedAt ? new Date(progress.startedAt) : null;
   const elapsed = startedAt ? now - startedAt.getTime() : 0;
   const isPaused = progress?.isPaused ?? false;
@@ -1703,7 +1812,7 @@ export function ClientAnalysisProgress({
   }
 
   // ── Retrying state ─────────────────────────────────────────────
-  if (isRetrying && (orderStatus === 'FAILED_RETRYABLE' || orderStatus === 'FAILED')) {
+  if (isRetrying && (jobStatus === 'FAILED_RETRYABLE' || jobStatus === 'FAILED')) {
     return (
       <Card>
         <CardContent className="pt-6">
@@ -1717,7 +1826,7 @@ export function ClientAnalysisProgress({
   }
 
   // ── Failed state (after drain) ─────────────────────────────────
-  if (isDrained && (orderStatus === 'FAILED' || orderStatus === 'FAILED_FATAL')) {
+  if (isDrained && (jobStatus === 'FAILED' || jobStatus === 'FAILED_FATAL')) {
     return (
       <div className="space-y-4">
         <Card className="border-red-200">
@@ -1745,7 +1854,7 @@ export function ClientAnalysisProgress({
   }
 
   // ── Cancelled state (after drain) ──────────────────────────────
-  if (isDrained && orderStatus === 'CANCELLED') {
+  if (isDrained && jobStatus === 'CANCELLED') {
     return (
       <div className="space-y-4">
         <Card>
@@ -1897,6 +2006,25 @@ Inside the `OrderPage` component, after the existing state declarations (around 
 ```typescript
   const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>(isAdmin ? 'admin' : 'client');
   const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
+
+  // Cumulative client events — the API returns incremental batches, we accumulate here
+  const [allClientEvents, setAllClientEvents] = useState<ClientEvent[]>([]);
+  const clientEventSeenRef = useRef(new Set<string>());
+```
+
+In the progress polling `onSuccess` callback (where `jobEvents` are accumulated), add accumulation for client events:
+
+```typescript
+    // Accumulate client events (same pattern as jobEvents)
+    if (data.data.clientEvents?.length) {
+      setAllClientEvents(prev => {
+        const newEvents = data.data.clientEvents.filter(
+          (e: { id: string }) => !clientEventSeenRef.current.has(e.id)
+        );
+        for (const e of newEvents) clientEventSeenRef.current.add(e.id);
+        return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+      });
+    }
 ```
 
 - [ ] **Step 2: Modify the PROCESSING section render condition**
@@ -1920,7 +2048,7 @@ Inside the PROCESSING IIFE, before the existing `progress?.isPaused` ternary, ad
           return (
             <ClientAnalysisProgress
               progress={progress as Parameters<typeof ClientAnalysisProgress>[0]['progress']}
-              orderStatus={order.status}
+              allClientEvents={allClientEvents}
               repoSizeMb={repoSizeMb}
               isAdmin={isAdmin}
               onToggleView={() => setAdminViewMode('admin')}
