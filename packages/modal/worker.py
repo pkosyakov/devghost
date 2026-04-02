@@ -523,6 +523,8 @@ def run_analysis(job_id: str):
                         "commitCount": len(commits),
                         "durationSec": round(time.time() - extract_started, 2),
                         "adaptiveShallow": adaptive_meta,
+                        "earliestDate": commits[-1]["author_date"] if commits else None,
+                        "latestDate": commits[0]["author_date"] if commits else None,
                     },
                 )
             else:
@@ -570,6 +572,8 @@ def run_analysis(job_id: str):
                         "commitCount": len(commits),
                         "durationSec": round(time.time() - extract_started, 2),
                         **({"selectedYears": years} if years else {}),
+                        "earliestDate": commits[-1]["author_date"] if commits else None,
+                        "latestDate": commits[0]["author_date"] if commits else None,
                     },
                 )
 
@@ -1013,7 +1017,10 @@ def _process_repo_commits(
             phase="cache",
             code="REPO_FULLY_CACHED",
             repo_name=repo_full_name,
-            payload={"durationSec": round(time.time() - repo_started, 2)},
+            payload={
+                "commitCount": len(all_shas),
+                "durationSec": round(time.time() - repo_started, 2),
+            },
         )
         return total_analyzed, total_cache_hits, total_commit_plan
 
@@ -1050,6 +1057,7 @@ def _process_repo_commits(
     method_counts = {}
     error_samples = []
     saved_count = 0
+    total_hours = 0.0
     commit_lookup = {c["sha"]: c for c in commits}
 
     for chunk_index, start in enumerate(range(0, len(commits), chunk_size), start=1):
@@ -1114,6 +1122,10 @@ def _process_repo_commits(
         for result in chunk_results:
             method = result.get("method", "unknown")
             method_counts[method] = method_counts.get(method, 0) + 1
+            # Accumulate effort hours for REPO_PROCESS_DONE
+            est_h = result.get("estimated_hours")
+            if isinstance(est_h, (int, float)) and est_h > 0:
+                total_hours += est_h
             if method == "error" or result.get("error"):
                 error_samples.append({
                     "sha": result.get("sha"),
@@ -1214,6 +1226,7 @@ def _process_repo_commits(
         payload={
             "progress": progress_pct,
             "totalAnalyzed": total_analyzed,
+            "totalHours": round(total_hours, 2),
             "durationSec": round(time.time() - repo_started, 2),
         },
     )
@@ -1401,6 +1414,12 @@ def _emit_commit_live_results(
             "subject": str(commit.get("message") or "")[:140] or None,
             "llmCallCount": len(llm_calls),
             "durationMs": round(duration_ms, 1) if duration_ms is not None else None,
+            # Client event mapper fields:
+            "authorEmail": commit.get("author_email"),
+            "authorName": commit.get("author_name"),
+            "filesCount": commit.get("files_count"),
+            "additions": commit.get("additions"),
+            "deletions": commit.get("deletions"),
         }
         if commit_started_at_ms is not None:
             payload["commitStartedAtMs"] = commit_started_at_ms
