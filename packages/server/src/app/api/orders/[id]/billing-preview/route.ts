@@ -1,10 +1,8 @@
 import { NextRequest } from 'next/server';
-import prisma from '@/lib/db';
 import {
   apiResponse,
-  apiError,
-  requireUserSession,
-  isErrorResponse,
+  getOrderWithAuth,
+  orderAuthError,
 } from '@/lib/api-utils';
 import {
   computeBillingPreview,
@@ -42,13 +40,10 @@ export async function GET(
 ) {
   const { id } = await params;
 
-  const session = await requireUserSession();
-  if (isErrorResponse(session)) return session;
-
-  const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
+  const result = await getOrderWithAuth(id, {
     select: {
       id: true,
+      userId: true,
       selectedRepos: true,
       selectedDevelopers: true,
       excludedDevelopers: true,
@@ -59,10 +54,7 @@ export async function GET(
       analysisCommitLimit: true,
     },
   });
-
-  if (!order) {
-    return apiError('Order not found', 404);
-  }
+  if (!result.success) return orderAuthError(result);
 
   const { searchParams } = new URL(request.url);
 
@@ -77,10 +69,10 @@ export async function GET(
   const excludedParam = searchParams.get('excludedEmails');
   const excludedEmails: string[] = excludedParam
     ? excludedParam.split(',').map((e) => e.trim()).filter(Boolean)
-    : order.excludedDevelopers;
+    : result.order.excludedDevelopers;
 
   const periodModeParam = searchParams.get('analysisPeriodMode');
-  const scopeMode = periodModeParam ?? order.analysisPeriodMode;
+  const scopeMode = periodModeParam ?? result.order.analysisPeriodMode;
 
   const startDateParam = toDateOrNull(searchParams.get('analysisStartDate'));
   const endDateParam = toDateOrNull(searchParams.get('analysisEndDate'));
@@ -91,19 +83,19 @@ export async function GET(
 
   const scope: BillingPreviewScope = {
     mode: scopeMode as BillingPreviewScope['mode'],
-    years: yearsParam ?? order.analysisYears,
-    startDate: startDateParam ?? order.analysisStartDate,
-    endDate: endDateParam ?? order.analysisEndDate,
+    years: yearsParam ?? result.order.analysisYears,
+    startDate: startDateParam ?? result.order.analysisStartDate,
+    endDate: endDateParam ?? result.order.analysisEndDate,
     commitLimit: commitLimitParam !== null
       ? commitLimitParam
-      : order.analysisCommitLimit,
+      : result.order.analysisCommitLimit,
   };
 
   const input = {
-    userId: session.user.id,
-    orderId: order.id,
-    selectedRepos: order.selectedRepos as Array<Record<string, unknown>>,
-    selectedDevelopers: order.selectedDevelopers as Array<Record<string, unknown>>,
+    userId: result.order.userId,
+    orderId: result.order.id,
+    selectedRepos: result.order.selectedRepos as Array<Record<string, unknown>>,
+    selectedDevelopers: result.order.selectedDevelopers as Array<Record<string, unknown>>,
     excludedEmails,
     cacheMode,
     scope,
