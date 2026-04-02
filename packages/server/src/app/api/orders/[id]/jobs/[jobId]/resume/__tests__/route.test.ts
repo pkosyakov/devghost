@@ -5,7 +5,6 @@ const mockGetOrderWithAuth = vi.fn();
 const mockJobFindFirst = vi.fn();
 const mockJobUpdateMany = vi.fn();
 const mockOrderUpdateMany = vi.fn();
-const mockEventFindFirst = vi.fn();
 const mockAppendJobEvent = vi.fn();
 
 vi.mock('@/lib/db', () => ({
@@ -17,9 +16,6 @@ vi.mock('@/lib/db', () => ({
     },
     order: {
       updateMany: (...args: unknown[]) => mockOrderUpdateMany(...args),
-    },
-    analysisJobEvent: {
-      findFirst: (...args: unknown[]) => mockEventFindFirst(...args),
     },
   },
 }));
@@ -101,10 +97,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
       id: 'job-1',
       status: 'FAILED_RETRYABLE',
       executionMode: 'modal',
-    });
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-1',
-      code: 'FAILURE_CLASS_TRANSIENT',
+      failureClass: 'TRANSIENT',
     });
 
     const res = await POST(makeRequest(), params);
@@ -114,13 +107,13 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
     expect(mockJobUpdateMany).not.toHaveBeenCalled();
   });
 
-  it('returns 400 when no failure class event exists', async () => {
+  it('returns 400 when no failure class exists', async () => {
     mockJobFindFirst.mockResolvedValue({
       id: 'job-1',
       status: 'FAILED_RETRYABLE',
       executionMode: 'modal',
+      failureClass: null,
     });
-    mockEventFindFirst.mockResolvedValue(null);
 
     const res = await POST(makeRequest(), params);
     expect(res.status).toBe(400);
@@ -132,10 +125,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
       id: 'job-1',
       status: 'FAILED_RETRYABLE',
       executionMode: 'modal',
-    });
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-1',
-      code: 'FAILURE_CLASS_EXTERNAL_QUOTA',
+      failureClass: 'EXTERNAL_QUOTA',
     });
 
     const res = await POST(makeRequest(), params);
@@ -186,10 +176,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
       id: 'job-1',
       status: 'FAILED_RETRYABLE',
       executionMode: 'modal',
-    });
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-1',
-      code: 'FAILURE_CLASS_EXTERNAL_QUOTA',
+      failureClass: 'EXTERNAL_QUOTA',
     });
     mockJobUpdateMany.mockResolvedValue({ count: 0 });
 
@@ -225,10 +212,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
       id: 'job-1',
       status: 'FAILED_RETRYABLE',
       executionMode: 'modal',
-    });
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-1',
-      code: 'FAILURE_CLASS_EXTERNAL_QUOTA',
+      failureClass: 'EXTERNAL_QUOTA',
     });
 
     await POST(makeRequest(), params);

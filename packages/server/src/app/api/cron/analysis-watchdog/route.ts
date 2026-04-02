@@ -71,6 +71,9 @@ export async function GET(request: NextRequest) {
           status: 'FAILED_FATAL',
           error: `Heartbeat timeout after ${job.retryCount} retries`,
           completedAt: new Date(),
+          failureClass: 'TRANSIENT',
+          pausedAt: null,
+          pauseReason: null,
         },
       });
       await appendJobEvent({
@@ -89,6 +92,9 @@ export async function GET(request: NextRequest) {
         data: {
           status: 'FAILED_RETRYABLE',
           error: 'Heartbeat timeout',
+          failureClass: 'TRANSIENT',
+          pausedAt: null,
+          pauseReason: null,
         },
       });
       await appendJobEvent({
@@ -115,12 +121,8 @@ export async function GET(request: NextRequest) {
       return Response.json({ ok: true, processed, partial: true });
     }
 
-    // Check failure class from latest event
-    const latestFailureEvent = await prisma.analysisJobEvent.findFirst({
-      where: { jobId: job.id, code: { startsWith: 'FAILURE_CLASS_' } },
-      orderBy: { id: 'desc' },
-    });
-    const failureClass = latestFailureEvent?.code?.replace('FAILURE_CLASS_', '') ?? 'UNKNOWN';
+    // Read failure class from typed field (set by worker or watchdog reaper)
+    const failureClass = job.failureClass ?? 'UNKNOWN';
 
     if (failureClass === 'EXTERNAL_QUOTA') {
       log.debug({ jobId: job.id, failureClass }, 'Retry skipped: EXTERNAL_QUOTA (awaiting user resume)');
@@ -136,6 +138,9 @@ export async function GET(request: NextRequest) {
         heartbeatAt: null,
         modalCallId: null,
         error: null,
+        failureClass: null,
+        pausedAt: null,
+        pauseReason: null,
       },
     });
     await appendJobEvent({
@@ -361,7 +366,13 @@ export async function GET(request: NextRequest) {
       });
       await prisma.analysisJob.update({
         where: { id: job.id },
-        data: { status: 'FAILED_FATAL', error: `Post-processing: ${String(err).slice(0, 500)}` },
+        data: {
+          status: 'FAILED_FATAL',
+          error: `Post-processing: ${String(err).slice(0, 500)}`,
+          failureClass: 'CONFIG_FATAL',
+          pausedAt: null,
+          pauseReason: null,
+        },
       });
       await handleJobFailure(job);
     }

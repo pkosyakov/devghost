@@ -615,6 +615,11 @@ model AnalysisJob {
   skipBilling         Boolean   @default(false)   // true for ADMINs or billing disabled
   forceRecalculate    Boolean   @default(false)   // true = delete existing CommitAnalysis before re-analyzing
 
+  // Failure classification (Phase 3: typed fields, replaces event-query pattern)
+  failureClass        String?              // "TRANSIENT" | "EXTERNAL_QUOTA" | "CONFIG_FATAL"
+  pausedAt            DateTime?            // Set when job enters quota-paused state
+  pauseReason         String?              // e.g. "LLM provider quota or rate limit exceeded"
+
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
 

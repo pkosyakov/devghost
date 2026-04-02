@@ -18,8 +18,6 @@ const mockTransaction = vi.fn();
 const mockCalculateAndSaveBatch = vi.fn();
 const mockSystemSettingsUpsert = vi.fn();
 const mockAppendJobEvent = vi.fn();
-const mockEventFindFirst = vi.fn();
-
 vi.mock('@/lib/db', () => ({
   default: {
     analysisJob: {
@@ -36,7 +34,6 @@ vi.mock('@/lib/db', () => ({
     dailyEffort: { deleteMany: (...a: unknown[]) => mockDailyEffortDeleteMany(...a) },
     commitAnalysis: { count: (...a: unknown[]) => mockCommitAnalysisCount(...a) },
     systemSettings: { upsert: (...a: unknown[]) => mockSystemSettingsUpsert(...a) },
-    analysisJobEvent: { findFirst: (...a: unknown[]) => mockEventFindFirst(...a) },
     $executeRaw: (...a: unknown[]) => mockExecuteRaw(...a),
     $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
     $transaction: (...a: unknown[]) => mockTransaction(...a),
@@ -106,7 +103,6 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockSystemSettingsUpsert.mockResolvedValue({});
     mockJobUpdateMany.mockResolvedValue({ count: 1 });
     mockAppendJobEvent.mockResolvedValue(undefined);
-    mockEventFindFirst.mockResolvedValue(null);
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
     mockCalculateAndSaveBatch.mockResolvedValue({
       metrics: [],
@@ -525,6 +521,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
       executionMode: 'modal',
       retryCount: 1,
       maxRetries: 3,
+      failureClass: 'EXTERNAL_QUOTA',
     };
 
     mockJobFindMany
@@ -532,11 +529,6 @@ describe('GET /api/cron/analysis-watchdog', () => {
       .mockResolvedValueOnce([quotaJob])    // retryable
       .mockResolvedValueOnce([])            // orphans
       .mockResolvedValueOnce([]);           // stale placeholders
-
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-1',
-      code: 'FAILURE_CLASS_EXTERNAL_QUOTA',
-    });
 
     const res = await GET(makeRequest('test-cron-secret'));
     const json = await res.json();
@@ -567,6 +559,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
       executionMode: 'modal',
       retryCount: 0,
       maxRetries: 3,
+      failureClass: 'TRANSIENT',
     };
 
     mockJobFindMany
@@ -574,11 +567,6 @@ describe('GET /api/cron/analysis-watchdog', () => {
       .mockResolvedValueOnce([transientJob])     // retryable
       .mockResolvedValueOnce([])                 // orphans
       .mockResolvedValueOnce([]);                // stale placeholders
-
-    mockEventFindFirst.mockResolvedValue({
-      id: 'evt-2',
-      code: 'FAILURE_CLASS_TRANSIENT',
-    });
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -612,6 +600,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
       executionMode: 'modal',
       retryCount: 0,
       maxRetries: 3,
+      failureClass: null,
     };
 
     mockJobFindMany
@@ -619,9 +608,6 @@ describe('GET /api/cron/analysis-watchdog', () => {
       .mockResolvedValueOnce([unknownJob])     // retryable
       .mockResolvedValueOnce([])               // orphans
       .mockResolvedValueOnce([]);              // stale placeholders
-
-    // No failure class event
-    mockEventFindFirst.mockResolvedValue(null);
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,

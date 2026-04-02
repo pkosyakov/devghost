@@ -56,7 +56,7 @@ from db import (
     load_demo_live_settings,
     get_existing_shas, get_base_commit_shas, lookup_cached_commits, copy_cached_to_order,
     save_commit_analyses, update_progress, update_heartbeat,
-    set_job_status, set_job_error, set_total_commits,
+    set_job_status, set_job_error, set_total_commits, set_job_llm_identity,
     is_job_cancelled,
     update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
     delete_benchmark_analyses,
@@ -349,6 +349,12 @@ def run_analysis(job_id: str):
             llm_config.get("openrouter", {}).get("model")
             if llm_config.get("provider") == "openrouter"
             else llm_config.get("ollama", {}).get("model")
+        )
+        set_job_llm_identity(
+            conn,
+            job_id,
+            llm_config.get("provider"),
+            current_llm_model,
         )
         append_job_event(
             conn,
@@ -737,6 +743,11 @@ def run_analysis(job_id: str):
         # Three-class failure taxonomy
         failure_class = classify_failure(error_msg, error_type)
         is_fatal = failure_class == FAILURE_CONFIG_FATAL
+        pause_reason = (
+            "LLM provider quota or rate limit exceeded"
+            if failure_class == FAILURE_EXTERNAL_QUOTA
+            else None
+        )
 
         append_job_event(
             conn,
@@ -830,12 +841,16 @@ def run_analysis(job_id: str):
         # so watchdog gets error context instead of a silent stale heartbeat.
         try:
             set_job_error(conn, job_id, error_msg, fatal=is_fatal,
-                          skip_order_update=is_benchmark)
+                          skip_order_update=is_benchmark,
+                          failure_class=failure_class,
+                          pause_reason=pause_reason)
         except Exception:
             try:
                 fresh_conn = connect_db()
                 set_job_error(fresh_conn, job_id, error_msg, fatal=is_fatal,
-                              skip_order_update=is_benchmark)
+                              skip_order_update=is_benchmark,
+                              failure_class=failure_class,
+                              pause_reason=pause_reason)
                 fresh_conn.close()
             except Exception:
                 pass  # Watchdog will catch this via stale heartbeat

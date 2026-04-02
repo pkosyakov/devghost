@@ -23,7 +23,7 @@ export async function POST(
   // 2. Find the job
   const job = await prisma.analysisJob.findFirst({
     where: { id: jobId, orderId: id },
-    select: { id: true, status: true, executionMode: true },
+    select: { id: true, status: true, executionMode: true, failureClass: true },
   });
   if (!job) return apiError('Job not found', 404);
 
@@ -36,11 +36,7 @@ export async function POST(
   }
 
   // 4. Validate failure class: only EXTERNAL_QUOTA jobs can be resumed
-  const latestFailureEvent = await prisma.analysisJobEvent.findFirst({
-    where: { jobId, code: { startsWith: 'FAILURE_CLASS_' } },
-    orderBy: { id: 'desc' },
-  });
-  const failureClass = latestFailureEvent?.code?.replace('FAILURE_CLASS_', '') ?? 'UNKNOWN';
+  const failureClass = job.failureClass ?? 'UNKNOWN';
 
   if (failureClass !== 'EXTERNAL_QUOTA') {
     return apiError('Only quota-paused jobs can be resumed', 400);
@@ -68,6 +64,9 @@ export async function POST(
       lockedBy: null,
       heartbeatAt: null,
       modalCallId: null,
+      failureClass: null,
+      pausedAt: null,
+      pauseReason: null,
       updatedAt: new Date(),
     },
   });

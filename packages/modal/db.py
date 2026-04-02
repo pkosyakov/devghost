@@ -620,20 +620,40 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
     conn.commit()
 
 
+def set_job_llm_identity(conn, job_id: str, provider: str | None, model: str | None):
+    """Persist effective LLM identity on the job for progress/audit surfaces."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE "AnalysisJob"
+            SET "llmProvider" = %s,
+                "llmModel" = %s,
+                "updatedAt" = NOW()
+            WHERE id = %s
+            """,
+            (provider, model, job_id),
+        )
+    conn.commit()
+
+
 def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False,
-                  skip_order_update: bool = False):
+                  skip_order_update: bool = False,
+                  failure_class: str | None = None,
+                  pause_reason: str | None = None):
     """Mark job as failed (retryable or fatal).
 
     When skip_order_update is True (benchmarks), the Order status is NOT set to FAILED.
     Benchmark failures should not affect the underlying order.
     """
     status = "FAILED_FATAL" if fatal else "FAILED_RETRYABLE"
+    paused_at = "NOW()" if failure_class == "EXTERNAL_QUOTA" else "NULL"
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             UPDATE "AnalysisJob"
-            SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW()
+            SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW(),
+                "failureClass" = %s, "pausedAt" = {paused_at}, "pauseReason" = %s
             WHERE id = %s
-        """, (status, error_msg[:2000], job_id))  # Truncate error to avoid DB overflow
+        """, (status, error_msg[:2000], failure_class, pause_reason, job_id))
         if fatal and not skip_order_update:
             cur.execute(
                 """
