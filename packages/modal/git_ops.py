@@ -91,9 +91,13 @@ def clone_or_update(
 
         needs_unshallow = is_shallow and not shallow_date
         if needs_unshallow:
-            # ALL_TIME / LAST_N on a previously shallow clone — restore full history
+            # ALL_TIME / LAST_N on a previously shallow clone — restore full history.
+            # CRITICAL: strip --filter=blob:none when unshallowing — the combination
+            # causes incomplete history on some git server implementations (GitHub
+            # protocol v2), resulting in fewer commits than expected.
+            fetch_args = [a for a in fetch_args if a != "--filter=blob:none"]
             fetch_args.insert(1, "--unshallow")
-            logger.info("Unshallowing existing clone for %s — filter fallback will download full blobs if server rejects --filter", full_name)
+            logger.info("Unshallowing existing clone for %s (filter stripped for full history)", full_name)
         elif shallow_date:
             fetch_args.insert(1, f"--shallow-since={shallow_date}")
 
@@ -118,6 +122,15 @@ def clone_or_update(
             else:
                 raise
         _run_git(["reset", "--hard", f"origin/{default_branch}"], cwd=repo_path, env=env)
+
+        # Diagnostic: verify unshallow worked
+        still_shallow = _is_shallow(repo_path)
+        try:
+            count_result = _run_git(["rev-list", "--count", "--no-merges", "HEAD"], cwd=repo_path, timeout=60)
+            commit_count = int(count_result.stdout.strip())
+        except Exception:
+            commit_count = -1
+        logger.info("Post-fetch state for %s: shallow=%s, non-merge commits=%d", full_name, still_shallow, commit_count)
     else:
         # Fresh clone
         os.makedirs(os.path.dirname(repo_path), exist_ok=True)

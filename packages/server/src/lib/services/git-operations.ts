@@ -195,9 +195,14 @@ export async function cloneOrUpdateRepo(
 
       const needsUnshallow = isShallow && !shallowDate;
       if (needsUnshallow) {
-        // ALL_TIME / LAST_N on a previously shallow clone — restore full history
+        // ALL_TIME / LAST_N on a previously shallow clone — restore full history.
+        // CRITICAL: strip --filter=blob:none when unshallowing — the combination
+        // causes incomplete history on some git server implementations (GitHub
+        // protocol v2), resulting in fewer commits than expected.
+        const filterIdx = fetchArgs.indexOf('--filter=blob:none');
+        if (filterIdx !== -1) fetchArgs.splice(filterIdx, 1);
         fetchArgs.splice(1, 0, '--unshallow');
-        gitLogger.info({ repoPath }, 'Unshallowing existing clone for full history — filter fallback will download full blobs if server rejects --filter');
+        gitLogger.info({ repoPath }, 'Unshallowing existing clone (filter stripped for full history)');
       } else if (shallowDate) {
         fetchArgs.splice(1, 0, `--shallow-since=${shallowDate}`);
       }
