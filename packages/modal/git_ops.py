@@ -7,11 +7,14 @@ Key differences from TypeScript version:
 - Uses subprocess instead of child_process
 - CVE-2024-32002 mitigation: core.symlinks=false in clone args
 """
+import logging
 import os
 import re
 import subprocess
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urlunparse
+
+logger = logging.getLogger(__name__)
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -78,17 +81,42 @@ def clone_or_update(
         _run_git(["remote", "set-url", "origin", auth_url], cwd=repo_path, env=env)
         # SECURITY: disable push to prevent any accidental writes to client repos
         _run_git(["remote", "set-url", "--push", "origin", "DISABLED"], cwd=repo_path, env=env)
+
+        # Detect stale shallow clone from a previous DATE_RANGE analysis
+        is_shallow = _is_shallow(repo_path)
+
         fetch_args = ["fetch", "--prune", "--no-tags", "origin"]
         if GIT_PARTIAL_CLONE:
             fetch_args.insert(1, "--filter=blob:none")
-        if shallow_date:
+
+        needs_unshallow = is_shallow and not shallow_date
+        if needs_unshallow:
+            # ALL_TIME / LAST_N on a previously shallow clone — restore full history
+            fetch_args.insert(1, "--unshallow")
+            logger.info("Unshallowing existing clone for %s — filter fallback will download full blobs if server rejects --filter", full_name)
+        elif shallow_date:
             fetch_args.insert(1, f"--shallow-since={shallow_date}")
-        _run_git_with_partial_clone_fallback(
-            fetch_args,
-            cwd=repo_path,
-            env=env,
-            timeout=GIT_FETCH_TIMEOUT_SEC,
-        )
+
+        try:
+            _run_git_with_partial_clone_fallback(
+                fetch_args,
+                cwd=repo_path,
+                env=env,
+                timeout=GIT_FETCH_TIMEOUT_SEC,
+            )
+        except RuntimeError as err:
+            # TOCTOU: repo may have been unshallowed between check and fetch
+            if needs_unshallow and "does not make sense" in str(err):
+                logger.info("Repo already unshallowed for %s, retrying fetch without --unshallow", full_name)
+                retry_args = [a for a in fetch_args if a != "--unshallow"]
+                _run_git_with_partial_clone_fallback(
+                    retry_args,
+                    cwd=repo_path,
+                    env=env,
+                    timeout=GIT_FETCH_TIMEOUT_SEC,
+                )
+            else:
+                raise
         _run_git(["reset", "--hard", f"origin/{default_branch}"], cwd=repo_path, env=env)
     else:
         # Fresh clone
@@ -243,6 +271,19 @@ def _run_git(args: list[str], cwd: str | None = None, env: dict | None = None, t
         safe_stderr = re.sub(r"x-access-token:[^@]+@", "x-access-token:***@", result.stderr)
         raise RuntimeError(f"git {args[0]} failed: {safe_stderr.strip()}")
     return result
+
+
+def _is_shallow(repo_path: str) -> bool:
+    """Check if a git repository is a shallow clone."""
+    try:
+        result = _run_git(
+            ["rev-parse", "--is-shallow-repository"],
+            cwd=repo_path,
+            timeout=10,
+        )
+        return result.stdout.strip() == "true"
+    except Exception:
+        return False
 
 
 def _run_git_with_partial_clone_fallback(

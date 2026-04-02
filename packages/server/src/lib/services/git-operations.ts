@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import path from 'path';
 import fs from 'fs/promises';
 import os from 'os';
+import { gitLogger } from '@/lib/logger';
 
 const execFileAsync = promisify(execFile);
 
@@ -105,6 +106,18 @@ async function execGitWithFilterFallback(
   }
 }
 
+async function isShallowRepo(repoPath: string): Promise<boolean> {
+  try {
+    const { stdout } = await execGit(
+      ['rev-parse', '--is-shallow-repository'],
+      { cwd: repoPath, timeout: 10_000 },
+    );
+    return stdout.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 async function isValidGitRepo(dirPath: string): Promise<boolean> {
   try {
     await fs.access(path.join(dirPath, '.git'));
@@ -174,10 +187,33 @@ export async function cloneOrUpdateRepo(
       // SECURITY: disable push to prevent any accidental writes to client repos
       await execGit(['remote', 'set-url', '--push', 'origin', 'DISABLED'], { cwd: repoPath, env: gitEnv });
 
+      // Detect stale shallow clone from a previous DATE_RANGE analysis
+      const isShallow = await isShallowRepo(repoPath);
+
       const fetchArgs = ['fetch', '--prune', '--no-tags', 'origin'];
       if (GIT_PARTIAL_CLONE) fetchArgs.splice(1, 0, '--filter=blob:none');
-      if (shallowDate) fetchArgs.splice(1, 0, `--shallow-since=${shallowDate}`);
-      await execGitWithFilterFallback(fetchArgs, { cwd: repoPath, env: gitEnv, timeout: GIT_FETCH_TIMEOUT_MS });
+
+      const needsUnshallow = isShallow && !shallowDate;
+      if (needsUnshallow) {
+        // ALL_TIME / LAST_N on a previously shallow clone — restore full history
+        fetchArgs.splice(1, 0, '--unshallow');
+        gitLogger.info({ repoPath }, 'Unshallowing existing clone for full history — filter fallback will download full blobs if server rejects --filter');
+      } else if (shallowDate) {
+        fetchArgs.splice(1, 0, `--shallow-since=${shallowDate}`);
+      }
+
+      try {
+        await execGitWithFilterFallback(fetchArgs, { cwd: repoPath, env: gitEnv, timeout: GIT_FETCH_TIMEOUT_MS });
+      } catch (error) {
+        // TOCTOU: repo may have been unshallowed between check and fetch
+        if (needsUnshallow && String(error).includes('does not make sense')) {
+          gitLogger.info({ repoPath }, 'Repo already unshallowed, retrying fetch without --unshallow');
+          const retryArgs = fetchArgs.filter(a => a !== '--unshallow');
+          await execGitWithFilterFallback(retryArgs, { cwd: repoPath, env: gitEnv, timeout: GIT_FETCH_TIMEOUT_MS });
+        } else {
+          throw error;
+        }
+      }
 
       await execGit(['reset', '--hard', `origin/${branch}`], { cwd: repoPath, env: gitEnv });
 
