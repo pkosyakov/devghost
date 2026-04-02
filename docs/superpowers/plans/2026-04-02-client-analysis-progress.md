@@ -708,7 +708,7 @@ describe('role-based response filtering', () => {
     mockEventFindMany.mockResolvedValue([]);
     mockGetPipelineLogs.mockReturnValue([]);
     mockGetJobMeta.mockReturnValue(null);
-    mockEventFindFirst.mockResolvedValue(null);
+
 
     mockMapToClientEvents.mockReturnValue([
       { id: 'ce-1', ts: 1000, tier: 'major', category: 'commit',
@@ -746,7 +746,7 @@ describe('role-based response filtering', () => {
     mockEventFindMany.mockResolvedValue([]);
     mockGetPipelineLogs.mockReturnValue([]);
     mockGetJobMeta.mockReturnValue(null);
-    mockEventFindFirst.mockResolvedValue(null);
+
 
     const res = await GET(makeRequest(), { params: Promise.resolve({ id: 'order-1' }) });
     const json = await res.json();
@@ -798,8 +798,10 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
 
   // ── Cumulative leaderboard from CommitAnalysis (always accurate) ──
   // Queried from DB so it's independent of sinceEventId pagination.
+  // Group by authorEmail only — authorName can vary across commits for one person.
+  // Pick the most-recent name via a separate query (groupBy can't do that).
   const devAggRows = await prisma.commitAnalysis.groupBy({
-    by: ['authorEmail', 'authorName'],
+    by: ['authorEmail'],
     where: {
       orderId: id,
       jobId: null,          // exclude benchmark rows (codebase convention)
@@ -809,13 +811,29 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
     _count: { _all: true },
   });
 
+  // Resolve display name per email (latest commit wins)
+  const devNameRows = devAggRows.length > 0
+    ? await prisma.commitAnalysis.findMany({
+        where: {
+          orderId: id,
+          jobId: null,
+          authorEmail: { in: devAggRows.map(r => r.authorEmail) },
+        },
+        select: { authorEmail: true, authorName: true, authorDate: true },
+        orderBy: { authorDate: 'desc' },
+        distinct: ['authorEmail'],
+      })
+    : [];
+  const emailToName = new Map(devNameRows.map(r => [r.authorEmail, r.authorName]));
+
   const isAdmin = session.user.role === 'ADMIN';
 
   const leaderboardDevs = devAggRows.map(row => {
     const devId = hashEmail(row.authorEmail);
+    const displayName = emailToName.get(row.authorEmail) ?? row.authorEmail.split('@')[0];
     return {
       id: devId,
-      name: isAdmin ? row.authorName : (devNames.get(devId) ?? row.authorName.split(' ')[0]),
+      name: isAdmin ? displayName : (devNames.get(devId) ?? displayName.split(' ')[0]),
       totalHours: Math.round((row._sum.effortHours?.toNumber() ?? 0) * 100) / 100,
       commitCount: row._count._all,
     };
@@ -1844,10 +1862,17 @@ export function ClientAnalysisProgress({
     );
   }
 
-  // ── Failed state (after drain) ─────────────────────────────────
-  if (isDrained && (jobStatus === 'FAILED' || jobStatus === 'FAILED_FATAL')) {
-    return (
-      <div className="space-y-4">
+  // ── Terminal banner (inline, NOT early return — feed + leaderboard stay visible per spec) ──
+  const isTerminalFailed = isDrained && (jobStatus === 'FAILED' || jobStatus === 'FAILED_FATAL');
+  const isTerminalCancelled = isDrained && jobStatus === 'CANCELLED';
+
+  // ── Main live/draining/terminal view ───────────────────────────
+  const currentPhase = progress?.currentStep ?? t('detail.preparing');
+
+  return (
+    <div className="space-y-4">
+      {/* Terminal banner — shown inline above the feed, not as early return */}
+      {isTerminalFailed && (
         <Card className="border-red-200">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-red-600 mb-2">
@@ -1861,21 +1886,8 @@ export function ClientAnalysisProgress({
             </Button>
           </CardContent>
         </Card>
-        {leaderboard.developers.length > 0 && (
-          <Card>
-            <CardContent className="pt-6">
-              <LeaderboardRace data={leaderboard} t={t} />
-            </CardContent>
-          </Card>
-        )}
-      </div>
-    );
-  }
-
-  // ── Cancelled state (after drain) ──────────────────────────────
-  if (isDrained && jobStatus === 'CANCELLED') {
-    return (
-      <div className="space-y-4">
+      )}
+      {isTerminalCancelled && (
         <Card>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 mb-2">
@@ -1888,16 +1900,10 @@ export function ClientAnalysisProgress({
             </Button>
           </CardContent>
         </Card>
-      </div>
-    );
-  }
+      )}
 
-  // ── Main live/draining view ────────────────────────────────────
-  const currentPhase = progress?.currentStep ?? t('detail.preparing');
-
-  return (
-    <div className="space-y-4">
-      {/* Dashboard header */}
+      {/* Dashboard header — hidden after terminal drain */}
+      {!isTerminalFailed && !isTerminalCancelled && (
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
@@ -1954,8 +1960,9 @@ export function ClientAnalysisProgress({
           </div>
         </CardContent>
       </Card>
+      )}
 
-      {/* Event feed */}
+      {/* Event feed — stays visible in terminal states per spec */}
       <Card>
         <CardContent className="pt-4">
           <div
@@ -2057,6 +2064,18 @@ Inside the `OrderPage` component, after the existing state declarations (around 
   const clientEventSeenRef = useRef(new Set<string>());
 ```
 
+**Update the progress query `enabled` and `refetchInterval`** (around line 420) to keep polling alive during client-view drain. The cancel API atomically sets order to READY_FOR_ANALYSIS while job goes CANCELLED; without this, polling dies before the client ever sees the terminal job status:
+
+```typescript
+    enabled:
+      ((order?.status === 'PROCESSING' || order?.status === 'COMPLETED') &&
+       !(analysisStarted && order?.status !== 'PROCESSING'))
+      // Keep alive during client-view drain (order may have left PROCESSING)
+      || (clientProgressState === 'draining' && !!analysisJobId),
+    refetchInterval:
+      (order?.status === 'PROCESSING' || clientProgressState === 'draining') ? livePollMs : false,
+```
+
 Inside the progress query `queryFn` (around line 379), after the existing `jobEvents` accumulation block (`if (data?.events?.length) { ... }`) and before `return data;`, add client event accumulation. Note: `fetchProgress()` returns `json.data` (not the raw envelope), so fields are accessed directly on `data`:
 
 ```typescript
@@ -2130,7 +2149,27 @@ In the existing admin Card header (around line 1412), add a toggle button next t
                 )}
 ```
 
-- [ ] **Step 5: Reset clientProgressState when analysis restarts**
+- [ ] **Step 5: Trigger drain from cancel mutation `onSuccess`**
+
+The cancel API atomically sets both `job.status = CANCELLED` and `order.status = READY_FOR_ANALYSIS`. The order query can refetch first and disable progress polling before the client ever sees CANCELLED. Fix: immediately transition to draining in the cancel mutation's `onSuccess` so the extended `enabled` condition keeps polling alive.
+
+In the `cancelJobMutation.onSuccess` (around line 595), add before the existing `queryClient.invalidateQueries` calls:
+
+```typescript
+    onSuccess: (_data, jobId) => {
+      // Trigger drain BEFORE order query refetch disables progress polling.
+      // The extended enabled condition keeps polling alive during 'draining'.
+      if (jobId === analysisJobId && clientProgressState === 'processing') {
+        setClientProgressState('draining');
+      }
+      // If this was the primary analysis job, reset state
+      if (jobId === analysisJobId) {
+        setAnalysisJobId(null);
+      }
+      // ... rest of existing onSuccess unchanged ...
+```
+
+- [ ] **Step 6: Reset clientProgressState when analysis restarts**
 
 In the `prepareAnalysisLaunch` callback (around line 475), add:
 
