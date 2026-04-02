@@ -393,7 +393,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       if (data?.log?.length) {
         if (since) {
           // Incremental update (PROCESSING polling): append new entries
-          setPipelineLog(prev => [...prev, ...data.log]);
+          setPipelineLog(prev => [...prev, ...data.log!]);
         } else {
           // Full log (first load or COMPLETED): replace entirely
           setPipelineLog(data.log);
@@ -404,7 +404,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         if (sinceEventId) {
           setJobEvents((prev) => {
             const merged = new Map(prev.map((event) => [event.id, event]));
-            for (const event of data.events) {
+            for (const event of data.events!) {
               merged.set(event.id, event);
             }
             return Array.from(merged.values()).sort((a, b) => {
@@ -679,7 +679,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       const data = json.data as AnalysisProgressData | null;
       if (data?.log?.length) {
         if (benchmarkLogSinceRef.current) {
-          setBenchmarkLog(prev => [...prev, ...data.log]);
+          setBenchmarkLog(prev => [...prev, ...data.log!]);
         } else {
           setBenchmarkLog(data.log);
         }
@@ -689,7 +689,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         if (benchmarkEventCursorRef.current) {
           setBenchmarkEvents((prev) => {
             const merged = new Map(prev.map((e) => [e.id, e]));
-            for (const event of data.events) merged.set(event.id, event);
+            for (const event of data.events!) merged.set(event.id, event);
             return Array.from(merged.values()).sort((a, b) => {
               const aId = BigInt(a.id);
               const bId = BigInt(b.id);
