@@ -218,10 +218,44 @@ function tick() {
     const batch = queue.splice(0, batchSize);
     const batchEvents = batch.map(it => it.event);
 
+    // Single state update for visible events
     setVisibleEvents(prev => [...prev, ...batchEvents]);
 
+    // Accumulate counter deltas across the batch, then one setState
+    let dCommits = 0, dFiles = 0, dLines = 0;
     for (const { event } of batch) {
-      // ... counter + leaderboard accumulation per event ...
+      if (event.text === 'clientProgress.commitAnalyzed') dCommits++;
+      if (event.text === 'clientProgress.filesChanged') {
+        dFiles += typeof event.params.fileCount === 'number' ? event.params.fileCount : 0;
+      }
+      if (event.text === 'clientProgress.linesChanged') {
+        dLines += typeof event.params.lineCount === 'number' ? event.params.lineCount : 0;
+      }
+      // Leaderboard: mutate dripDevMapRef in-place (cheap, no React state)
+      if (event.developerId && event.effortHours != null) {
+        const existing = dripDevMapRef.current.get(event.developerId);
+        if (existing) {
+          existing.totalHours += event.effortHours;
+          existing.commitCount += 1;
+        } else {
+          dripDevMapRef.current.set(event.developerId, {
+            name: (event.params.developerName as string) ?? 'Developer',
+            totalHours: event.effortHours,
+            commitCount: 1,
+          });
+        }
+      }
+    }
+    if (dCommits || dFiles || dLines) {
+      setCounters(prev => ({
+        commits: prev.commits + dCommits,
+        files: prev.files + dFiles,
+        lines: prev.lines + dLines,
+      }));
+    }
+    // One leaderboard emit for the whole batch
+    if (batch.some(({ event }) => event.developerId && event.effortHours != null)) {
+      emitLeaderboardUpdate();
     }
 
     timerRef.current = setTimeout(tick, HARD_FLOOR);
@@ -261,7 +295,7 @@ When `isDraining` is set (terminal job status), the tick divides each event's pr
 - First fetch can return hundreds of events, no prior measurement
 - Budget = defaultIntervalMs × 1.2 (e.g., 1200ms for normal, 360ms for admin demo)
 - With 100+ events the overload path activates: delays are scaled down
-- If extreme (500+ events), catch-up stamps everything at HARD_FLOOR
+- If extreme (500+ events), catch-up batch emit flushes groups per tick
 - The initial burst plays fast — correct UX for page load
 
 **Pause (EXTERNAL_QUOTA):**
