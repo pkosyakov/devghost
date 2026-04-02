@@ -154,7 +154,7 @@ _FATAL_KEYWORDS = [
 
 # HTTP status codes matched with word boundaries to avoid port-number false positives
 _TRANSIENT_HTTP_RE = re.compile(r'\b(502|503|504)\b')
-_QUOTA_HTTP_RE = re.compile(r'\b(402|403|429)\b')
+_QUOTA_HTTP_RE = re.compile(r'\b(402|429)\b')
 
 
 def classify_failure(error_msg: str, error_type: str = "") -> str:
@@ -350,11 +350,19 @@ def run_analysis(job_id: str):
             if llm_config.get("provider") == "openrouter"
             else llm_config.get("ollama", {}).get("model")
         )
+        fd_v3_enabled = llm_config.get("fdV3Enabled")
+        if isinstance(fd_v3_enabled, str):
+            fd_v3_enabled = fd_v3_enabled.strip().lower() in {"1", "true", "yes"}
+        elif not isinstance(fd_v3_enabled, bool):
+            fd_v3_enabled = None
         set_job_llm_identity(
             conn,
             job_id,
             llm_config.get("provider"),
             current_llm_model,
+            fd_v3_enabled,
+            llm_config.get("fdLargeProvider"),
+            llm_config.get("fdLargeModel"),
         )
         append_job_event(
             conn,

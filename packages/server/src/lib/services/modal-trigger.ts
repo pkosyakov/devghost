@@ -7,9 +7,10 @@ const log = analysisLogger.child({ component: 'modal-trigger' });
 
 /**
  * Trigger Modal webhook for a job. Returns true on success.
- * On success, replaces any existing modalCallId with the real call ID from Modal.
+ * When expectedClaimId is provided, uses CAS to ensure we still own the claim
+ * before writing the real modalCallId (prevents late-response overwrites).
  */
-export async function triggerModal(jobId: string): Promise<boolean> {
+export async function triggerModal(jobId: string, expectedClaimId?: string): Promise<boolean> {
   const url = process.env.MODAL_ENDPOINT_URL;
   const secret = process.env.MODAL_WEBHOOK_SECRET;
 
@@ -27,10 +28,22 @@ export async function triggerModal(jobId: string): Promise<boolean> {
 
     if (resp.ok) {
       const data = await resp.json();
-      await prisma.analysisJob.update({
-        where: { id: jobId },
-        data: { modalCallId: data.modal_call_id },
-      });
+      if (expectedClaimId) {
+        // CAS: only write real modalCallId if we still own the claim
+        const updated = await prisma.analysisJob.updateMany({
+          where: { id: jobId, modalCallId: expectedClaimId },
+          data: { modalCallId: data.modal_call_id, updatedAt: new Date() },
+        });
+        if (updated.count === 0) {
+          log.warn({ jobId, expectedClaimId }, 'Claim lost before writing real modalCallId');
+          return false;
+        }
+      } else {
+        await prisma.analysisJob.update({
+          where: { id: jobId },
+          data: { modalCallId: data.modal_call_id },
+        });
+      }
       await appendJobEvent({
         jobId,
         phase: 'trigger',
@@ -83,7 +96,7 @@ export async function claimAndTriggerModal(jobId: string): Promise<boolean> {
     return false;
   }
 
-  const success = await triggerModal(jobId);
+  const success = await triggerModal(jobId, claimId);
 
   if (!success) {
     // Clear placeholder on trigger failure — only if we still own it

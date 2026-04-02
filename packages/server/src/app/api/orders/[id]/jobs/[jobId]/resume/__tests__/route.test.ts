@@ -135,12 +135,13 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
     expect(json.data.status).toBe('RESUMED');
     expect(json.data.jobId).toBe('job-1');
 
-    // CAS updateMany called with correct where/data
+    // CAS updateMany called with correct where/data (guards both status AND failureClass)
     expect(mockJobUpdateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
           id: 'job-1',
           status: 'FAILED_RETRYABLE',
+          failureClass: 'EXTERNAL_QUOTA',
         }),
         data: expect.objectContaining({
           status: 'PENDING',
@@ -204,6 +205,44 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
     expect(res.status).toBe(400);
     const json = await res.json();
     expect(json.error).toContain('modal');
+    expect(mockJobUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('resumes legacy job with failureClass=null but quota error text', async () => {
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'modal',
+      failureClass: null,
+      error: 'OpenRouter: 429 Too Many Requests — rate limit exceeded',
+    });
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(200);
+
+    // CAS WHERE must use failureClass: null for legacy jobs (not 'EXTERNAL_QUOTA')
+    expect(mockJobUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          id: 'job-1',
+          status: 'FAILED_RETRYABLE',
+          failureClass: null,
+        }),
+      }),
+    );
+  });
+
+  it('rejects legacy job with failureClass=null and non-quota error', async () => {
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'modal',
+      failureClass: null,
+      error: 'Connection timeout after 30s',
+    });
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(400);
     expect(mockJobUpdateMany).not.toHaveBeenCalled();
   });
 

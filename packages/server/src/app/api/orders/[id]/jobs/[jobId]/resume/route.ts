@@ -7,6 +7,14 @@ import { claimAndTriggerModal } from '@/lib/services/modal-trigger';
 
 const log = analysisLogger.child({ module: 'resume-api' });
 
+const LEGACY_QUOTA_RE = /quota|rate.?limit|too many requests|429|402/i;
+
+/** Infer failureClass for legacy jobs that predate the typed failureClass column. */
+function inferLegacyFailureClass(error: string | null): string | null {
+  if (!error) return null;
+  return LEGACY_QUOTA_RE.test(error) ? 'EXTERNAL_QUOTA' : null;
+}
+
 // POST /api/orders/[id]/jobs/[jobId]/resume
 export async function POST(
   _request: NextRequest,
@@ -23,7 +31,7 @@ export async function POST(
   // 2. Find the job
   const job = await prisma.analysisJob.findFirst({
     where: { id: jobId, orderId: id },
-    select: { id: true, status: true, executionMode: true, failureClass: true },
+    select: { id: true, status: true, executionMode: true, failureClass: true, error: true },
   });
   if (!job) return apiError('Job not found', 404);
 
@@ -35,8 +43,11 @@ export async function POST(
     return apiError(`Cannot resume job in ${job.status} state`, 400);
   }
 
-  // 4. Validate failure class: only EXTERNAL_QUOTA jobs can be resumed
-  const failureClass = job.failureClass ?? 'UNKNOWN';
+  // 4. Validate failure class: only EXTERNAL_QUOTA jobs can be resumed.
+  //    Legacy fallback: pre-migration jobs may have failureClass=null with quota errors in error text.
+  const failureClass = job.failureClass
+    ?? inferLegacyFailureClass(job.error)
+    ?? 'UNKNOWN';
 
   if (failureClass !== 'EXTERNAL_QUOTA') {
     return apiError('Only quota-paused jobs can be resumed', 400);
@@ -55,9 +66,12 @@ export async function POST(
     message: 'Manual resume requested by user',
   });
 
-  // 6. CAS transition: atomic conditional update
+  // 6. CAS transition: atomic conditional update.
+  //    Guard the exact failureClass we read — typed 'EXTERNAL_QUOTA' or legacy null
+  //    (legacy jobs passed the regex check above, CAS still prevents status races).
+  const isLegacy = job.failureClass === null;
   const resumed = await prisma.analysisJob.updateMany({
-    where: { id: jobId, status: 'FAILED_RETRYABLE' },
+    where: { id: jobId, status: 'FAILED_RETRYABLE', failureClass: isLegacy ? null : 'EXTERNAL_QUOTA' },
     data: {
       status: 'PENDING',
       error: null,
