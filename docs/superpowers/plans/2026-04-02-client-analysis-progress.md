@@ -2064,14 +2064,14 @@ Inside the `OrderPage` component, after the existing state declarations (around 
   const clientEventSeenRef = useRef(new Set<string>());
 ```
 
-**Update the progress query `enabled` and `refetchInterval`** (around line 420) to keep polling alive during client-view drain. The cancel API atomically sets order to READY_FOR_ANALYSIS while job goes CANCELLED; without this, polling dies before the client ever sees the terminal job status:
+**Update the progress query `enabled` and `refetchInterval`** (around line 420). During drain, the order may have already left PROCESSING (cancel → READY_FOR_ANALYSIS, failure → FAILED), but we still need one or more polls to pick up the terminal job status. The `clientProgressState === 'draining'` guard is self-contained — no `analysisJobId` dependency, since `fetchProgress` uses the order id and the route resolves the job internally:
 
 ```typescript
     enabled:
       ((order?.status === 'PROCESSING' || order?.status === 'COMPLETED') &&
        !(analysisStarted && order?.status !== 'PROCESSING'))
-      // Keep alive during client-view drain (order may have left PROCESSING)
-      || (clientProgressState === 'draining' && !!analysisJobId),
+      // Keep alive during drain — order may have left PROCESSING already
+      || clientProgressState === 'draining',
     refetchInterval:
       (order?.status === 'PROCESSING' || clientProgressState === 'draining') ? livePollMs : false,
 ```
@@ -2161,12 +2161,14 @@ In the `cancelJobMutation.onSuccess` (around line 595), add before the existing 
       // The extended enabled condition keeps polling alive during 'draining'.
       if (jobId === analysisJobId && clientProgressState === 'processing') {
         setClientProgressState('draining');
-      }
-      // If this was the primary analysis job, reset state
-      if (jobId === analysisJobId) {
+        // DON'T clear analysisJobId here — leave it for the order-status watcher
+        // to clean up after drain completes. Polling doesn't depend on it
+        // (fetchProgress uses orderId), and admin view needs it for display.
+      } else if (jobId === analysisJobId) {
+        // Not in client progress (e.g. admin view) — clear immediately
         setAnalysisJobId(null);
       }
-      // ... rest of existing onSuccess unchanged ...
+      // ... rest of existing onSuccess unchanged (benchmark check, invalidations) ...
 ```
 
 - [ ] **Step 6: Reset clientProgressState when analysis restarts**
@@ -2188,35 +2190,63 @@ In the `prepareAnalysisLaunch` callback (around line 475), add:
   }, [id, queryClient]);
 ```
 
-Also, in the existing `order?.status` watcher `useEffect` (around line 736), where `setJobEvents([])` is called on COMPLETED/FAILED/READY_FOR_ANALYSIS/INSUFFICIENT_CREDITS, add the same client-state reset:
+Replace the existing `order?.status` watcher `useEffect` (around line 736) entirely. The current version immediately clears all state on terminal order statuses, which destroys the accumulated client feed during drain. The new version is drain-aware:
 
 ```typescript
-    if (order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS') {
-      setAnalysisJobId(null);
-      logSinceRef.current = 0;
-      eventCursorRef.current = null;
-      setJobEvents([]);
-      setAllClientEvents([]);           // reset cumulative client feed
-      clientEventSeenRef.current.clear();
-      queryClient.invalidateQueries({ queryKey: ['progress', id] });
-      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+  useEffect(() => {
+    if (order?.status === 'PROCESSING' || order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'INSUFFICIENT_CREDITS') {
+      setAnalysisStarted(false);
     }
+    const isTerminalOrder = order?.status === 'COMPLETED' || order?.status === 'FAILED'
+      || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS';
+
+    if (!isTerminalOrder) return;
+
+    // ── Drain-aware cleanup ──
+    // If currently draining, let the drain complete — don't wipe state.
+    if (clientProgressState === 'draining') {
+      return;
+    }
+
+    // If client progress was actively processing (non-admin view),
+    // this terminal order status means a server-driven failure/completion.
+    // Trigger drain so remaining queued events can finish displaying.
+    if (clientProgressState === 'processing' && adminViewMode !== 'admin') {
+      setClientProgressState('draining');
+      // One more progress poll to pick up the terminal job status
+      queryClient.invalidateQueries({ queryKey: ['progress', id] });
+      return;
+    }
+
+    // Normal cleanup: admin view, no active client progress, or drain already done.
+    setAnalysisJobId(null);
+    logSinceRef.current = 0;
+    eventCursorRef.current = null;
+    setJobEvents([]);
+    setAllClientEvents([]);
+    clientEventSeenRef.current.clear();
+    queryClient.invalidateQueries({ queryKey: ['progress', id] });
+    queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+  }, [order?.status, queryClient, id, clientProgressState, adminViewMode]);
 ```
 
-- [ ] **Step 6: Verify the build compiles**
+Note that `clientProgressState` and `adminViewMode` are added to the dependency array. This means the effect re-runs when drain completes (`clientProgressState` transitions 'draining' → 'done'). On that re-run, none of the early-return guards match, so it falls through to normal cleanup. This is the intended behavior: cleanup happens AFTER drain, not before.
+
+- [ ] **Step 7: Verify the build compiles**
 
 Run: `cd packages/server && pnpm build`
 Expected: Build succeeds without type errors
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add packages/server/src/app/[locale]/\\(dashboard\\)/orders/[id]/page.tsx
 git commit -m "feat: wire ClientAnalysisProgress into order page
 
-Admin toggle between admin/client view. Client progress state machine
-prevents premature transition to results during drain. Non-admin users
-always see the client view."
+Admin toggle between admin/client view. Drain-aware polling keeps
+progress query alive after order leaves PROCESSING. Order-status
+watcher triggers drain for server-driven failures instead of wiping
+state. Cleanup deferred until drain completes."
 ```
 
 ---
