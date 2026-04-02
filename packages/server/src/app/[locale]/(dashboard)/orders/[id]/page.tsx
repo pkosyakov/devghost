@@ -15,7 +15,7 @@ import type { PipelineLogEntry } from '@/components/pipeline-log';
 import type { AnalysisEventEntry } from '@/components/analysis-event-log';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
+import { cn, formatElapsed } from '@/lib/utils';
 import type { AnalysisPeriodSettings } from '@/components/edit-scope-panel';
 import { AdminRerunControls, type AdminRerunOptions } from '@/components/admin-rerun-controls';
 import { AnalysisResultsSummary } from '@/components/analysis-results-summary';
@@ -202,18 +202,6 @@ const statusColors: Record<string, string> = {
   CANCELLED: 'bg-orange-100 text-orange-700',
   INSUFFICIENT_CREDITS: 'bg-amber-100 text-amber-700',
 };
-
-// ==================== Elapsed Timer ====================
-
-function formatElapsed(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
 
 function toPositiveNumber(value: unknown): number | null {
   if (typeof value === 'number') {

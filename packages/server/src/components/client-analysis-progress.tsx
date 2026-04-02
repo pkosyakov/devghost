@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useNow } from '@/hooks/use-now';
+import { formatElapsed } from '@/lib/utils';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
@@ -13,18 +14,6 @@ import {
 import { useTranslations } from 'next-intl';
 
 type TFunction = ReturnType<typeof useTranslations>;
-
-// ── Elapsed timer ──────────────────────────────────────────────────
-
-function formatElapsed(ms: number): string {
-  const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-}
 
 // ── Odometer counter ───────────────────────────────────────────────
 

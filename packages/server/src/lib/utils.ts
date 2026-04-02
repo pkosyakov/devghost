@@ -66,6 +66,16 @@ export const ghostTextColors: Record<string, string> = {
  * @param fields - Array of field names to convert
  * @returns New object with Decimals converted to numbers
  */
+export function formatElapsed(ms: number): string {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 export function normalizeDecimals<T extends Record<string, unknown>>(
   obj: T,
   fields: (keyof T)[]
