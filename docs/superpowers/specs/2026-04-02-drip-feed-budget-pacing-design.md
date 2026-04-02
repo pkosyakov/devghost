@@ -117,7 +117,7 @@ delay(event) = max(HARD_FLOOR, clampedDelay × scaleFactor)
 | Scaled micro | max(10, 15×0.313) = max(10, 4.7) | 10ms |
 | Final sum | 10×12.5 + 50×10 | 625ms |
 
-625ms > 360ms budget, but the queue won't grow unboundedly because the next 300ms poll adds fewer events than get drained in 625ms at this rate. If it *does* grow (sustained overload), catch-up drain at HARD_FLOOR kicks in.
+625ms > 360ms budget — the batch takes ~1.7× longer to drip than the poll interval. With each poll adding 60 events and drip consuming them in 625ms, the backlog grows by ~60 events every two polls. This is the sustained overload scenario. After a few polls the queue depth exceeds `avgBatch × CATCH_UP_THRESHOLD`, and catch-up stamps all new events at `HARD_FLOOR (10ms)`. At that point a 60-event batch drips in 600ms (60 × 10ms), which is close enough to the 360ms budget to stabilize the queue. Once the backlog clears, normal budget-weighted pacing resumes.
 
 ### Enqueue algorithm
 
@@ -263,10 +263,32 @@ Note: the existing guard `(isDraining || isDrained)` is also wrong for quota-pau
 
 **Fresh rerun (new job via prepareAnalysisLaunch):**
 
-A fresh rerun is handled by the parent (`page.tsx:510-519`), which clears `allClientEvents` and `clientEventSeenRef`. When `rawEvents` becomes `[]`, the enqueue effect sees no new events and does nothing. The hook effectively starts fresh because:
-- `queueRef` drains naturally (or is already empty)
-- `seenIdsRef` only matters for dedup — new job events have new DB IDs, so old IDs in the set are harmless (they'll never appear in `rawEvents` again)
-- Timing refs carry stale values, but the first batch from the new job resets `lastBatchAtRef` and `measuredIntervalRef` naturally
+A fresh rerun starts a new `AnalysisJob`. The parent clears `allClientEvents` and `clientEventSeenRef` (`page.tsx:510-519`), but `ClientAnalysisProgress` stays mounted (held by `analysisStarted`). This means the `useDripFeed` hook instance survives the rerun — its internal state (`visibleEvents`, `counters`, `leaderboard`, `queueRef`, `seenIdsRef`, timing refs) all carry over from the old run.
+
+This is a problem: old events drip into the new run, counters show stale totals, the leaderboard shows old developer bars. Parent-level state clearing is insufficient because the hook's `useState`/`useRef` values are owned by the component instance, not the parent.
+
+**Solution: forced remount via React key.**
+
+The parent renders `ClientAnalysisProgress` with `key={analysisJobId ?? 'pending'}`. When a new job starts and `analysisJobId` changes, React unmounts the old instance and mounts a fresh one. All hook state initializes from scratch — no stale queue, no stale counters, no stale timing.
+
+```tsx
+// page.tsx — in the render block:
+<ClientAnalysisProgress
+  key={analysisJobId ?? 'pending'}
+  progress={...}
+  allClientEvents={allClientEvents}
+  pollIntervalMs={livePollMs}
+  ...
+/>
+```
+
+This is the cleanest approach because:
+- No hook-level reset logic needed for the "new job" path
+- All `useState` and `useRef` values reinitialize automatically
+- The `useDripFeed` hook doesn't need to know about job identity
+- Resume (same job) still works — `analysisJobId` doesn't change on resume, so no remount
+
+The `key` prop addition is a one-line change in `page.tsx`.
 
 ### Changes to useDripFeed
 
@@ -434,6 +456,8 @@ const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripF
 
 9. **Resume from quota pause (no drain state)**: Set up a quota-paused state (`FAILED_RETRYABLE` + `isPaused=true`, so `isDraining=false, isDrained=false`). Transition to `RUNNING`. Verify timing refs are reset even though drain was never active. Verify `defaultIntervalMs=300` is applied correctly for admin demo poll rate.
 
+10. **Fresh rerun remount**: Verify that changing the `key` prop on `ClientAnalysisProgress` causes React to unmount/remount, giving `useDripFeed` fresh state. Verify old `visibleEvents`, `counters`, and `leaderboard` do not carry over.
+
 9. **Empty poll**: Call with rawEvents that are all already seen. Verify no budget recalculation, queue unchanged.
 
 ## Scope
@@ -441,4 +465,4 @@ const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripF
 - **In scope**: `useDripFeed` hook refactor (stamped delays, budget math, overload handling, resume reset), `ClientAnalysisProgress` prop + passthrough, `page.tsx` prop addition, tests
 - **Out of scope**: Server-side timing hints, poll interval adjustment, UI changes, leaderboard pacing
 - **Files touched**: `use-drip-feed.ts`, `use-drip-feed.test.ts`, `client-analysis-progress.tsx`, `orders/[id]/page.tsx`
-- **Risk**: Low — pure client-side timing change, no API changes, no data model changes. The QueueItem type change is internal to the hook.
+- **Risk**: Low — pure client-side timing change, no API changes, no data model changes. The QueueItem type change is internal to the hook. The `key={analysisJobId}` addition is a one-line change that uses React's built-in remount mechanism.
