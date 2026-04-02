@@ -2086,9 +2086,9 @@ Inside the `OrderPage` component, after the existing state declarations (around 
 Inside the progress query `queryFn` (around line 379), after the existing `jobEvents` accumulation block (`if (data?.events?.length) { ... }`) and before `return data;`, add client event accumulation. Note: `fetchProgress()` returns `json.data` (not the raw envelope), so fields are accessed directly on `data`:
 
 ```typescript
-      // Latch: first progress data confirms this is a live analysis session.
-      // Gates the watcher and render condition so historical orders don't drain.
-      if (data && !hadLiveProgressRef.current) {
+      // Latch: only arm when job is actually RUNNING — not on historical
+      // COMPLETED/FAILED responses (the query is enabled for those too).
+      if (data?.status === 'RUNNING' && !hadLiveProgressRef.current) {
         hadLiveProgressRef.current = true;
       }
 
@@ -2208,7 +2208,12 @@ In the `prepareAnalysisLaunch` callback (around line 475), add:
     setClientProgressState('processing');  // reset state machine
     setAllClientEvents([]);                // reset cumulative client feed
     clientEventSeenRef.current.clear();    // reset dedup set
-    hadLiveProgressRef.current = true;     // latch: this session has live progress
+    // NOTE: do NOT arm hadLiveProgressRef here — the latch is set only
+    // by the first RUNNING progress response inside queryFn. Arming it
+    // in onMutate would leave it stuck if the mutation fails (onError
+    // rolls back analysisStarted but nothing clears the ref), causing
+    // the drain-aware watcher to treat the next terminal-order visit
+    // as an active analysis that needs draining.
     queryClient.removeQueries({ queryKey: ['progress', id] });
   }, [id, queryClient]);
 ```
