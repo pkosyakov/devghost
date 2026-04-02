@@ -65,7 +65,7 @@ export function EditScopePanel({
 
   // True debounce: delay API calls by 500ms after last settings change
   const [debouncedSettings, setDebouncedSettings] = useState(settings);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
     timerRef.current = setTimeout(() => setDebouncedSettings(settings), 500);
     return () => clearTimeout(timerRef.current);
