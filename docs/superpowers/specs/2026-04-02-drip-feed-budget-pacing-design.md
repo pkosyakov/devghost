@@ -23,24 +23,34 @@ The current adaptive pressure model (`queue.length / expectedBatchSize`) is reac
 The Modal worker processes commits in chunks (`demo_live_chunk_size`, typically 1–10 commits for demo/live mode, full batch for regular). Each chunk writes `LLM_COMMIT_RESULT` events to the DB. The client polls `/progress` every `livePollMs` (1000ms, or 300ms in admin demo mode) and gets all events since `sinceEventId`.
 
 Real-world event counts per poll:
-- **Small repos / demo mode**: 1–4 events per poll (chunk_size=1, each commit → 1 major + 1-3 micro = 2-4 events)
+- **Small repos / demo mode**: 1–4 events per poll (chunk_size=1, each commit -> 1 major + 1-3 micro = 2-4 events)
 - **Medium repos**: 5–20 events per poll
 - **Large repos / fast LLM**: 20–60+ events per poll (multiple chunks complete between polls)
 - **Cached results**: Entire repo can return 100+ events in one poll (REPO_FULLY_CACHED)
 
 ## Design
 
-### Core idea: time-budget pacing
+### Core idea: per-event stamped delays
 
-Each batch of events receives a **time budget** — the estimated time until the next batch arrives. Events are spaced to fill this budget completely, preserving tier-based rhythm through weighted delays.
+Each event gets its delay computed and frozen **at enqueue time**, based on the budget available at that moment. The tick loop reads the pre-stamped delay — it never recomputes. This guarantees that batch B arriving mid-drain of batch A does not retroactively change A's remaining timing.
 
 ```
 Poll 1          Poll 2          Poll 3
   |    budget    |    budget    |
   v--------------v--------------v
- [batch A ~~~~~~][batch B ~~~~~~][batch C ~~~~~~]
-  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
-              no dead time
+ [A₁ A₂ A₃ A₄ A₅ B₁ B₂ B₃ B₄ B₅ C₁ C₂ C₃ C₄ ...]
+  each event carries its own delayMs
+```
+
+### Queue item type
+
+The queue no longer holds bare `ClientEvent`. Each entry is a stamped item:
+
+```typescript
+type QueueItem = {
+  event: ClientEvent;
+  delayMs: number;     // pre-computed, frozen at enqueue
+};
 ```
 
 ### Signal: measured poll interval
@@ -49,17 +59,12 @@ The most reliable signal is the real time between consecutive batch arrivals. Th
 
 ```
 measuredInterval = timestamp(batch N arrival) - timestamp(batch N-1 arrival)
-```
-
-We apply a 20% padding factor to prevent the drip from finishing *just* before the next poll:
-
-```
-budget = measuredInterval × 1.2
+budget = measuredInterval × BUDGET_PADDING
 ```
 
 ### Weighted delay distribution
 
-Flat `budget / eventCount` would kill tier differences — milestones and micro events would play at the same speed. Instead, each tier has a weight:
+Flat `budget / eventCount` would kill tier differences. Each tier has a weight:
 
 | Tier | Weight | Rationale |
 |------|--------|-----------|
@@ -67,132 +72,249 @@ Flat `budget / eventCount` would kill tier differences — milestones and micro 
 | `major` | 2.0 | Individual commits — main rhythm |
 | `micro` | 0.5 | File/line counts, categories — quick flashes |
 
-**Per-event delay calculation:**
+**Per-event delay calculation at enqueue:**
 
 ```
-totalWeight = sum of weights for all events in the batch
+totalWeight = sum of weights for all events in this batch
 msPerWeight = budget / totalWeight
-delay(event) = msPerWeight × TIER_WEIGHT[event.tier]
+delay(event) = clamp(msPerWeight × TIER_WEIGHT[event.tier], tierMin, tierMax)
 ```
 
-**Example**: batch of 1 milestone + 5 major + 10 micro events, budget = 1200ms
-- totalWeight = 4 + 10 + 5 = 19
-- msPerWeight = 1200 / 19 = 63.2ms
-- milestone delay: 63.2 × 4 = 253ms
-- major delay: 63.2 × 2 = 126ms
-- micro delay: 63.2 × 0.5 = 32ms
-- total: 253 + 632 + 316 = 1201ms (fills the budget)
+### Overload handling
 
-### Safety clamps
+The clamp floors create a minimum drip time per batch. If the sum of clamped delays exceeds the budget, the queue will grow — this is the overload scenario.
 
-Budget math can produce extreme values in edge cases. Clamp per-event delay to maintain UX:
+**Detection:**
 
-| Tier | Min delay | Max delay | Why |
-|------|-----------|-----------|-----|
-| `milestone` | 100ms | 800ms | Must be visible but not blocking |
-| `major` | 40ms | 400ms | Readable commit rhythm |
-| `micro` | 15ms | 80ms | Quick but not invisible |
-
-When clamps activate (very small or very large batches), the total drip time won't exactly match the budget — this is acceptable. The budget is a target, not a hard constraint.
-
-### State transitions
-
-**First batch (no prior measurement)**:
-- `measuredInterval` defaults to `livePollMs` (1000ms or 300ms for admin demo)
-- Budget = default × 1.2
-- Falls back gracefully to near-current behavior
-
-**Empty poll (0 new events)**:
-- Budget and weights are not recalculated
-- Queue is empty, tick idles at 50ms check interval (unchanged)
-
-**Large initial load (historical events on first fetch)**:
-- First fetch can return hundreds of events (entire job history)
-- Budget for this batch = default interval × 1.2 (no prior measurement)
-- Events play at clamp-limited speeds, which is correct — the user just opened the page and the initial burst should play fast
-- Subsequent incremental batches will have accurate measured intervals
-
-**Drain mode (job terminal)**:
-- Budget is divided by a drain speedup factor (5×)
-- `drainDelay = budgetDelay / 5`
-- This is the same behavior as current `isDraining ? 5.0 : ...` speed multiplier
-
-**Pause (EXTERNAL_QUOTA)**:
-- No change — tick still freezes at 250ms idle (unchanged)
-
-**Resume after pause (FAILED_RETRYABLE → RUNNING)**:
-- `measuredInterval` resets to `livePollMs` default
-- First post-resume batch uses default budget
-
-### Changes to useDripFeed
-
-**New refs:**
-
-```typescript
-const lastBatchAtRef = useRef(0);           // performance.now() of last batch arrival
-const measuredIntervalRef = useRef(1000);   // measured ms between batches
-const batchBudgetRef = useRef(1200);        // current budget (ms) for drip pacing
-const batchTotalWeightRef = useRef(0);      // sum of tier weights in current batch
+```
+clampedSum = sum of all clamped delays for this batch
+overloaded = clampedSum > budget
 ```
 
-**Enqueue effect (replaces lines 68–82):**
+**Two-phase response:**
 
-On each new batch, measure the real interval since the previous batch and compute a weighted budget.
+1. **Scale-down** (soft): When `clampedSum > budget`, uniformly scale all delays so they sum to exactly `budget`:
+
+```
+scaleFactor = budget / clampedSum
+delay(event) = max(HARD_FLOOR, clampedDelay × scaleFactor)
+```
+
+`HARD_FLOOR = 10ms` — absolute minimum to avoid invisible events.
+
+2. **Catch-up drain** (hard): If the queue depth exceeds a high-water mark (`queue.length > expectedBatchSize × 3`), the batch's events are stamped at `HARD_FLOOR` regardless of tier. This is a controlled flush that prevents unbounded lag. The high-water mark ensures this only triggers under sustained overload, not a single large batch.
+
+**Example: 300ms poll, batch of 10 major + 50 micro:**
+
+| Step | Calculation | Result |
+|------|-------------|--------|
+| Budget | 300 × 1.2 | 360ms |
+| Weighted delays | 10×(360/45×2=16) + 50×(360/45×0.5=4) | 160 + 200 = 360ms |
+| Clamped delays | 10×40 + 50×15 | 400 + 750 = 1150ms |
+| Overloaded? | 1150 > 360 | Yes |
+| Scale factor | 360 / 1150 | 0.313 |
+| Scaled major | max(10, 40×0.313) = max(10, 12.5) | 12.5ms |
+| Scaled micro | max(10, 15×0.313) = max(10, 4.7) | 10ms |
+| Final sum | 10×12.5 + 50×10 | 625ms |
+
+625ms > 360ms budget, but the queue won't grow unboundedly because the next 300ms poll adds fewer events than get drained in 625ms at this rate. If it *does* grow (sustained overload), catch-up drain at HARD_FLOOR kicks in.
+
+### Enqueue algorithm
+
+Complete pseudocode for the enqueue effect:
 
 ```typescript
 useEffect(() => {
-  let newCount = 0;
-  let newWeight = 0;
+  const newEvents: ClientEvent[] = [];
   for (const event of rawEvents) {
     if (!seenIdsRef.current.has(event.id)) {
       seenIdsRef.current.add(event.id);
-      queueRef.current.push(event);
-      newCount++;
-      newWeight += TIER_WEIGHT[event.tier] ?? TIER_WEIGHT.major;
+      newEvents.push(event);
     }
   }
-  if (newCount > 0) {
-    const now = performance.now();
-    if (lastBatchAtRef.current > 0) {
-      measuredIntervalRef.current = now - lastBatchAtRef.current;
-    }
-    lastBatchAtRef.current = now;
-    batchBudgetRef.current = measuredIntervalRef.current * BUDGET_PADDING;
-    batchTotalWeightRef.current = newWeight;
+  if (newEvents.length === 0) return;
+
+  // ── Measure interval ──
+  const now = performance.now();
+  if (lastBatchAtRef.current > 0) {
+    measuredIntervalRef.current = now - lastBatchAtRef.current;
   }
+  lastBatchAtRef.current = now;
+
+  const budget = measuredIntervalRef.current * BUDGET_PADDING;
+
+  // ── Compute weighted delays ──
+  const totalWeight = newEvents.reduce(
+    (s, e) => s + (TIER_WEIGHT[e.tier] ?? TIER_WEIGHT.major), 0
+  );
+  const msPerWeight = totalWeight > 0 ? budget / totalWeight : budget / newEvents.length;
+
+  // ── Clamp per tier ──
+  const items: QueueItem[] = newEvents.map(event => {
+    const weight = TIER_WEIGHT[event.tier] ?? TIER_WEIGHT.major;
+    const raw = msPerWeight * weight;
+    const [minD, maxD] = DELAY_CLAMP[event.tier] ?? DELAY_CLAMP.major;
+    return { event, delayMs: Math.max(minD, Math.min(maxD, raw)) };
+  });
+
+  // ── Overload: scale down if clamped sum exceeds budget ──
+  const clampedSum = items.reduce((s, it) => s + it.delayMs, 0);
+  if (clampedSum > budget) {
+    const scale = budget / clampedSum;
+    for (const item of items) {
+      item.delayMs = Math.max(HARD_FLOOR, item.delayMs * scale);
+    }
+  }
+
+  // ── Catch-up: if queue already deep, stamp at HARD_FLOOR ──
+  const queueDepth = queueRef.current.length;
+  const avgBatch = batchSizeEmaRef.current;
+  if (queueDepth > avgBatch * CATCH_UP_THRESHOLD) {
+    for (const item of items) {
+      item.delayMs = HARD_FLOOR;
+    }
+  }
+
+  // ── Update EMA for catch-up threshold ──
+  batchSizeEmaRef.current = batchSizeEmaRef.current * 0.7 + newEvents.length * 0.3;
+
+  // ── Push to queue ──
+  queueRef.current.push(...items);
 }, [rawEvents]);
 ```
 
-**Tick delay (replaces lines 170–185 pressure + lines 222–225 baseDelayFor):**
+### Tick loop
+
+The tick loop simplifies — it just reads the pre-stamped delay:
 
 ```typescript
-// Budget-based delay
-const weight = TIER_WEIGHT[event.tier] ?? TIER_WEIGHT.major;
-const totalW = batchTotalWeightRef.current;
-const rawDelay = totalW > 0
-  ? (batchBudgetRef.current / totalW) * weight
-  : baseDelayFor(event.tier);
+function tick() {
+  const queue = queueRef.current;
 
-const [minD, maxD] = DELAY_CLAMP[event.tier] ?? DELAY_CLAMP.major;
-const budgetDelay = Math.max(minD, Math.min(maxD, rawDelay));
-const adjustedDelay = isDraining ? Math.max(15, budgetDelay / DRAIN_SPEEDUP) : budgetDelay;
+  if (isPaused) {
+    timerRef.current = setTimeout(tick, 250);
+    return;
+  }
+
+  if (queue.length === 0) {
+    if (isDraining) {
+      setIsDrained(true);
+      return;
+    }
+    timerRef.current = setTimeout(tick, 50);
+    return;
+  }
+
+  const { event, delayMs } = queue.shift()!;
+  setVisibleEvents(prev => [...prev, event]);
+
+  // ... counter + leaderboard accumulation (unchanged) ...
+
+  const adjustedDelay = isDraining
+    ? Math.max(HARD_FLOOR, delayMs / DRAIN_SPEEDUP)
+    : delayMs;
+  timerRef.current = setTimeout(tick, adjustedDelay);
+}
+```
+
+### Drain mode
+
+When `isDraining` is set (terminal job status), the tick divides each event's pre-stamped delay by `DRAIN_SPEEDUP (5)`. New events that arrive during drain are also stamped normally at enqueue — the `/5` division happens at dequeue in tick. This keeps the drain path simple and consistent.
+
+### State transitions
+
+**First batch (no prior measurement):**
+- `measuredIntervalRef` initialized to `defaultIntervalMs` (passed from caller, typically `livePollMs`)
+- Budget = defaultIntervalMs × 1.2
+- Pre-stamped delays use this initial budget
+
+**Empty poll (0 new events):**
+- Enqueue effect exits early (no new events)
+- No budget recalculation, no queue changes
+- Tick idles at 50ms
+
+**Large initial load (historical events on first fetch):**
+- First fetch can return hundreds of events, no prior measurement
+- Budget = defaultIntervalMs × 1.2 (e.g., 1200ms for normal, 360ms for admin demo)
+- With 100+ events the overload path activates: delays are scaled down
+- If extreme (500+ events), catch-up stamps everything at HARD_FLOOR
+- The initial burst plays fast — correct UX for page load
+
+**Pause (EXTERNAL_QUOTA):**
+- No change — tick freezes at 250ms idle
+- Pre-stamped delays in queue are preserved
+- When unpaused, events resume with their original delays
+
+**Resume (FAILED_RETRYABLE -> RUNNING, or PENDING -> RUNNING):**
+- Reset timing refs to fresh defaults:
+  ```typescript
+  lastBatchAtRef.current = 0;
+  measuredIntervalRef.current = defaultIntervalMs;
+  batchSizeEmaRef.current = 10;
+  ```
+- Clear any stale pre-stamped items from previous run:
+  ```typescript
+  queueRef.current = [];
+  seenIdsRef.current.clear();
+  ```
+- First post-resume batch uses default budget, subsequent batches measure normally
+
+### Changes to useDripFeed
+
+**New types:**
+
+```typescript
+type QueueItem = {
+  event: ClientEvent;
+  delayMs: number;
+};
+```
+
+**New refs (replace speedRef, targetSpeedRef, batchSizesRef):**
+
+```typescript
+const lastBatchAtRef = useRef(0);
+const measuredIntervalRef = useRef(defaultIntervalMs);
+const batchSizeEmaRef = useRef(10);            // EMA of batch sizes for catch-up threshold
+```
+
+**Queue type change:**
+
+```typescript
+const queueRef = useRef<QueueItem[]>([]);       // was ClientEvent[]
 ```
 
 **Removed:**
-- `speedRef`, `targetSpeedRef` — lerp-based speed control is no longer needed
-- `batchSizesRef` — batch size averaging replaced by direct interval measurement
-- `getExpectedBatchSize` callback — pressure calculation removed
-- Entire pressure block (lines 170–185) — replaced by budget math
+- `speedRef` — no longer needed (delays are pre-stamped)
+- `targetSpeedRef` — no longer needed
+- `batchSizesRef` — replaced by `batchSizeEmaRef` for catch-up threshold only
+- `getExpectedBatchSize` callback — removed
+- Entire pressure block (current lines 170–185) — replaced by per-event stamped delays
+- `baseDelayFor` function — replaced by budget math (but kept as fallback for edge cases)
 
-### What stays the same
+**Resume reset (replaces current lines 93–109):**
 
-- Event deduplication by `seenIdsRef`
-- Counter accumulation logic
-- Per-event leaderboard accumulation via `dripDevMapRef`
-- Drain detection and drain-complete snap
-- Pause freeze behavior
-- Resume reset behavior
-- Queue empty → idle at 50ms
+```typescript
+useEffect(() => {
+  const prev = prevJobStatusRef.current;
+  prevJobStatusRef.current = jobStatus;
+  if (
+    jobStatus === 'RUNNING' &&
+    (prev === 'FAILED_RETRYABLE' || prev === 'PENDING') &&
+    (isDraining || isDrained)
+  ) {
+    setIsDraining(false);
+    setIsDrained(false);
+    // Reset timing to defaults
+    lastBatchAtRef.current = 0;
+    measuredIntervalRef.current = defaultIntervalMs;
+    batchSizeEmaRef.current = 10;
+    // Clear stale queue from previous run
+    queueRef.current = [];
+    seenIdsRef.current.clear();
+  }
+}, [jobStatus, isDraining, isDrained, defaultIntervalMs]);
+```
 
 ### Constants
 
@@ -209,13 +331,15 @@ const DELAY_CLAMP: Record<string, [number, number]> = {
   micro: [15, 80],
 };
 
-const BUDGET_PADDING = 1.2;   // 20% buffer
-const DRAIN_SPEEDUP = 5;      // fast-forward multiplier
+const BUDGET_PADDING = 1.2;         // 20% buffer over measured interval
+const DRAIN_SPEEDUP = 5;            // fast-forward multiplier for terminal drain
+const HARD_FLOOR = 10;              // absolute minimum delay (ms) per event
+const CATCH_UP_THRESHOLD = 3;       // queue depth / avgBatch triggers catch-up
 ```
 
 ### Interface changes
 
-**`UseDripFeedOpts`** — add optional `defaultIntervalMs`:
+**`UseDripFeedOpts`** — add `defaultIntervalMs`:
 
 ```typescript
 interface UseDripFeedOpts {
@@ -223,36 +347,85 @@ interface UseDripFeedOpts {
   rawLeaderboard: LeaderboardData;
   jobStatus: string;
   isPaused?: boolean;
-  defaultIntervalMs?: number;  // NEW: initial budget hint (livePollMs from page)
+  defaultIntervalMs?: number;  // initial budget hint (livePollMs from caller)
 }
 ```
 
-The caller passes `livePollMs` so the hook can initialize `measuredIntervalRef` correctly for the first batch instead of hardcoding 1000ms.
+Default: `1000` if not provided.
 
-### Test plan
+### What stays the same
 
-1. **Budget calculation**: Feed 2 batches with known timestamps, verify `measuredIntervalRef` equals the difference
-2. **Weighted distribution**: Feed a batch with known tier composition, verify per-event delays sum to ~budget
-3. **Clamp enforcement**: Feed a 1-event batch (huge budget per event), verify delay is clamped to tier max
-4. **Drain speedup**: Trigger terminal status, verify delays are reduced by DRAIN_SPEEDUP factor
-5. **First batch fallback**: Feed events without prior batch, verify `defaultIntervalMs` is used
-6. **Empty poll**: Verify no budget recalculation, queue stays idle
+- Event deduplication by `seenIdsRef`
+- Counter accumulation logic (commits, files, lines)
+- Per-event leaderboard accumulation via `dripDevMapRef`
+- Drain detection (`DRAIN_STATUSES` set) and drain-complete snap
+- Pause freeze behavior (250ms idle tick)
+- Queue empty -> idle at 50ms
+- `isDraining`/`isDrained` state variables
 
-### Future: server-side timing hint (optional, not in scope)
+## Prop threading: defaultIntervalMs
 
-The `/progress` endpoint could return a `serverProcessingMs` header measuring handler execution time. The client could subtract this from the measured interval to isolate network round-trip time:
+`livePollMs` is computed in `page.tsx` (line 342). It needs to reach `useDripFeed` through `ClientAnalysisProgress`.
 
+### page.tsx
+
+`ClientAnalysisProgress` already receives many props. Add `pollIntervalMs`:
+
+```typescript
+<ClientAnalysisProgress
+  progress={...}
+  allClientEvents={allClientEvents}
+  repoSizeMb={repoSizeMb}
+  pollIntervalMs={livePollMs}       // NEW
+  isAdmin={isAdmin}
+  ...
+/>
 ```
-actualServerTime = serverProcessingMs
-networkRoundTrip = measuredInterval - actualServerTime
-budget = actualServerTime × 1.2 + networkRoundTrip
+
+### ClientAnalysisProgressProps
+
+```typescript
+interface ClientAnalysisProgressProps {
+  // ... existing props ...
+  pollIntervalMs?: number;           // NEW
+}
 ```
 
-This would be useful if server processing time varies significantly between polls (e.g., heavy LLM batch vs. idle poll). Not needed for v1 — the 20% padding covers typical jitter.
+### ClientAnalysisProgress -> useDripFeed
+
+```typescript
+const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripFeed({
+  rawEvents: allClientEvents,
+  rawLeaderboard: progress?.leaderboard ?? ...,
+  jobStatus,
+  isPaused,
+  defaultIntervalMs: pollIntervalMs,  // NEW
+});
+```
+
+## Test plan
+
+1. **Per-event stamp isolation**: Enqueue batch A (5 events). Before A finishes draining, enqueue batch B (3 events). Verify that A's remaining events still tick at A's delays, and B's events tick at B's delays. This is the critical regression test.
+
+2. **Budget calculation from measured interval**: Enqueue batch 1 at t=0, batch 2 at t=500ms. Verify batch 2's events have delays summing to ~600ms (500 × 1.2).
+
+3. **Weighted distribution**: Enqueue a batch of 1 milestone + 2 major + 4 micro with budget=1000ms. Verify milestone delay > major delay > micro delay, and sum ~= 1000ms.
+
+4. **Overload scale-down**: Enqueue 10 major + 50 micro with budget=360ms (simulating 300ms admin demo poll). Verify clampedSum > budget triggers scale-down, no delay exceeds clamp max, and total is closer to budget.
+
+5. **Catch-up drain**: Pre-fill queue with 100 items, then enqueue a new batch. Verify new batch events are stamped at HARD_FLOOR.
+
+6. **Drain speedup**: Set jobStatus to 'COMPLETED'. Verify tick applies `/DRAIN_SPEEDUP` to pre-stamped delays.
+
+7. **First batch fallback**: Enqueue events with no prior batch, `defaultIntervalMs=300`. Verify delays use 300 × 1.2 = 360ms budget.
+
+8. **Resume reset**: Transition `FAILED_RETRYABLE -> RUNNING`. Verify `lastBatchAtRef`, `measuredIntervalRef`, `batchSizeEmaRef` are reset, queue is cleared, `seenIdsRef` is cleared.
+
+9. **Empty poll**: Call with rawEvents that are all already seen. Verify no budget recalculation, queue unchanged.
 
 ## Scope
 
-- **In scope**: `useDripFeed` hook refactor (budget math, remove pressure), `ClientAnalysisProgress` passes `defaultIntervalMs`, tests
-- **Out of scope**: Server-side timing hints, poll interval adjustment, UI changes, leaderboard pacing (already driven by per-event accumulation)
-- **Files touched**: `use-drip-feed.ts`, `use-drip-feed.test.ts`, `client-analysis-progress.tsx`
-- **Risk**: Low — pure client-side timing change, no API changes, no data model changes
+- **In scope**: `useDripFeed` hook refactor (stamped delays, budget math, overload handling, resume reset), `ClientAnalysisProgress` prop + passthrough, `page.tsx` prop addition, tests
+- **Out of scope**: Server-side timing hints, poll interval adjustment, UI changes, leaderboard pacing
+- **Files touched**: `use-drip-feed.ts`, `use-drip-feed.test.ts`, `client-analysis-progress.tsx`, `orders/[id]/page.tsx`
+- **Risk**: Low — pure client-side timing change, no API changes, no data model changes. The QueueItem type change is internal to the hook.
