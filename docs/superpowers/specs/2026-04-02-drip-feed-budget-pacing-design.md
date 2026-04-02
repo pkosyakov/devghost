@@ -504,7 +504,7 @@ const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripF
 
 4. **Overload scale-down**: Enqueue 10 major + 50 micro with budget=360ms (simulating 300ms admin demo poll). Verify clampedSum > budget triggers scale-down, no delay exceeds clamp max, and total is closer to budget.
 
-5. **Catch-up batch emit**: Pre-fill queue with 100 items (above `avgBatch × CATCH_UP_THRESHOLD`). Verify tick dequeues multiple events per tick (`catchUpBatchSize = floor(budget / HARD_FLOOR)`), all emitted in a single state update. Verify that once queue depth drops below threshold, tick returns to single-event mode with pre-stamped delays.
+5. **Catch-up batch emit**: Pre-fill queue with 100 items (above `avgBatch × CATCH_UP_THRESHOLD`). Verify tick dequeues `catchUpBatchSize = floor(budget / HARD_FLOOR)` events per tick. Verify `visibleEvents` receives all batch events in one update, `counters` reflect aggregated deltas (not per-event increments), and `emitLeaderboardUpdate` is called once per tick (not per event). Verify that once queue depth drops below threshold, tick returns to single-event mode with pre-stamped delays.
 
 6. **Drain speedup**: Set jobStatus to 'COMPLETED'. Verify tick applies `/DRAIN_SPEEDUP` to pre-stamped delays.
 
