@@ -7,6 +7,7 @@ import {
   parseBody,
 } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { createTeamFromRepository } from '@/lib/services/team-service';
 import { createTeamFromRepositoryBodySchema } from '@/lib/schemas/team';
 
@@ -17,7 +18,9 @@ export async function POST(
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
   const { id: repositoryId } = await params;
 
   const parsed = await parseBody(request, createTeamFromRepositoryBodySchema);

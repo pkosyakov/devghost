@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { paginationQuerySchema } from '@/lib/schemas/contributor';
 
 export async function GET(
@@ -12,7 +13,9 @@ export async function GET(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   // Verify contributor belongs to workspace
   const contributor = await prisma.contributor.findFirst({
@@ -36,7 +39,7 @@ export async function GET(
   const [commits, total] = await Promise.all([
     prisma.commitAnalysis.findMany({
       where: {
-        order: { userId: session.user.id },
+        order: { userId: effective.effectiveUserId },
         authorEmail: { in: aliasEmails },
       },
       select: {
@@ -52,7 +55,7 @@ export async function GET(
     }),
     prisma.commitAnalysis.count({
       where: {
-        order: { userId: session.user.id },
+        order: { userId: effective.effectiveUserId },
         authorEmail: { in: aliasEmails },
       },
     }),

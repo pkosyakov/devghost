@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { apiError, apiResponse, isErrorResponse, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import {
   createSavedView,
   createSavedViewFromActiveScope,
@@ -16,7 +17,9 @@ export async function GET(request: NextRequest) {
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const parsed = savedViewListQuerySchema.safeParse(
     Object.fromEntries(request.nextUrl.searchParams.entries()),
@@ -25,7 +28,7 @@ export async function GET(request: NextRequest) {
     return apiError(parsed.error.errors[0].message, 400);
   }
 
-  const result = await listSavedViews(workspace.id, session.user.id, parsed.data);
+  const result = await listSavedViews(workspace.id, effective.effectiveUserId, parsed.data);
   return apiResponse(result);
 }
 
@@ -33,7 +36,9 @@ export async function POST(request: NextRequest) {
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const body = await request.json().catch(() => null);
   if (!body) {
@@ -44,7 +49,7 @@ export async function POST(request: NextRequest) {
   if (parsedFromScope.success) {
     const savedView = await createSavedViewFromActiveScope(
       workspace.id,
-      session.user.id,
+      effective.effectiveUserId,
       parsedFromScope.data,
     );
     return apiResponse(savedView, 201);
@@ -55,7 +60,7 @@ export async function POST(request: NextRequest) {
     return apiError(parsed.error.errors[0].message, 400);
   }
 
-  const savedView = await createSavedView(workspace.id, session.user.id, parsed.data);
+  const savedView = await createSavedView(workspace.id, effective.effectiveUserId, parsed.data);
   return apiResponse(savedView, 201);
 }
 

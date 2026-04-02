@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { apiResponse, apiError, requireUserSession, isErrorResponse, parseBody } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { addMemberBodySchema } from '@/lib/schemas/team';
 import { addMember } from '@/lib/services/team-service';
 
@@ -12,7 +13,9 @@ export async function POST(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const parsed = await parseBody(request, addMemberBodySchema);
   if (!parsed.success) return parsed.error;

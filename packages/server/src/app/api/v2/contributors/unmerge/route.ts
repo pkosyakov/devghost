@@ -2,13 +2,16 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { unmergeBodySchema } from '@/lib/schemas/contributor';
 
 export async function POST(request: NextRequest) {
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const body = await request.json().catch(() => null);
   if (!body) return apiError('Invalid request body', 400);
@@ -83,6 +86,7 @@ export async function POST(request: NextRequest) {
           payload: {
             newContributorId: newContributor.id,
             extractedAliasIds: aliasIds,
+            ...(effective.isViewingAs && { viewAsUserId: effective.effectiveUserId }),
           },
           performedByUserId: session.user.id,
         },

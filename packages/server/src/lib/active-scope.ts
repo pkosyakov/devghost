@@ -7,6 +7,7 @@ export const ACTIVE_SCOPE_QUERY_KEYS = [
   'to',
   'repositoryIds',
   'contributorIds',
+  'viewAs',
 ] as const;
 
 type SearchParamsLike = {

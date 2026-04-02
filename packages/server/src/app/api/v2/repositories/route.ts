@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/db';
 import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { repositoryListQuerySchema } from '@/lib/schemas/repository';
 import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { getRepositoryNamesForScope, resolveActiveScope } from '@/lib/services/active-scope-service';
@@ -11,7 +12,9 @@ export async function GET(request: NextRequest) {
   const session = await requireUserSession();
   if (isErrorResponse(session)) return session;
 
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const params = Object.fromEntries(request.nextUrl.searchParams);
   const parsed = repositoryListQuerySchema.safeParse(params);
@@ -25,7 +28,7 @@ export async function GET(request: NextRequest) {
 
   const { page, pageSize, sort, sortOrder, language, search, freshness } = parsed.data;
   const resolvedScope = await resolveActiveScope(workspace.id, parsedScope.data, {
-    actorUserId: session.user.id,
+    actorUserId: effective.effectiveUserId,
   });
   const scopedRepositoryNames = await getRepositoryNamesForScope(resolvedScope);
 

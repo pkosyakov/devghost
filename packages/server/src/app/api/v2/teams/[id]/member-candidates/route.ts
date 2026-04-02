@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { apiError, apiResponse, isErrorResponse, requireUserSession } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { teamMemberCandidatesQuerySchema } from '@/lib/schemas/team';
 import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { resolveActiveScope, scopeDateRangeToDates } from '@/lib/services/active-scope-service';
@@ -14,7 +15,9 @@ export async function GET(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
   const query = Object.fromEntries(request.nextUrl.searchParams.entries());
 
   const parsedQuery = teamMemberCandidatesQuerySchema.safeParse(query);
@@ -29,7 +32,7 @@ export async function GET(
 
   const resolvedScope = await resolveActiveScope(workspace.id, parsedScope.data, {
     routeTeamId: id,
-    actorUserId: session.user.id,
+    actorUserId: effective.effectiveUserId,
   });
 
   const result = await getTeamMemberCandidates(id, workspace.id, {

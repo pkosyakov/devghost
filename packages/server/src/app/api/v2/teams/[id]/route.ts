@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { apiResponse, apiError, requireUserSession, isErrorResponse, parseBody } from '@/lib/api-utils';
 import { ensureWorkspaceForUser } from '@/lib/services/workspace-service';
+import { resolveEffectiveUser, isEffectiveUserError } from '@/lib/view-as';
 import { updateTeamBodySchema } from '@/lib/schemas/team';
 import { activeScopeQuerySchema } from '@/lib/schemas/scope';
 import { getTeamDetail, updateTeam, deleteTeam } from '@/lib/services/team-service';
@@ -14,7 +15,9 @@ export async function GET(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const qp = Object.fromEntries(request.nextUrl.searchParams);
   const scopeParsed = activeScopeQuerySchema.safeParse(qp);
@@ -23,7 +26,7 @@ export async function GET(
   }
   const scopeRange = await resolveActiveScope(workspace.id, scopeParsed.data, {
     routeTeamId: id,
-    actorUserId: session.user.id,
+    actorUserId: effective.effectiveUserId,
   });
 
   const detail = await getTeamDetail(id, workspace.id, scopeDateRangeToDates(scopeRange.dateRange));
@@ -42,7 +45,9 @@ export async function PATCH(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const parsed = await parseBody(request, updateTeamBodySchema);
   if (!parsed.success) return parsed.error;
@@ -69,7 +74,9 @@ export async function DELETE(
   if (isErrorResponse(session)) return session;
 
   const { id } = await params;
-  const workspace = await ensureWorkspaceForUser(session.user.id);
+  const effective = await resolveEffectiveUser(session, request.nextUrl.searchParams);
+  if (isEffectiveUserError(effective)) return effective;
+  const workspace = await ensureWorkspaceForUser(effective.effectiveUserId);
 
   const result = await deleteTeam(id, workspace.id);
   if (result.count === 0) {

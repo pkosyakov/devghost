@@ -21,6 +21,11 @@ vi.mock('@/lib/services/workspace-service', () => ({
   ensureWorkspaceForUser: vi.fn().mockResolvedValue({ id: 'ws-1', ownerId: 'u1' }),
 }));
 
+vi.mock('@/lib/view-as', () => ({
+  resolveEffectiveUser: vi.fn().mockResolvedValue({ effectiveUserId: 'u1', isViewingAs: false }),
+  isEffectiveUserError: vi.fn(() => false),
+}));
+
 vi.mock('@/lib/saved-view-access', () => ({
   buildSavedViewReadableWhere: vi.fn().mockReturnValue({ workspaceId: 'ws-1' }),
 }));
@@ -33,6 +38,16 @@ vi.mock('@/lib/db', () => ({
     savedView: { count: (...args: any[]) => mockSavedViewCount(...args) },
   },
 }));
+
+// -- Helpers --
+
+function mockRequest(params: Record<string, string> = {}) {
+  const url = new URL('http://localhost/api/v2/workspace-stage');
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+  const req = new Request(url) as any;
+  req.nextUrl = url;
+  return req;
+}
 
 // -- Tests --
 
@@ -47,7 +62,7 @@ describe('GET /api/v2/workspace-stage', () => {
     mockSavedViewCount.mockResolvedValue(0);
 
     const { GET } = await import('../route');
-    const res = await GET();
+    const res = await GET(mockRequest());
 
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -64,7 +79,7 @@ describe('GET /api/v2/workspace-stage', () => {
     mockSavedViewCount.mockResolvedValue(0);
 
     const { GET } = await import('../route');
-    const res = await GET();
+    const res = await GET(mockRequest());
 
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -80,7 +95,7 @@ describe('GET /api/v2/workspace-stage', () => {
     mockSavedViewCount.mockResolvedValue(0);
 
     const { GET } = await import('../route');
-    const res = await GET();
+    const res = await GET(mockRequest());
 
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -96,7 +111,7 @@ describe('GET /api/v2/workspace-stage', () => {
     mockSavedViewCount.mockResolvedValue(1);
 
     const { GET } = await import('../route');
-    const res = await GET();
+    const res = await GET(mockRequest());
 
     expect(res.status).toBe(200);
     const json = await res.json();
