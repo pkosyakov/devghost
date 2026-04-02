@@ -620,18 +620,31 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
     conn.commit()
 
 
-def set_job_llm_identity(conn, job_id: str, provider: str | None, model: str | None):
-    """Persist effective LLM identity on the job for progress/audit surfaces."""
+def set_job_llm_identity(
+    conn,
+    job_id: str,
+    provider: str | None,
+    model: str | None,
+    fd_v3_enabled: bool | None = None,
+    large_provider: str | None = None,
+    large_model: str | None = None,
+):
+    """Persist effective split-model identity on the job for progress/audit surfaces."""
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE "AnalysisJob"
             SET "llmProvider" = %s,
                 "llmModel" = %s,
+                "smallLlmProvider" = %s,
+                "smallLlmModel" = %s,
+                "largeLlmProvider" = %s,
+                "largeLlmModel" = %s,
+                "fdV3Enabled" = %s,
                 "updatedAt" = NOW()
             WHERE id = %s
             """,
-            (provider, model, job_id),
+            (provider, model, provider, model, large_provider, large_model, fd_v3_enabled, job_id),
         )
     conn.commit()
 

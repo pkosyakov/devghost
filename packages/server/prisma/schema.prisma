@@ -587,6 +587,11 @@ model AnalysisJob {
   // LLM usage tracking (populated after pipeline completes)
   llmProvider         String?
   llmModel            String?
+  smallLlmProvider    String?
+  smallLlmModel       String?
+  largeLlmProvider    String?
+  largeLlmModel       String?
+  fdV3Enabled         Boolean?
   totalPromptTokens   Int?
   totalCompletionTokens Int?
   totalLlmCalls       Int?

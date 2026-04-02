@@ -133,6 +133,11 @@ interface AnalysisProgressData {
   error: string | null;
   llmProvider: string | null;
   llmModel: string | null;
+  smallLlmProvider?: string | null;
+  smallLlmModel?: string | null;
+  largeLlmProvider?: string | null;
+  largeLlmModel?: string | null;
+  fdV3Enabled?: boolean | null;
   totalPromptTokens: number | null;
   totalCompletionTokens: number | null;
   totalLlmCalls: number | null;

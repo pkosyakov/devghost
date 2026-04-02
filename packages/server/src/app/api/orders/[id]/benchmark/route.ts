@@ -10,6 +10,7 @@ import { analysisLogger } from '@/lib/logger';
 import { benchmarkSchema } from '@/lib/schemas';
 import { DEFAULT_CTX, clampContext, resolveModelContext, computeEffectiveContext } from '@/lib/services/model-context';
 import { resolveBenchmarkProfile } from '@/lib/services/benchmark-profile';
+import { buildAnalysisJobLlmProfile } from '@/lib/services/job-llm-profile';
 
 // POST /api/orders/[id]/benchmark — trigger a benchmark run
 export async function POST(
@@ -263,8 +264,13 @@ export async function POST(
       status: 'PENDING',
       type: 'benchmark',
       baseJobId: baseJob.id,
-      llmProvider: provider,
-      llmModel: model,
+      ...buildAnalysisJobLlmProfile({
+        smallLlmProvider: provider,
+        smallLlmModel: model,
+        fdV3Enabled,
+        largeLlmProvider: fdLargeProvider,
+        largeLlmModel: fdLargeModel,
+      }),
       llmConfigSnapshot: snapshot,
       llmConfigFingerprint: fingerprint,
     },

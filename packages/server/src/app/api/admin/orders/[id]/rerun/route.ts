@@ -8,6 +8,7 @@ import { analysisLogger } from '@/lib/logger';
 import { getLlmConfig, getConcurrencyConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
+import { buildAnalysisJobLlmProfileFromSnapshot, withSplitModelSnapshot } from '@/lib/services/job-llm-profile';
 import { z } from 'zod';
 
 type CacheMode = 'any' | 'model' | 'off';
@@ -126,6 +127,7 @@ export async function POST(
 
   // Always stamp current concurrency — pipeline reads env at runtime
   (snapshotConfig as Record<string, unknown>).concurrency = await getConcurrencyConfig();
+  snapshotConfig = withSplitModelSnapshot(snapshotConfig as Record<string, unknown>) as Prisma.InputJsonValue;
 
   // Atomically: check status + create job + mark order PROCESSING.
   const job = await prisma.$transaction(async (tx) => {
@@ -151,6 +153,7 @@ export async function POST(
         skipBilling: true,
         forceRecalculate,
         llmConfigSnapshot: snapshotConfig,
+        ...buildAnalysisJobLlmProfileFromSnapshot(snapshotConfig),
       },
     });
 
