@@ -62,6 +62,7 @@ from db import (
     delete_benchmark_analyses,
     append_job_event, clear_force_recalculate,
 )
+from attribution import resolve_row_llm_model
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
 from rate_limiter import RateLimiter
 
@@ -1903,10 +1904,7 @@ def map_to_commit_analysis(result, commits, order_id, repo_full_name, llm_model)
     method = result.get("method", "")
 
     confidence = _confidence_from_method(method)
-
-    model_for_row = None if (
-        method.startswith("FD") or method == "root_commit_skip" or method == "error"
-    ) else llm_model
+    model_for_row = resolve_row_llm_model(method, result.get("model"), llm_model)
 
     analysis = result.get("analysis") or {}
 
