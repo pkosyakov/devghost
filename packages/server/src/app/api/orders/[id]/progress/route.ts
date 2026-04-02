@@ -3,7 +3,7 @@ import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/db';
 import { apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { getPipelineLogs, getJobMeta } from '@/lib/services/pipeline-log-store';
-import { mapToClientEvents, hashEmail } from '@/lib/services/client-event-mapper';
+import { mapToClientEvents, hashEmail, asPayload } from '@/lib/services/client-event-mapper';
 import { GHOST_NORM } from '@devghost/shared';
 
 function toPositiveNumber(value: unknown): number | null {
@@ -35,13 +35,6 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function asPayload(raw: unknown): Record<string, unknown> {
-  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-    return raw as Record<string, unknown>;
-  }
-  return {};
-}
-
 /** Count weekdays in analysis scope. For LAST_N, aggregates ALL extract events. */
 async function computeScopeWorkDays(orderId: string, jobId: string): Promise<number> {
   const order = await prisma.order.findUnique({
@@ -50,6 +43,7 @@ async function computeScopeWorkDays(orderId: string, jobId: string): Promise<num
       analysisPeriodMode: true,
       analysisStartDate: true,
       analysisEndDate: true,
+      analysisYears: true,
       availableStartDate: true,
       availableEndDate: true,
     },
@@ -62,6 +56,11 @@ async function computeScopeWorkDays(orderId: string, jobId: string): Promise<num
   if (order.analysisPeriodMode === 'DATE_RANGE') {
     startDate = order.analysisStartDate;
     endDate = order.analysisEndDate;
+  } else if (order.analysisPeriodMode === 'SELECTED_YEARS' && order.analysisYears.length > 0) {
+    const minYear = Math.min(...order.analysisYears);
+    const maxYear = Math.max(...order.analysisYears);
+    startDate = new Date(`${minYear}-01-01`);
+    endDate = new Date(`${maxYear}-12-31`);
   } else if (order.analysisPeriodMode === 'LAST_N_COMMITS') {
     // Aggregate ALL REPO_EXTRACT_DONE events — min(earliest), max(latest)
     const extractEvents = await prisma.analysisJobEvent.findMany({

@@ -6,9 +6,10 @@ import {
   type LeaderboardData,
 } from '../client-event-mapper';
 
+let eventSeq = 0;
 function makeEvent(overrides: Record<string, unknown> = {}) {
   return {
-    id: '1',
+    id: String(++eventSeq),
     createdAt: new Date('2026-04-02T10:00:00Z'),
     level: 'info',
     phase: 'llm',

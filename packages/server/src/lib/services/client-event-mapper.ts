@@ -31,7 +31,7 @@ export function hashEmail(email: string): string {
   return createHash('sha256').update(email.toLowerCase().trim()).digest('hex').slice(0, 12);
 }
 
-function asPayload(raw: unknown): Record<string, unknown> {
+export function asPayload(raw: unknown): Record<string, unknown> {
   if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
     return raw as Record<string, unknown>;
   }
@@ -48,14 +48,9 @@ function asString(v: unknown): string | null {
   return null;
 }
 
-let idCounter = 0;
-function nextId(base: string): string {
-  return `${base}-${++idCounter}`;
-}
-
-/** Reset counter — for deterministic tests. */
-export function _resetIdCounter(): void {
-  idCounter = 0;
+function makeIdGen(dbEventId: string) {
+  let sub = 0;
+  return () => `ce-${dbEventId}-${sub++}`;
 }
 
 // ── Internal codes that are never mapped ───────────────────────────
@@ -95,6 +90,7 @@ function mapSingleEvent(
   const p = asPayload(event.payload);
   const ts = event.createdAt.getTime();
   const repo = event.repo ?? '';
+  const nextId = makeIdGen(event.id);
 
   if (!code || isInternalCode(code)) return [];
 
@@ -103,7 +99,7 @@ function mapSingleEvent(
     case 'REPO_CLONE_DONE':
       if (code === 'REPO_CLONE_START') {
         return [{
-          id: nextId('ce'), ts, tier: 'milestone', category: 'repo',
+          id: nextId(), ts, tier: 'milestone', category: 'repo',
           text: 'clientProgress.repoConnecting', params: { repo },
         }];
       }
@@ -111,14 +107,14 @@ function mapSingleEvent(
 
     case 'REPO_EXTRACT_START':
       return [{
-        id: nextId('ce'), ts, tier: 'major', category: 'phase',
+        id: nextId(), ts, tier: 'major', category: 'phase',
         text: 'clientProgress.extractingHistory', params: { repo },
       }];
 
     case 'REPO_EXTRACT_DONE': {
       const commitCount = asNumber(p.commitCount) ?? 0;
       return [{
-        id: nextId('ce'), ts, tier: 'major', category: 'stat',
+        id: nextId(), ts, tier: 'major', category: 'stat',
         text: 'clientProgress.historyExtracted', params: { commitCount },
       }];
     }
@@ -126,7 +122,7 @@ function mapSingleEvent(
     case 'LLM_EVAL_START': {
       const commitCount = asNumber(p.commitCount) ?? 0;
       return [{
-        id: nextId('ce'), ts, tier: 'milestone', category: 'phase',
+        id: nextId(), ts, tier: 'milestone', category: 'phase',
         text: 'clientProgress.aiAnalysisStarted', params: { commitCount },
       }];
     }
@@ -151,7 +147,7 @@ function mapSingleEvent(
       const developerName = devId ? (devNames.get(devId) ?? 'Developer') : 'Developer';
 
       result.push({
-        id: nextId('ce'), ts, tier: 'major', category: 'commit',
+        id: nextId(), ts, tier: 'major', category: 'commit',
         text: 'clientProgress.commitAnalyzed',
         params: { subject, developerName },
         developerId: devId,
@@ -160,21 +156,21 @@ function mapSingleEvent(
 
       if (filesCount != null && filesCount > 0) {
         result.push({
-          id: nextId('ce'), ts, tier: 'micro', category: 'stat',
+          id: nextId(), ts, tier: 'micro', category: 'stat',
           text: 'clientProgress.filesChanged', params: { fileCount: filesCount },
         });
       }
 
       if (lineCount > 0) {
         result.push({
-          id: nextId('ce'), ts, tier: 'micro', category: 'stat',
+          id: nextId(), ts, tier: 'micro', category: 'stat',
           text: 'clientProgress.linesChanged', params: { lineCount },
         });
       }
 
       if (category) {
         result.push({
-          id: nextId('ce'), ts, tier: 'micro', category: 'stat',
+          id: nextId(), ts, tier: 'micro', category: 'stat',
           text: 'clientProgress.changeType', params: { type: category },
         });
       }
@@ -185,7 +181,7 @@ function mapSingleEvent(
     case 'REPO_FULLY_CACHED': {
       const count = asNumber(p.cachedCount) ?? asNumber(p.commitCount) ?? 0;
       return [{
-        id: nextId('ce'), ts, tier: 'major', category: 'stat',
+        id: nextId(), ts, tier: 'major', category: 'stat',
         text: 'clientProgress.cachedResultsFound', params: { count },
       }];
     }
@@ -193,7 +189,7 @@ function mapSingleEvent(
     case 'CACHE_REUSED': {
       const count = asNumber(p.cacheHitCount) ?? 0;
       return [{
-        id: nextId('ce'), ts, tier: 'micro', category: 'stat',
+        id: nextId(), ts, tier: 'micro', category: 'stat',
         text: 'clientProgress.cacheReused', params: { count },
       }];
     }
@@ -202,7 +198,7 @@ function mapSingleEvent(
       const commitCount = asNumber(p.totalAnalyzed) ?? 0;
       const totalHours = asNumber(p.totalHours) ?? 0;
       return [{
-        id: nextId('ce'), ts, tier: 'milestone', category: 'repo',
+        id: nextId(), ts, tier: 'milestone', category: 'repo',
         text: 'clientProgress.repoCompleted',
         params: { repo, commitCount, totalHours },
       }];
@@ -210,13 +206,13 @@ function mapSingleEvent(
 
     case 'LLM_EVAL_DONE':
       return [{
-        id: nextId('ce'), ts, tier: 'major', category: 'phase',
+        id: nextId(), ts, tier: 'major', category: 'phase',
         text: 'clientProgress.aiAnalysisDone', params: {},
       }];
 
     case 'REPO_EMPTY_SCOPE':
       return [{
-        id: nextId('ce'), ts, tier: 'major', category: 'repo',
+        id: nextId(), ts, tier: 'major', category: 'repo',
         text: 'clientProgress.repoEmptyScope', params: { repo },
       }];
 
@@ -236,7 +232,6 @@ export function mapToClientEvents(
   rawEvents: RawEvent[],
   devNames: DevNameAccumulator = new Map(),
 ): ClientEvent[] {
-  _resetIdCounter();
   return rawEvents.flatMap(e => mapSingleEvent(e, devNames));
 }
 
