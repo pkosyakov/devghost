@@ -182,6 +182,33 @@ export class GitHubClient {
     return results;
   }
 
+  /**
+   * Get total commit count on default branch via per_page=1 + Link header.
+   * Includes merge commits — use as an upper-bound estimate.
+   */
+  async getCommitCount(owner: string, repo: string): Promise<number | null> {
+    const url = `${this.baseUrl}/repos/${owner}/${repo}/commits?per_page=1`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: this.getHeaders(),
+    });
+    if (!response.ok) return null;
+
+    const linkHeader = response.headers.get('Link');
+    if (!linkHeader) {
+      // Single page — count the items (0 or 1)
+      const data = await response.json();
+      return Array.isArray(data) ? data.length : null;
+    }
+
+    // Consume body to free the connection
+    await response.text();
+
+    // Parse rel="last" to get total pages (= total commits with per_page=1)
+    const lastMatch = linkHeader.match(/<[^>]+[?&]page=(\d+)[^>]*>;\s*rel="last"/);
+    return lastMatch ? parseInt(lastMatch[1]!, 10) : null;
+  }
+
   private parseNextLink(linkHeader: string | null): string | null {
     if (!linkHeader) return null;
 

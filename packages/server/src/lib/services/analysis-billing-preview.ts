@@ -49,7 +49,7 @@ export type RepoCacheBreakdown = {
 
 // ── Shared helpers ─────────────────────────────────────────
 
-function parseRepoNames(raw: Array<Record<string, unknown>>): string[] {
+export function parseRepoNames(raw: Array<Record<string, unknown>>): string[] {
   const names = new Set<string>();
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
