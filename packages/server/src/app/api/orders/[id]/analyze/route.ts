@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { Prisma } from '@prisma/client';
-import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
+import { apiResponse, apiError, requireUserSession, isErrorResponse, getOrderWithAuth, orderAuthError } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getAvailableBalance, isBillingEnabled, runExpiryGuard } from '@/lib/services/credit-service';
 import { getLlmConfig, getConcurrencyFromConfig } from '@/lib/llm-config';
@@ -37,10 +37,9 @@ export async function POST(
   const rateLimited = await checkRateLimit(request, 'analysis', session.user.id);
   if (rateLimited) return rateLimited;
 
-  const order = await prisma.order.findFirst({
-    where: { id, userId: session.user.id },
-  });
-  if (!order) return apiError('Order not found', 404);
+  const orderResult = await getOrderWithAuth(id);
+  if (!orderResult.success) return orderAuthError(orderResult);
+  const order = orderResult.order;
 
   // Guard against concurrent analysis
   if (order.status === 'PROCESSING') {

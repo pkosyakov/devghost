@@ -608,8 +608,9 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       queryClient.invalidateQueries({ queryKey: ['order', id] });
       queryClient.invalidateQueries({ queryKey: ['metrics', id] });
     },
-    onError: () => {
+    onError: (error: Error) => {
       setAnalysisStarted(false);
+      toast.error(t('detail.analysisFailed'), error.message);
     },
   });
 
