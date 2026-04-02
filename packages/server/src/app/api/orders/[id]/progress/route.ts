@@ -86,7 +86,7 @@ async function computeScopeWorkDays(orderId: string, jobId: string): Promise<num
   const fullWeeks = Math.floor(totalDays / 7);
   const remainder = totalDays % 7;
   let count = fullWeeks * 5;
-  const startDay = startDate.getDay(); // 0=Sun..6=Sat
+  const startDay = startDate.getUTCDay(); // 0=Sun..6=Sat
   for (let i = 0; i < remainder; i++) {
     const day = (startDay + i) % 7;
     if (day !== 0 && day !== 6) count++;
