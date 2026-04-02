@@ -13,10 +13,12 @@ interface GhostBubbleChartProps {
 
 /* ---------- types ---------- */
 
+type XAxisMode = 'workDays' | 'effort';
+
 interface ChartPoint {
   name: string; email: string;
   x: number; y: number; z: number; r: number; fill: string;
-  realDays: number; realGhost: number;
+  realDays: number; realEffort: number; realGhost: number;
 }
 
 const BASE_MARGIN = { top: 20, right: 20, bottom: 30, left: 20 };
@@ -32,6 +34,7 @@ const OVERFLOW_STYLE = `
 
 export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartProps) {
   const [showLabels, setShowLabels] = useState(true);
+  const [xAxisMode, setXAxisMode] = useState<XAxisMode>('workDays');
   const [hoveredEmail, setHoveredEmail] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(700);
@@ -91,18 +94,22 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   const clampY = <T extends { y: number }>(pts: T[]): T[] =>
     pts.map(p => (p.y < 0 ? { ...p, y: 0 } : p));
 
+  const xValue = (m: (typeof metrics)[number]) =>
+    xAxisMode === 'effort' ? m.totalEffortHours : m.actualWorkDays;
+
   const data = clampY(applyJitter(
     metrics
       .filter(m => m.hasEnoughData && m.ghostPercent != null)
       .map(m => ({
         name: m.developerName,
         email: m.developerEmail,
-        x: m.actualWorkDays,
+        x: xValue(m),
         y: Math.round(m.ghostPercent!),
         z: m.totalEffortHours,
         r: effortToRadius(m.totalEffortHours, maxEffort, isLargeSet),
         fill: ghostFill(m.ghostPercent!),
         realDays: m.actualWorkDays,
+        realEffort: m.totalEffortHours,
         realGhost: Math.round(m.ghostPercent!),
       })),
     metrics.length,
@@ -114,12 +121,13 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
       .map(m => ({
         name: m.developerName,
         email: m.developerEmail,
-        x: m.actualWorkDays,
+        x: xValue(m),
         y: Math.round(m.ghostPercent ?? 0),
         z: m.totalEffortHours,
         r: effortToRadius(m.totalEffortHours, maxEffort, isLargeSet),
         fill: '#d1d5db',
         realDays: m.actualWorkDays,
+        realEffort: m.totalEffortHours,
         realGhost: Math.round(m.ghostPercent ?? 0),
       })),
     metrics.length,
@@ -141,7 +149,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   };
 
   // Axis domains: no artificial padding — clip-path override lets bubbles overflow.
-  const maxDays = allPoints.length > 0
+  const maxX = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.x))
     : 1;
   const maxGhost = allPoints.length > 0
@@ -232,26 +240,49 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   return (
     <div ref={containerRef} className="ghost-bubble-no-clip">
       <style>{OVERFLOW_STYLE}</style>
-      <label className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1 select-none cursor-pointer w-fit">
-        <input
-          type="checkbox"
-          checked={showLabels}
-          onChange={e => setShowLabels(e.target.checked)}
-          className="accent-primary"
-        />
-        Names
-      </label>
+      <div className="flex items-center gap-4 mb-1">
+        <label className="flex items-center gap-1.5 text-xs text-muted-foreground select-none cursor-pointer w-fit">
+          <input
+            type="checkbox"
+            checked={showLabels}
+            onChange={e => setShowLabels(e.target.checked)}
+            className="accent-primary"
+          />
+          Names
+        </label>
+        <div className="flex items-center gap-1 text-xs text-muted-foreground">
+          <span>X:</span>
+          <button
+            onClick={() => setXAxisMode('workDays')}
+            className={`px-1.5 py-0.5 rounded ${xAxisMode === 'workDays' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+          >
+            Work Days
+          </button>
+          <button
+            onClick={() => setXAxisMode('effort')}
+            className={`px-1.5 py-0.5 rounded ${xAxisMode === 'effort' ? 'bg-primary text-primary-foreground' : 'hover:bg-muted'}`}
+          >
+            Effort
+          </button>
+        </div>
+      </div>
       <ResponsiveContainer width="100%" height={chartHeight} style={{ overflow: 'visible' }}>
         <ScatterChart margin={chartMargin}>
           <CartesianGrid strokeDasharray="3 3" />
           <XAxis
             dataKey="x"
-            name="Work Days"
+            name={xAxisMode === 'effort' ? 'Total Effort' : 'Work Days'}
             type="number"
-            domain={[0, Math.ceil(maxDays)]}
-            allowDecimals={false}
-            tickFormatter={(value: number) => `${Math.round(value)}`}
-            label={{ value: 'Work Days', position: 'insideBottom', offset: -6 }}
+            domain={[0, xAxisMode === 'effort' ? Math.ceil(maxX) : Math.ceil(maxX)]}
+            allowDecimals={xAxisMode === 'effort'}
+            tickFormatter={(value: number) =>
+              xAxisMode === 'effort' ? `${Math.round(value)}h` : `${Math.round(value)}`
+            }
+            label={{
+              value: xAxisMode === 'effort' ? 'Total Effort (h)' : 'Work Days',
+              position: 'insideBottom',
+              offset: -6,
+            }}
           />
           <YAxis
             dataKey="y"
@@ -274,7 +305,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
                   <p className="font-bold">{d.name}</p>
                   <p>Ghost: {d.realGhost}%</p>
                   <p>Work Days: {d.realDays}</p>
-                  <p>Effort: {d.z.toFixed(1)}h</p>
+                  <p>Effort: {d.realEffort.toFixed(1)}h</p>
                 </div>
               );
             }}
