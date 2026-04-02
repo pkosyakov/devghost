@@ -802,9 +802,10 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
     by: ['authorEmail', 'authorName'],
     where: {
       orderId: id,
+      jobId: null,          // exclude benchmark rows (codebase convention)
       method: { not: 'error' },
     },
-    _sum: { estimatedHours: true },
+    _sum: { effortHours: true },
     _count: { _all: true },
   });
 
@@ -815,7 +816,7 @@ Before the `return NextResponse.json(...)` at the end of the GET handler, add ma
     return {
       id: devId,
       name: isAdmin ? row.authorName : (devNames.get(devId) ?? row.authorName.split(' ')[0]),
-      totalHours: Math.round((row._sum.estimatedHours?.toNumber() ?? 0) * 100) / 100,
+      totalHours: Math.round((row._sum.effortHours?.toNumber() ?? 0) * 100) / 100,
       commitCount: row._count._all,
     };
   });
@@ -1354,6 +1355,24 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
     }
   }, [jobStatus, isDraining, isDrained]);
 
+  // Reset drain state when job resumes (watchdog retry or manual resume)
+  // FAILED_RETRYABLE → RUNNING, or PAUSED → RUNNING
+  const prevJobStatusRef = useRef(jobStatus);
+  useEffect(() => {
+    const prev = prevJobStatusRef.current;
+    prevJobStatusRef.current = jobStatus;
+    if (
+      jobStatus === 'RUNNING' &&
+      (prev === 'FAILED_RETRYABLE' || prev === 'PENDING') &&
+      (isDraining || isDrained)
+    ) {
+      setIsDraining(false);
+      setIsDrained(false);
+      targetSpeedRef.current = 1.0;
+      speedRef.current = 1.0;
+    }
+  }, [jobStatus, isDraining, isDrained]);
+
   // Compute adaptive pressure
   const getExpectedBatchSize = useCallback(() => {
     const sizes = batchSizesRef.current;
@@ -1616,7 +1635,7 @@ function LeaderboardRace({
     }));
     devs.push({
       id: '__ghost__',
-      name: t('orders.clientProgress.ghostLabel'),
+      name: t('clientProgress.ghostLabel'),
       hours: data.ghost.totalHours,
       isGhost: true,
     });
@@ -1628,7 +1647,7 @@ function LeaderboardRace({
   return (
     <div className="space-y-1">
       <h3 className="text-sm font-medium mb-2">
-        {t('orders.clientProgress.leaderboardTitle')}
+        {t('clientProgress.leaderboardTitle')}
       </h3>
       {allParticipants.map((participant, index) => (
         <div
@@ -1993,38 +2012,64 @@ DevGhost. Handles paused, failed, cancelled, and retrying states."
 **Files:**
 - Modify: `packages/server/src/app/[locale]/(dashboard)/orders/[id]/page.tsx`
 
-- [ ] **Step 1: Add imports and state**
+- [ ] **Step 1: Update AnalysisProgressData interface, add imports and state**
 
-At the top of `page.tsx`, add the import:
+In the `AnalysisProgressData` interface (line 123), add the new fields. The admin response includes all existing fields plus these; the non-admin response is a subset (no `events`, `log`, `llmProvider`, etc.) but includes these:
+
+```typescript
+interface AnalysisProgressData {
+  // ... all existing fields ...
+  isRetrying?: boolean;         // server-computed: FAILED_RETRYABLE && retryCount < maxRetries
+  clientEvents?: ClientEvent[]; // safe client events (incremental when sinceEventId provided)
+  leaderboard?: {               // cumulative from DB
+    developers: { id: string; name: string; totalHours: number; commitCount: number }[];
+    ghost: { totalHours: number };
+    scopeWorkDays: number;
+  };
+}
+```
+
+At the top of `page.tsx`, add the imports:
 
 ```typescript
 import { ClientAnalysisProgress } from '@/components/client-analysis-progress';
+import type { ClientEvent } from '@/lib/services/client-event-mapper';
 ```
 
 Inside the `OrderPage` component, after the existing state declarations (around line 306), add:
 
 ```typescript
-  const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>(isAdmin ? 'admin' : 'client');
+  // Default to 'client' — synced to 'admin' once session loads (isAdmin is async)
+  const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>('client');
   const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
+
+  // Sync adminViewMode when session loads (isAdmin comes from useSession, initially falsy)
+  const adminViewInitRef = useRef(false);
+  useEffect(() => {
+    if (isAdmin && !adminViewInitRef.current) {
+      adminViewInitRef.current = true;
+      setAdminViewMode('admin');
+    }
+  }, [isAdmin]);
 
   // Cumulative client events — the API returns incremental batches, we accumulate here
   const [allClientEvents, setAllClientEvents] = useState<ClientEvent[]>([]);
   const clientEventSeenRef = useRef(new Set<string>());
 ```
 
-In the progress polling `onSuccess` callback (where `jobEvents` are accumulated), add accumulation for client events:
+Inside the progress query `queryFn` (around line 379), after the existing `jobEvents` accumulation block (`if (data?.events?.length) { ... }`) and before `return data;`, add client event accumulation. Note: `fetchProgress()` returns `json.data` (not the raw envelope), so fields are accessed directly on `data`:
 
 ```typescript
-    // Accumulate client events (same pattern as jobEvents)
-    if (data.data.clientEvents?.length) {
-      setAllClientEvents(prev => {
-        const newEvents = data.data.clientEvents.filter(
-          (e: { id: string }) => !clientEventSeenRef.current.has(e.id)
-        );
-        for (const e of newEvents) clientEventSeenRef.current.add(e.id);
-        return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
-      });
-    }
+      // Accumulate client events (same pattern as jobEvents above)
+      if (data?.clientEvents?.length) {
+        setAllClientEvents(prev => {
+          const newEvents = data.clientEvents.filter(
+            (e: { id: string }) => !clientEventSeenRef.current.has(e.id)
+          );
+          for (const e of newEvents) clientEventSeenRef.current.add(e.id);
+          return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+        });
+      }
 ```
 
 - [ ] **Step 2: Modify the PROCESSING section render condition**
@@ -2098,8 +2143,25 @@ In the `prepareAnalysisLaunch` callback (around line 475), add:
     setJobEvents([]);
     eventCursorRef.current = null;
     setClientProgressState('processing');  // reset state machine
+    setAllClientEvents([]);                // reset cumulative client feed
+    clientEventSeenRef.current.clear();    // reset dedup set
     queryClient.removeQueries({ queryKey: ['progress', id] });
   }, [id, queryClient]);
+```
+
+Also, in the existing `order?.status` watcher `useEffect` (around line 736), where `setJobEvents([])` is called on COMPLETED/FAILED/READY_FOR_ANALYSIS/INSUFFICIENT_CREDITS, add the same client-state reset:
+
+```typescript
+    if (order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS') {
+      setAnalysisJobId(null);
+      logSinceRef.current = 0;
+      eventCursorRef.current = null;
+      setJobEvents([]);
+      setAllClientEvents([]);           // reset cumulative client feed
+      clientEventSeenRef.current.clear();
+      queryClient.invalidateQueries({ queryKey: ['progress', id] });
+      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+    }
 ```
 
 - [ ] **Step 6: Verify the build compiles**
