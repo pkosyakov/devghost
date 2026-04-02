@@ -2,7 +2,8 @@ import { NextRequest } from 'next/server';
 import prisma from '@/lib/db';
 import { apiResponse, apiError, getOrderWithAuth, orderAuthError } from '@/lib/api-utils';
 import { requestCancel } from '@/lib/services/job-registry';
-import { analysisLogger } from '@/lib/logger';
+import { isBillingEnabled, releaseReservedCredits } from '@/lib/services/credit-service';
+import { analysisLogger, billingLogger } from '@/lib/logger';
 
 const log = analysisLogger.child({ module: 'cancel-api' });
 const CANCELLABLE_STATUSES = ['PENDING', 'RUNNING', 'LLM_COMPLETE'] as const;
@@ -13,8 +14,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string; jobId: string }> }
 ) {
   const { id, jobId } = await params;
-  const authResult = await getOrderWithAuth<{ id: string; status: string }>(id, {
-    select: { id: true, status: true },
+  const authResult = await getOrderWithAuth<{ id: string; status: string; userId: string }>(id, {
+    select: { id: true, status: true, userId: true },
   });
   if (!authResult.success) return orderAuthError(authResult);
   const { order } = authResult;
@@ -56,6 +57,18 @@ export async function POST(
   });
   if (cancelResult.count === 0) {
     return apiError('Job is no longer cancellable', 409);
+  }
+
+  // Release reserved credits (idempotent — safe even if watchdog also calls it)
+  if (isBillingEnabled()) {
+    try {
+      const released = await releaseReservedCredits(order.userId, jobId, id);
+      if (released > 0) {
+        billingLogger.info({ jobId, orderId: id, released }, 'Credits released on cancel');
+      }
+    } catch (err) {
+      billingLogger.error({ err, jobId, orderId: id }, 'Failed to release credits on cancel');
+    }
   }
 
   // For primary analysis: reset order status so user can retry

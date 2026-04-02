@@ -33,6 +33,7 @@ import {
   Square,
   Coins,
   AlertTriangle,
+  Pause,
 } from 'lucide-react';
 import { useTranslations, useLocale } from 'next-intl';
 import { useToast } from '@/hooks/use-toast';
@@ -59,7 +60,8 @@ function maskText(text: string): string {
 }
 
 function maskName(name: string): string {
-  return name.split(/\s+/).map(part => {
+  if (!name || !name.trim()) return 'Developer';
+  return name.trim().split(/\s+/).map(part => {
     if (part.length <= 2) return part[0] + '*';
     return part.slice(0, 2) + '*'.repeat(part.length - 2);
   }).join(' ');
@@ -131,6 +133,11 @@ interface AnalysisProgressData {
   error: string | null;
   llmProvider: string | null;
   llmModel: string | null;
+  smallLlmProvider?: string | null;
+  smallLlmModel?: string | null;
+  largeLlmProvider?: string | null;
+  largeLlmModel?: string | null;
+  fdV3Enabled?: boolean | null;
   totalPromptTokens: number | null;
   totalCompletionTokens: number | null;
   totalLlmCalls: number | null;
@@ -145,6 +152,9 @@ interface AnalysisProgressData {
   createdAt: string;
   retryCount: number;
   maxRetries: number;
+  failureClass: string | null;
+  isPaused: boolean;
+  pauseReason: string | null;
   currentRepoName: string | null;
   orderStatus: string;
   log: PipelineLogEntry[];
@@ -597,6 +607,24 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     },
     onError: (error: Error) => {
       toast.error(t('detail.analysisFailed'), error.message);
+    },
+  });
+
+  const resumeJobMutation = useMutation({
+    mutationFn: async (jobId: string) => {
+      const res = await fetch(`/api/orders/${id}/jobs/${jobId}/resume`, { method: 'POST' });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Resume failed');
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['order', id] });
+      queryClient.invalidateQueries({ queryKey: ['progress', id] });
+    },
+    onError: (error: Error) => {
+      toast.error(t('detail.resumeFailed'), error.message);
     },
   });
 
@@ -1317,7 +1345,73 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         const isLaunchingTransition = analysisStarted && order.status !== 'PROCESSING';
         const startedAt = !isLaunchingTransition && progress?.startedAt ? new Date(progress.startedAt) : null;
         const elapsed = startedAt ? now - startedAt.getTime() : 0;
-        return (
+        return progress?.isPaused ? (
+          <Card className="border-amber-200">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Pause className="h-5 w-5 text-amber-600" />
+                  <span className="text-amber-700">{t('detail.analysisPausedQuota')}</span>
+                </CardTitle>
+                <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
+                  {t('detail.analysisPausedQuota')}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                {t('detail.quotaPausedDescription')}
+              </p>
+
+              {/* Progress preserved indicator */}
+              {progress.currentCommit != null && progress.totalCommits != null && progress.totalCommits > 0 && (
+                <div className="space-y-2">
+                  <Progress value={progress.progress} />
+                  <p className="text-xs text-muted-foreground">
+                    {t('detail.preservedProgress', {
+                      current: progress.currentCommit,
+                      total: progress.totalCommits,
+                    })}
+                  </p>
+                </div>
+              )}
+
+              {progress.error && (
+                <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-sm text-amber-800">
+                  {progress.error}
+                </div>
+              )}
+
+              <div className="flex items-center gap-3">
+                <Button
+                  onClick={() => progress.jobId && resumeJobMutation.mutate(progress.jobId)}
+                  disabled={resumeJobMutation.isPending || !progress.jobId}
+                >
+                  {resumeJobMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  ) : (
+                    <Play className="h-4 w-4 mr-2" />
+                  )}
+                  {t('detail.resumeSameRun')}
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={handleRetryAnalysis}
+                  disabled={isAdmin ? adminRerunMutation.isPending : analyzeMutation.isPending}
+                >
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  {t('detail.freshRerun')}
+                </Button>
+              </div>
+
+              {resumeJobMutation.isError && (
+                <p className="text-sm text-red-600">
+                  {resumeJobMutation.error instanceof Error ? resumeJobMutation.error.message : t('detail.resumeFailed')}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        ) : (
           <Card>
             <CardHeader>
               <div className="flex items-center justify-between">

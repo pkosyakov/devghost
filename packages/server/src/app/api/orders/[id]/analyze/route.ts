@@ -8,6 +8,7 @@ import { getLlmConfig, getConcurrencyFromConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext } from '@/lib/services/model-context';
 import { computeBillingPreview, type BillingPreviewScope } from '@/lib/services/analysis-billing-preview';
+import { buildAnalysisJobLlmProfileFromSnapshot, withSplitModelSnapshot } from '@/lib/services/job-llm-profile';
 import { analysisLogger, billingLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { analyzeOrderSchema } from '@/lib/schemas';
@@ -298,10 +299,12 @@ export async function POST(
         ...(effectiveContextLength != null && { effectiveContextLength }),
         concurrency: getConcurrencyFromConfig(llmConfig),
       };
+      const enrichedSnapshot = withSplitModelSnapshot(snapshotConfig);
       await prisma.analysisJob.update({
         where: { id: job.id },
         data: {
-          llmConfigSnapshot: snapshotConfig as unknown as Prisma.InputJsonValue,
+          llmConfigSnapshot: enrichedSnapshot as unknown as Prisma.InputJsonValue,
+          ...buildAnalysisJobLlmProfileFromSnapshot(enrichedSnapshot),
         },
       });
       await appendJobEvent({
@@ -310,11 +313,11 @@ export async function POST(
         code: 'LLM_SNAPSHOT_SAVED',
         message: 'LLM config snapshot saved for modal worker',
         payload: {
-          provider: snapshotConfig.provider,
+          provider: enrichedSnapshot.provider,
           model:
-            snapshotConfig.provider === 'openrouter'
-              ? snapshotConfig.openrouter.model
-              : snapshotConfig.ollama.model,
+            enrichedSnapshot.provider === 'openrouter'
+              ? enrichedSnapshot.openrouter.model
+              : enrichedSnapshot.ollama.model,
         },
       });
     } catch (err) {
@@ -397,9 +400,13 @@ export async function POST(
         ...(effectiveContextLength != null && { effectiveContextLength }),
         concurrency: getConcurrencyFromConfig(llmConfigLocal),
       };
+      const enrichedSnapshot = withSplitModelSnapshot(localSnapshot);
       await prisma.analysisJob.update({
         where: { id: job.id },
-        data: { llmConfigSnapshot: localSnapshot as unknown as Prisma.InputJsonValue },
+        data: {
+          llmConfigSnapshot: enrichedSnapshot as unknown as Prisma.InputJsonValue,
+          ...buildAnalysisJobLlmProfileFromSnapshot(enrichedSnapshot),
+        },
       });
     } catch (err) {
       analysisLogger.warn({ err, jobId: job.id }, 'Failed to save local snapshot');

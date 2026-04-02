@@ -5,6 +5,7 @@ import { apiResponse, apiError, requireUserSession, isErrorResponse } from '@/li
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getLlmConfig, getConcurrencyConfig } from '@/lib/llm-config';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
+import { buildAnalysisJobLlmProfileFromSnapshot, withSplitModelSnapshot } from '@/lib/services/job-llm-profile';
 import { analysisLogger } from '@/lib/logger';
 
 export async function POST(
@@ -82,9 +83,14 @@ export async function POST(
         effectiveContextLength,
         concurrency: await getConcurrencyConfig(),
       } as unknown as Prisma.InputJsonValue;
+      snapshotConfig = withSplitModelSnapshot(snapshotConfig as Record<string, unknown>) as Prisma.InputJsonValue;
     } catch (err) {
       analysisLogger.warn({ err, orderId: id }, 'Update-analysis: failed to resolve context');
     }
+  }
+
+  if (snapshotConfig) {
+    snapshotConfig = withSplitModelSnapshot(snapshotConfig as Record<string, unknown>) as Prisma.InputJsonValue;
   }
 
   // Create new job with last analyzed SHAs for incremental analysis
@@ -94,6 +100,7 @@ export async function POST(
       status: 'PENDING',
       ...(lastJob?.lastAnalyzedShas && { lastAnalyzedShas: lastJob.lastAnalyzedShas }),
       ...(snapshotConfig && { llmConfigSnapshot: snapshotConfig }),
+      ...(snapshotConfig && buildAnalysisJobLlmProfileFromSnapshot(snapshotConfig)),
     },
   });
 

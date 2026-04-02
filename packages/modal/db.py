@@ -416,7 +416,11 @@ def save_commit_analyses(conn, analyses: list[dict], job_id: str | None = None):
 
 
 def increment_total_commits(conn, job_id: str, count: int):
-    """Increment totalCommits counter on the job."""
+    """Increment totalCommits counter on the job.
+
+    DEPRECATED: Prefer set_total_commits() for deterministic total at job start.
+    Kept for backward compatibility -- callers should migrate to set_total_commits.
+    """
     with conn.cursor() as cur:
         cur.execute("""
             UPDATE "AnalysisJob"
@@ -424,6 +428,35 @@ def increment_total_commits(conn, job_id: str, count: int):
                 "updatedAt" = NOW()
             WHERE id = %s
         """, (count, job_id))
+    conn.commit()
+
+
+def set_total_commits(conn, job_id: str, total: int):
+    """Set totalCommits to an absolute value (deterministic, idempotent).
+
+    Called once at job start after the commit plan is computed.
+    Safe on retry: always overwrites with the freshly computed total.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE "AnalysisJob"
+            SET "totalCommits" = %s,
+                "updatedAt" = NOW()
+            WHERE id = %s
+        """, (total, job_id))
+    conn.commit()
+
+
+def clear_force_recalculate(conn, job_id: str):
+    """Clear the forceRecalculate flag so retries don't re-delete analyses.
+
+    Must be called immediately after delete_existing_analyses() applies the wipe.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            'UPDATE "AnalysisJob" SET "forceRecalculate" = false, "updatedAt" = NOW() WHERE id = %s',
+            (job_id,),
+        )
     conn.commit()
 
 
@@ -587,20 +620,53 @@ def set_job_status(conn, job_id: str, status: str, progress: int | None = None):
     conn.commit()
 
 
+def set_job_llm_identity(
+    conn,
+    job_id: str,
+    provider: str | None,
+    model: str | None,
+    fd_v3_enabled: bool | None = None,
+    large_provider: str | None = None,
+    large_model: str | None = None,
+):
+    """Persist effective split-model identity on the job for progress/audit surfaces."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE "AnalysisJob"
+            SET "llmProvider" = %s,
+                "llmModel" = %s,
+                "smallLlmProvider" = %s,
+                "smallLlmModel" = %s,
+                "largeLlmProvider" = %s,
+                "largeLlmModel" = %s,
+                "fdV3Enabled" = %s,
+                "updatedAt" = NOW()
+            WHERE id = %s
+            """,
+            (provider, model, provider, model, large_provider, large_model, fd_v3_enabled, job_id),
+        )
+    conn.commit()
+
+
 def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False,
-                  skip_order_update: bool = False):
+                  skip_order_update: bool = False,
+                  failure_class: str | None = None,
+                  pause_reason: str | None = None):
     """Mark job as failed (retryable or fatal).
 
     When skip_order_update is True (benchmarks), the Order status is NOT set to FAILED.
     Benchmark failures should not affect the underlying order.
     """
     status = "FAILED_FATAL" if fatal else "FAILED_RETRYABLE"
+    paused_at = "NOW()" if failure_class == "EXTERNAL_QUOTA" else "NULL"
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             UPDATE "AnalysisJob"
-            SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW()
+            SET status = %s, error = %s, "completedAt" = NOW(), "updatedAt" = NOW(),
+                "failureClass" = %s, "pausedAt" = {paused_at}, "pauseReason" = %s
             WHERE id = %s
-        """, (status, error_msg[:2000], job_id))  # Truncate error to avoid DB overflow
+        """, (status, error_msg[:2000], failure_class, pause_reason, job_id))
         if fatal and not skip_order_update:
             cur.execute(
                 """

@@ -33,6 +33,14 @@ function envPositiveInt(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const LEGACY_QUOTA_RE = /quota|rate.?limit|too many requests|429|402/i;
+
+/** Infer failureClass for legacy jobs that predate the typed failureClass column. */
+function inferLegacyFailureClass(status: string, error: string | null): string | null {
+  if (status !== 'FAILED_RETRYABLE' || !error) return null;
+  return LEGACY_QUOTA_RE.test(error) ? 'EXTERNAL_QUOTA' : null;
+}
+
 // GET /api/orders/[id]/progress - Poll analysis job progress
 export async function GET(
   request: NextRequest,
@@ -144,6 +152,14 @@ export async function GET(
 
   const events = await prisma.analysisJobEvent.findMany(eventsQuery);
 
+  // Read failure class from typed field (no extra event query needed).
+  // Legacy fallback: pre-migration jobs may have failureClass=null with quota errors in error text.
+  const isFailureStatus = job.status === 'FAILED_RETRYABLE' || job.status === 'FAILED_FATAL' || job.status === 'FAILED';
+  const failureClass = isFailureStatus
+    ? (job.failureClass ?? inferLegacyFailureClass(job.status, job.error))
+    : null;
+  const isPaused = job.status === 'FAILED_RETRYABLE' && failureClass === 'EXTERNAL_QUOTA';
+
   let cloneSizeKb = meta?.totalCloneSizeKb ?? 0;
   if (cloneSizeKb <= 0) {
     const cloneEvents = await prisma.analysisJobEvent.findMany({
@@ -215,6 +231,11 @@ export async function GET(
         error: job.error,
         llmProvider: job.llmProvider,
         llmModel: job.llmModel,
+        smallLlmProvider: job.smallLlmProvider,
+        smallLlmModel: job.smallLlmModel,
+        largeLlmProvider: job.largeLlmProvider,
+        largeLlmModel: job.largeLlmModel,
+        fdV3Enabled: job.fdV3Enabled,
         totalPromptTokens: job.totalPromptTokens,
         totalCompletionTokens: job.totalCompletionTokens,
         totalLlmCalls: job.totalLlmCalls,
@@ -229,6 +250,9 @@ export async function GET(
         createdAt: job.createdAt,
         retryCount: job.retryCount,
         maxRetries: job.maxRetries,
+        failureClass,
+        isPaused,
+        pauseReason: isPaused ? (job.pauseReason ?? 'EXTERNAL_QUOTA') : null,
         currentRepoName: job.order.currentRepoName,
         orderStatus: job.order.status,
         log: logEntries,

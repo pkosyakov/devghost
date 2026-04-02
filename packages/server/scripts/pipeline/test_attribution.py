@@ -9,13 +9,25 @@ sys.path.insert(0, SCRIPT_DIR)
 
 # Set env vars before importing the module (module reads them at import time).
 os.environ.setdefault('OPENROUTER_MODEL', 'qwen/qwen3-coder-next')
+os.environ.setdefault('OLLAMA_MODEL', 'qwen3-coder:30b')
 os.environ.setdefault('FD_LARGE_LLM_MODEL', 'qwen/qwen3-coder-plus')
 
+import run_v16_pipeline as mod
 from run_v16_pipeline import _resolve_commit_model, _FD_LARGE_MODEL_METHODS
 
 
 class TestResolveCommitModel(unittest.TestCase):
     """Verify _resolve_commit_model returns correct model for every FD route."""
+
+    def setUp(self):
+        self.orig_provider = mod.LLM_PROVIDER
+        self.orig_openrouter_model = mod.OPENROUTER_MODEL
+        mod.LLM_PROVIDER = 'openrouter'
+        mod.OPENROUTER_MODEL = os.environ['OPENROUTER_MODEL']
+
+    def tearDown(self):
+        mod.LLM_PROVIDER = self.orig_provider
+        mod.OPENROUTER_MODEL = self.orig_openrouter_model
 
     # --- FD routes that call the large model ---
 
@@ -103,6 +115,21 @@ class TestResolveCommitModel(unittest.TestCase):
         TypeScript handles error→null separately in mapToCommitAnalysis."""
         result = _resolve_commit_model('error')
         self.assertEqual(result, os.environ['OPENROUTER_MODEL'])
+
+    def test_default_model_uses_ollama_when_provider_is_ollama(self):
+        orig_provider = mod.LLM_PROVIDER
+        try:
+            mod.LLM_PROVIDER = 'ollama'
+            self.assertEqual(
+                _resolve_commit_model('cascading_module'),
+                os.environ['OLLAMA_MODEL'],
+            )
+            self.assertEqual(
+                _resolve_commit_model('FD_hybrid_mechanical_module'),
+                os.environ['OLLAMA_MODEL'],
+            )
+        finally:
+            mod.LLM_PROVIDER = orig_provider
 
     # --- Edge case: FD_LARGE_LLM_MODEL not configured ---
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from db import MODEL_INDEPENDENT_NULL_METHODS, lookup_cached_commits
+from db import MODEL_INDEPENDENT_NULL_METHODS, lookup_cached_commits, set_job_llm_identity
 
 
 class _FakeCursor:
@@ -36,10 +36,14 @@ class _FakeConn:
     def __init__(self, rows):
         self.cursor_instance = _FakeCursor(rows)
         self.cursor_kwargs = None
+        self.commits = 0
 
     def cursor(self, *args, **kwargs):
         self.cursor_kwargs = kwargs
         return _CursorContext(self.cursor_instance)
+
+    def commit(self):
+        self.commits += 1
 
 
 class LookupCachedCommitsTests(unittest.TestCase):
@@ -131,6 +135,39 @@ class LookupCachedCommitsTests(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertEqual(seen, set())
         self.assertIsNone(conn.cursor_instance.executed_query)
+
+    def test_set_job_llm_identity_updates_provider_and_model(self):
+        conn = _FakeConn([])
+
+        set_job_llm_identity(
+            conn,
+            "job-123",
+            "openrouter",
+            "qwen/qwen3-coder-next",
+            True,
+            "openrouter",
+            "qwen/qwen3-coder-plus",
+        )
+
+        self.assertIn('"llmProvider" = %s', conn.cursor_instance.executed_query)
+        self.assertIn('"llmModel" = %s', conn.cursor_instance.executed_query)
+        self.assertIn('"smallLlmProvider" = %s', conn.cursor_instance.executed_query)
+        self.assertIn('"largeLlmModel" = %s', conn.cursor_instance.executed_query)
+        self.assertIn('"fdV3Enabled" = %s', conn.cursor_instance.executed_query)
+        self.assertEqual(
+            conn.cursor_instance.executed_params,
+            (
+                "openrouter",
+                "qwen/qwen3-coder-next",
+                "openrouter",
+                "qwen/qwen3-coder-next",
+                "openrouter",
+                "qwen/qwen3-coder-plus",
+                True,
+                "job-123",
+            ),
+        )
+        self.assertEqual(conn.commits, 1)
 
 
 if __name__ == "__main__":

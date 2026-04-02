@@ -30,6 +30,7 @@ import {
 import { appendPipelineLog, getPipelineLogs, clearPipelineLogs, updateJobMeta, getJobMeta } from './pipeline-log-store';
 import { registerJob, unregisterJob, isCancelRequested } from './job-registry';
 import { type ScopeConfig, getInScopeShas, countInScopeCommits } from '@/lib/services/scope-filter';
+import { buildAnalysisJobLlmProfileFromConfig } from '@/lib/services/job-llm-profile';
 import type { SelectedRepository } from '@/types/repository';
 
 // ==================== Billing Helpers ====================
@@ -157,8 +158,7 @@ export async function processAnalysisJob(
     await prisma.analysisJob.update({
       where: { id: jobId },
       data: {
-        llmProvider: llmConfig.provider,
-        llmModel: llmConfig.provider === 'openrouter' ? llmConfig.openrouter.model : llmConfig.ollama.model,
+        ...buildAnalysisJobLlmProfileFromConfig(llmConfig),
       },
     });
 
@@ -854,8 +854,7 @@ export async function processAnalysisJob(
       where: { id: jobId },
       data: {
         status: 'COMPLETED', progress: 100, currentStep: 'done', completedAt: new Date(),
-        llmProvider: llmConfig.provider,
-        llmModel: llmConfig.provider === 'openrouter' ? llmConfig.openrouter.model : llmConfig.ollama.model,
+        ...buildAnalysisJobLlmProfileFromConfig(llmConfig),
         totalPromptTokens: accumulatedUsage.totalPromptTokens,
         totalCompletionTokens: accumulatedUsage.totalCompletionTokens,
         totalLlmCalls: accumulatedUsage.totalLlmCalls,

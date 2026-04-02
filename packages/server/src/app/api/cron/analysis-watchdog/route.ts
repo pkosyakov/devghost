@@ -6,12 +6,14 @@ import { releaseReservedCredits, debitCredit, isBillingEnabled } from '@/lib/ser
 import { countInScopeCommits, type ScopeConfig } from '@/lib/services/scope-filter';
 import { getLlmConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
+import { claimAndTriggerModal } from '@/lib/services/modal-trigger';
 
 export const maxDuration = 60;
 
 const HEARTBEAT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const POST_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const ORPHAN_PENDING_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+const TRIGGER_CLAIM_TTL_MS = 120_000; // 2 minutes
 const TIME_BUDGET_MS = 45_000; // 45s — leave 15s buffer before 60s maxDuration
 const POST_PROCESSING_MIN_REMAINING_MS = 12_000;
 const POST_PROCESSING_LEASE_HEARTBEAT_MS = 15_000;
@@ -69,6 +71,9 @@ export async function GET(request: NextRequest) {
           status: 'FAILED_FATAL',
           error: `Heartbeat timeout after ${job.retryCount} retries`,
           completedAt: new Date(),
+          failureClass: 'TRANSIENT',
+          pausedAt: null,
+          pauseReason: null,
         },
       });
       await appendJobEvent({
@@ -87,6 +92,9 @@ export async function GET(request: NextRequest) {
         data: {
           status: 'FAILED_RETRYABLE',
           error: 'Heartbeat timeout',
+          failureClass: 'TRANSIENT',
+          pausedAt: null,
+          pauseReason: null,
         },
       });
       await appendJobEvent({
@@ -102,7 +110,7 @@ export async function GET(request: NextRequest) {
     processed++;
   }
 
-  // 2. Retry: FAILED_RETRYABLE → PENDING → re-trigger
+  // 2. Retry: FAILED_RETRYABLE → PENDING → re-trigger (failure-class aware)
   const retryJobs = await prisma.analysisJob.findMany({
     where: { status: 'FAILED_RETRYABLE', executionMode: 'modal' },
   });
@@ -112,6 +120,15 @@ export async function GET(request: NextRequest) {
       log.info({ processed }, 'Time budget exceeded in retry loop');
       return Response.json({ ok: true, processed, partial: true });
     }
+
+    // Read failure class from typed field (set by worker or watchdog reaper)
+    const failureClass = job.failureClass ?? 'UNKNOWN';
+
+    if (failureClass === 'EXTERNAL_QUOTA') {
+      log.debug({ jobId: job.id, failureClass }, 'Retry skipped: EXTERNAL_QUOTA (awaiting user resume)');
+      continue;
+    }
+
     await prisma.analysisJob.update({
       where: { id: job.id },
       data: {
@@ -121,6 +138,9 @@ export async function GET(request: NextRequest) {
         heartbeatAt: null,
         modalCallId: null,
         error: null,
+        failureClass: null,
+        pausedAt: null,
+        pauseReason: null,
       },
     });
     await appendJobEvent({
@@ -128,11 +148,11 @@ export async function GET(request: NextRequest) {
       phase: 'watchdog',
       code: 'RETRY_SCHEDULED',
       message: 'Watchdog reset retryable job to PENDING and re-triggered modal',
-      payload: { retryCount: job.retryCount + 1 },
+      payload: { retryCount: job.retryCount + 1, failureClass },
     });
 
-    await triggerModal(job.id);
-    log.info({ jobId: job.id, retry: job.retryCount + 1 }, 'Job retried');
+    await claimAndTriggerModal(job.id);
+    log.info({ jobId: job.id, retry: job.retryCount + 1, failureClass }, 'Job retried');
     processed++;
   }
 
@@ -154,14 +174,14 @@ export async function GET(request: NextRequest) {
       return Response.json({ ok: true, processed, partial: true });
     }
     const previousModalCallId = job.modalCallId;
+    // Clear stale modalCallId so the claim protocol can acquire the job
     if (previousModalCallId) {
-      // Force a fresh call id so diagnostics clearly show latest trigger attempt.
       await prisma.analysisJob.update({
         where: { id: job.id },
-        data: { modalCallId: null },
+        data: { modalCallId: null, updatedAt: new Date() },
       });
     }
-    await triggerModal(job.id);
+    const triggered = await claimAndTriggerModal(job.id);
     await appendJobEvent({
       jobId: job.id,
       level: 'warn',
@@ -171,21 +191,51 @@ export async function GET(request: NextRequest) {
         ? 'Watchdog re-triggered stale PENDING modal job (worker was not acquired)'
         : 'Watchdog re-triggered orphan PENDING modal job',
       payload: previousModalCallId
-        ? { previousModalCallId }
-        : undefined,
+        ? { previousModalCallId, triggered }
+        : { triggered },
     });
     log.info(
-      { jobId: job.id, previousModalCallId },
+      { jobId: job.id, previousModalCallId, triggered },
       'Re-triggered stale PENDING job',
     );
     processed++;
   }
 
-  // 3.5. Recovery note:
+  // 3.5. Stale trigger placeholder cleanup
+  const stalePlaceholders = await prisma.analysisJob.findMany({
+    where: {
+      status: 'PENDING',
+      executionMode: 'modal',
+      modalCallId: { startsWith: 'triggering:' },
+      updatedAt: { lt: new Date(Date.now() - TRIGGER_CLAIM_TTL_MS) },
+    },
+  });
+  for (const job of stalePlaceholders) {
+    if (Date.now() - startTime > TIME_BUDGET_MS) {
+      log.info({ processed }, 'Time budget exceeded in stale placeholder cleanup');
+      return Response.json({ ok: true, processed, partial: true });
+    }
+    await prisma.analysisJob.update({
+      where: { id: job.id },
+      data: { modalCallId: null, updatedAt: new Date() },
+    });
+    await appendJobEvent({
+      jobId: job.id,
+      level: 'warn',
+      phase: 'watchdog',
+      code: 'TRIGGER_PLACEHOLDER_CLEARED',
+      message: 'Watchdog cleared stale trigger placeholder',
+      payload: { stalePlaceholder: job.modalCallId, ttlMs: TRIGGER_CLAIM_TTL_MS },
+    });
+    log.warn({ jobId: job.id, stale: job.modalCallId }, 'Cleared stale trigger placeholder');
+    processed++;
+  }
+
+  // 3.6. Recovery note:
   // LLM_COMPLETE jobs can keep resumable post_processing checkpoints in currentStep.
   // Re-claim logic below treats stale checkpoints as recoverable without resetting.
 
-  // 3.6. Recovery: latest job is COMPLETED but order still PROCESSING.
+  // 3.7. Recovery: latest job is COMPLETED but order still PROCESSING.
   // This can happen after a partial finalization failure. Reconcile order state.
   const inconsistentCompleted = await prisma.$queryRaw<{ id: string; orderId: string }[]>`
     SELECT j.id, j."orderId"
@@ -316,7 +366,13 @@ export async function GET(request: NextRequest) {
       });
       await prisma.analysisJob.update({
         where: { id: job.id },
-        data: { status: 'FAILED_FATAL', error: `Post-processing: ${String(err).slice(0, 500)}` },
+        data: {
+          status: 'FAILED_FATAL',
+          error: `Post-processing: ${String(err).slice(0, 500)}`,
+          failureClass: 'CONFIG_FATAL',
+          pausedAt: null,
+          pauseReason: null,
+        },
       });
       await handleJobFailure(job);
     }
@@ -376,8 +432,13 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
     });
 
     if (!skipBilling) {
-      const cachedReleased = job.creditsReleased || 0;
-      const alreadyConsumed = job.creditsConsumed || 0;
+      // Fresh read to avoid stale snapshot after partial debit resume
+      const freshJob = await prisma.analysisJob.findUnique({
+        where: { id: job.id },
+        select: { creditsConsumed: true, creditsReleased: true, creditsReserved: true },
+      });
+      const cachedReleased = freshJob?.creditsReleased || 0;
+      const alreadyConsumed = freshJob?.creditsConsumed || 0;
       const toDebit = Math.max(0, processedCount - cachedReleased - alreadyConsumed);
       let debitedNow = 0;
       let budgetExhausted = false;
@@ -432,6 +493,31 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
           payload: { debitedNow, remaining: Math.max(0, toDebit - debitedNow) },
         });
         return { done: false, step: POST_PROCESSING_DEBIT_STEP, reason: 'partial' };
+      }
+    }
+
+    // Post-debit invariant check
+    if (!skipBilling) {
+      const afterDebit = await prisma.analysisJob.findUnique({
+        where: { id: job.id },
+        select: { creditsConsumed: true, creditsReleased: true, creditsReserved: true },
+      });
+      if (afterDebit) {
+        const { creditsConsumed, creditsReleased, creditsReserved } = afterDebit;
+        if (creditsConsumed + creditsReleased > creditsReserved) {
+          billingLogger.error(
+            { jobId: job.id, orderId: order.id, creditsConsumed, creditsReleased, creditsReserved },
+            'BILLING INVARIANT VIOLATION: consumed + released > reserved',
+          );
+          await appendJobEvent({
+            jobId: job.id,
+            level: 'error',
+            phase: 'post_processing',
+            code: 'BILLING_INVARIANT_VIOLATION',
+            message: 'consumed + released > reserved after debit phase',
+            payload: { creditsConsumed, creditsReleased, creditsReserved },
+          });
+        }
       }
     }
 
@@ -658,58 +744,4 @@ function parsePostProcessingState(step: string | null | undefined): PostProcessi
   }
 
   return { stage: 'debit', metricsOffset: 0 };
-}
-
-
-async function triggerModal(jobId: string) {
-  const url = process.env.MODAL_ENDPOINT_URL;
-  const secret = process.env.MODAL_WEBHOOK_SECRET;
-
-  if (!url) {
-    log.error({ jobId }, 'MODAL_ENDPOINT_URL not configured');
-    return;
-  }
-
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ job_id: jobId, auth_token: secret }),
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      await prisma.analysisJob.update({
-        where: { id: jobId },
-        data: { modalCallId: data.modal_call_id },
-      });
-      await appendJobEvent({
-        jobId,
-        phase: 'watchdog',
-        code: 'MODAL_TRIGGER_ACCEPTED',
-        message: 'Watchdog triggered modal job',
-        payload: { modalCallId: data.modal_call_id },
-      });
-    } else {
-      await appendJobEvent({
-        jobId,
-        level: 'warn',
-        phase: 'watchdog',
-        code: 'MODAL_TRIGGER_HTTP_FAIL',
-        message: 'Watchdog modal trigger failed (HTTP)',
-        payload: { httpStatus: resp.status },
-      });
-      log.warn({ jobId, status: resp.status }, 'Modal trigger failed');
-    }
-  } catch (err) {
-    await appendJobEvent({
-      jobId,
-      level: 'warn',
-      phase: 'watchdog',
-      code: 'MODAL_TRIGGER_NETWORK_FAIL',
-      message: 'Watchdog modal trigger network error',
-      payload: { error: String(err) },
-    });
-    log.warn({ err, jobId }, 'Modal trigger network error');
-  }
 }

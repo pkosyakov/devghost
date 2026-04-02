@@ -938,15 +938,22 @@ _FD_LARGE_MODEL_METHODS = frozenset({
 })
 
 
+def _default_commit_model():
+    """Return the effective default per-commit model for the active provider."""
+    if LLM_PROVIDER == 'openrouter':
+        return OPENROUTER_MODEL
+    return os.environ.get('OLLAMA_MODEL', 'qwen2.5-coder:32b')
+
+
 def _resolve_commit_model(method):
     """Return the model name that actually processed this commit."""
     if method in _FD_LARGE_MODEL_METHODS:
         return FD_LARGE_LLM_MODEL or None
     if method.startswith('FD_hybrid_mechanical'):
-        return OPENROUTER_MODEL  # metadata-only estimation uses default model
+        return _default_commit_model()  # metadata-only estimation uses default model
     if method.startswith('FD'):
         return None  # heuristic-only FD route — no LLM call
-    return OPENROUTER_MODEL
+    return _default_commit_model()
 
 
 def run_commit(repo_dir, lang, sha, msg, repo_slug=None):

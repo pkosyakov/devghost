@@ -20,6 +20,7 @@ export async function GET() {
       activeSubscriptions,
       creditsInCirculationResult,
       recentTransactions,
+      leakedReservations,
     ] = await Promise.all([
       // Total credits sold (PACK_PURCHASE + SUBSCRIPTION_RENEWAL, positive amounts only)
       prisma.creditTransaction.aggregate({
@@ -68,6 +69,17 @@ export async function GET() {
           },
         },
       }),
+
+      // Billing health: terminal jobs with leaked reservations
+      prisma.$queryRaw<[{ count: bigint; leaked: bigint }]>`
+        SELECT
+          COUNT(*)::bigint AS count,
+          COALESCE(SUM("creditsReserved" - "creditsConsumed" - "creditsReleased"), 0)::bigint AS leaked
+        FROM "AnalysisJob"
+        WHERE status IN ('COMPLETED', 'FAILED_FATAL', 'FAILED', 'CANCELLED')
+          AND "creditsReserved" > 0
+          AND "creditsReserved" - "creditsConsumed" - "creditsReleased" > 0
+      `,
     ]);
 
     const totalCreditsSold = creditsSoldResult._sum.amount ?? 0;
@@ -76,11 +88,17 @@ export async function GET() {
     const subscriptionInCirculation = creditsInCirculationResult._sum.subscriptionCredits ?? 0;
     const creditsInCirculation = permanentInCirculation + subscriptionInCirculation;
 
+    const leakedRow = leakedReservations[0];
+
     return apiResponse({
       totalCreditsSold,
       totalCreditsConsumed,
       activeSubscriptions,
       creditsInCirculation,
+      billingHealth: {
+        leakedReservationJobs: Number(leakedRow?.count ?? 0),
+        leakedCreditsTotal: Number(leakedRow?.leaked ?? 0),
+      },
       recentTransactions: recentTransactions.map((t) => ({
         id: t.id,
         type: t.type,

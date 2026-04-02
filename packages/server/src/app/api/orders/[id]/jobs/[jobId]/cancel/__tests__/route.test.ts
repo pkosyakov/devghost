@@ -40,11 +40,18 @@ vi.mock('@/lib/services/job-registry', () => ({
   requestCancel: (...args: unknown[]) => mockRequestCancel(...args),
 }));
 
+const mockReleaseReservedCredits = vi.fn().mockResolvedValue(0);
+
+vi.mock('@/lib/services/credit-service', () => ({
+  isBillingEnabled: vi.fn(() => true),
+  releaseReservedCredits: (...args: unknown[]) => mockReleaseReservedCredits(...args),
+}));
+
 vi.mock('@/lib/logger', () => {
   const noop = () => {};
   const child = () => mockLogger;
   const mockLogger = { info: noop, warn: noop, error: noop, debug: noop, child };
-  return { analysisLogger: mockLogger };
+  return { analysisLogger: mockLogger, billingLogger: mockLogger };
 });
 
 import { POST } from '../route';
@@ -62,7 +69,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/cancel', () => {
     vi.clearAllMocks();
     mockGetOrderWithAuth.mockResolvedValue({
       success: true,
-      order: { id: 'order-1', status: 'PROCESSING' },
+      order: { id: 'order-1', status: 'PROCESSING', userId: 'user-1' },
     });
     mockOrderMetricCount.mockResolvedValue(0);
     mockJobUpdateMany.mockResolvedValue({ count: 1 });
@@ -142,6 +149,53 @@ describe('POST /api/orders/[id]/jobs/[jobId]/cancel', () => {
     const res = await POST(makeRequest(), params);
     expect(res.status).toBe(400);
     expect(mockJobUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('releases reserved credits on successful cancel', async () => {
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'RUNNING',
+      type: 'analysis',
+      executionMode: 'modal',
+    });
+    mockReleaseReservedCredits.mockResolvedValue(5);
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(200);
+    expect(mockReleaseReservedCredits).toHaveBeenCalledWith('user-1', 'job-1', 'order-1');
+  });
+
+  it('skips credit release when billing is disabled', async () => {
+    const { isBillingEnabled } = await import('@/lib/services/credit-service');
+    vi.mocked(isBillingEnabled).mockReturnValue(false);
+
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'RUNNING',
+      type: 'analysis',
+      executionMode: 'modal',
+    });
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(200);
+    expect(mockReleaseReservedCredits).not.toHaveBeenCalled();
+
+    vi.mocked(isBillingEnabled).mockReturnValue(true);
+  });
+
+  it('still returns 200 if releaseReservedCredits throws', async () => {
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'RUNNING',
+      type: 'analysis',
+      executionMode: 'modal',
+    });
+    mockReleaseReservedCredits.mockRejectedValueOnce(new Error('DB down'));
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.data.status).toBe('CANCELLED');
   });
 
   it('returns 409 if status changed before cancel update', async () => {

@@ -17,7 +17,7 @@ const mockQueryRaw = vi.fn();
 const mockTransaction = vi.fn();
 const mockCalculateAndSaveBatch = vi.fn();
 const mockSystemSettingsUpsert = vi.fn();
-
+const mockAppendJobEvent = vi.fn();
 vi.mock('@/lib/db', () => ({
   default: {
     analysisJob: {
@@ -38,6 +38,10 @@ vi.mock('@/lib/db', () => ({
     $queryRaw: (...a: unknown[]) => mockQueryRaw(...a),
     $transaction: (...a: unknown[]) => mockTransaction(...a),
   },
+}));
+
+vi.mock('@/lib/services/job-event-service', () => ({
+  appendJobEvent: (...a: unknown[]) => mockAppendJobEvent(...a),
 }));
 
 vi.mock('@/lib/logger', () => {
@@ -98,6 +102,7 @@ describe('GET /api/cron/analysis-watchdog', () => {
     mockQueryRaw.mockResolvedValue([]);
     mockSystemSettingsUpsert.mockResolvedValue({});
     mockJobUpdateMany.mockResolvedValue({ count: 1 });
+    mockAppendJobEvent.mockResolvedValue(undefined);
     mockTransaction.mockImplementation(async (ops: unknown[]) => Promise.all(ops as Promise<unknown>[]));
     mockCalculateAndSaveBatch.mockResolvedValue({
       metrics: [],
@@ -502,6 +507,162 @@ describe('GET /api/cron/analysis-watchdog', () => {
           progress: 100,
           currentStep: 'done',
         }),
+      }),
+    );
+  });
+
+  // ── Failure-class aware retry ──
+
+  it('skips retry for EXTERNAL_QUOTA failure class', async () => {
+    const quotaJob = {
+      id: 'job-quota',
+      orderId: 'order-quota',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'modal',
+      retryCount: 1,
+      maxRetries: 3,
+      failureClass: 'EXTERNAL_QUOTA',
+    };
+
+    mockJobFindMany
+      .mockResolvedValueOnce([])            // stale
+      .mockResolvedValueOnce([quotaJob])    // retryable
+      .mockResolvedValueOnce([])            // orphans
+      .mockResolvedValueOnce([]);           // stale placeholders
+
+    const res = await GET(makeRequest('test-cron-secret'));
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    // Job should NOT be retried — not counted as processed
+    expect(json.processed).toBe(0);
+    // Should NOT reset to PENDING
+    expect(mockJobUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-quota' },
+        data: expect.objectContaining({ status: 'PENDING' }),
+      }),
+    );
+    // Should NOT emit any event (no event spam on every watchdog cycle)
+    expect(mockAppendJobEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-quota' }),
+    );
+  });
+
+  it('retries TRANSIENT failure class', async () => {
+    process.env.MODAL_ENDPOINT_URL = 'https://modal.test/run';
+
+    const transientJob = {
+      id: 'job-transient',
+      orderId: 'order-transient',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'modal',
+      retryCount: 0,
+      maxRetries: 3,
+      failureClass: 'TRANSIENT',
+    };
+
+    mockJobFindMany
+      .mockResolvedValueOnce([])                 // stale
+      .mockResolvedValueOnce([transientJob])     // retryable
+      .mockResolvedValueOnce([])                 // orphans
+      .mockResolvedValueOnce([]);                // stale placeholders
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ modal_call_id: 'mc-transient' }),
+    }));
+
+    const res = await GET(makeRequest('test-cron-secret'));
+    const json = await res.json();
+
+    expect(json.processed).toBe(1);
+    expect(mockJobUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-transient' },
+        data: expect.objectContaining({
+          status: 'PENDING',
+          retryCount: { increment: 1 },
+        }),
+      }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('retries job with unknown failure class (no event)', async () => {
+    process.env.MODAL_ENDPOINT_URL = 'https://modal.test/run';
+
+    const unknownJob = {
+      id: 'job-unknown',
+      orderId: 'order-unknown',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'modal',
+      retryCount: 0,
+      maxRetries: 3,
+      failureClass: null,
+    };
+
+    mockJobFindMany
+      .mockResolvedValueOnce([])               // stale
+      .mockResolvedValueOnce([unknownJob])     // retryable
+      .mockResolvedValueOnce([])               // orphans
+      .mockResolvedValueOnce([]);              // stale placeholders
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ modal_call_id: 'mc-unknown' }),
+    }));
+
+    const res = await GET(makeRequest('test-cron-secret'));
+    const json = await res.json();
+
+    expect(json.processed).toBe(1);
+    expect(mockJobUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-unknown' },
+        data: expect.objectContaining({
+          status: 'PENDING',
+          retryCount: { increment: 1 },
+        }),
+      }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('cleans stale trigger placeholder', async () => {
+    const placeholderJob = {
+      id: 'job-placeholder',
+      orderId: 'order-placeholder',
+      status: 'PENDING',
+      executionMode: 'modal',
+      modalCallId: 'triggering:550e8400-e29b-41d4-a716-446655440000',
+      updatedAt: new Date(Date.now() - 3 * 60 * 1000), // 3 min ago, past TTL
+    };
+
+    mockJobFindMany
+      .mockResolvedValueOnce([])                   // stale RUNNING
+      .mockResolvedValueOnce([])                   // retryable
+      .mockResolvedValueOnce([])                   // orphan PENDING
+      .mockResolvedValueOnce([placeholderJob]);    // stale placeholders
+
+    const res = await GET(makeRequest('test-cron-secret'));
+    const json = await res.json();
+
+    expect(json.processed).toBe(1);
+    // Should clear modalCallId to null
+    expect(mockJobUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'job-placeholder' },
+        data: expect.objectContaining({ modalCallId: null }),
+      }),
+    );
+    // Should emit TRIGGER_PLACEHOLDER_CLEARED event
+    expect(mockAppendJobEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobId: 'job-placeholder',
+        code: 'TRIGGER_PLACEHOLDER_CLEARED',
       }),
     );
   });
