@@ -1728,7 +1728,7 @@ interface ClientAnalysisProgressProps {
   onResume: () => void;
   onRetry: () => void;
   onDrainStart: () => void;
-  onComplete: () => void;
+  onComplete: (terminalStatus: string) => void;
   cancelPending?: boolean;
   resumePending?: boolean;
 }
@@ -1771,10 +1771,12 @@ export function ClientAnalysisProgress({
     if (isDraining) onDrainStart();
   }, [isDraining, onDrainStart]);
 
-  // Notify parent when drain complete
+  // Notify parent when drain complete — pass terminal status so page can
+  // distinguish success (→ 'done', unmount) from failure/cancel (→ 'terminal',
+  // keep mounted with banner + feed + leaderboard visible).
   useEffect(() => {
-    if (isDrained) onComplete();
-  }, [isDrained, onComplete]);
+    if (isDrained) onComplete(jobStatus);
+  }, [isDrained, onComplete, jobStatus]);
 
   // Auto-scroll feed
   useEffect(() => {
@@ -2048,13 +2050,16 @@ Inside the `OrderPage` component, after the existing state declarations (around 
 ```typescript
   // Default to 'client' — synced to 'admin' once session loads (isAdmin is async)
   const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>('client');
-  const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
+  const [clientProgressState, setClientProgressState] = useState<
+    'processing' | 'draining' | 'done' | 'terminal'
+  >('processing');
 
   // Live-progress latch: true only when THIS page session has received progress
-  // data for an active analysis. Prevents the order-status watcher from entering
-  // drain mode on historical COMPLETED/FAILED orders where clientProgressState
-  // is still at its 'processing' default. Also gates the render condition so
-  // the PROCESSING section doesn't mount/drain for non-live orders.
+  // data for an active (non-terminal) job — PENDING, RUNNING, LLM_COMPLETE, or
+  // FAILED_RETRYABLE. Prevents the order-status watcher from entering drain mode
+  // on historical COMPLETED/FAILED orders where clientProgressState is still at
+  // its 'processing' default. Also gates the render condition so the PROCESSING
+  // section doesn't mount/drain for non-live orders.
   const hadLiveProgressRef = useRef(false);
 
   // Sync adminViewMode when session loads (isAdmin comes from useSession, initially falsy)
@@ -2086,9 +2091,16 @@ Inside the `OrderPage` component, after the existing state declarations (around 
 Inside the progress query `queryFn` (around line 379), after the existing `jobEvents` accumulation block (`if (data?.events?.length) { ... }`) and before `return data;`, add client event accumulation. Note: `fetchProgress()` returns `json.data` (not the raw envelope), so fields are accessed directly on `data`:
 
 ```typescript
-      // Latch: only arm when job is actually RUNNING — not on historical
-      // COMPLETED/FAILED responses (the query is enabled for those too).
-      if (data?.status === 'RUNNING' && !hadLiveProgressRef.current) {
+      // Latch: arm when the job is in any active (non-terminal) phase.
+      // PENDING (queued modal), RUNNING, LLM_COMPLETE (post-processing),
+      // and FAILED_RETRYABLE (watchdog will retry) all mean "this page
+      // session is tracking a live analysis."  Terminal statuses
+      // (COMPLETED, FAILED_FATAL, CANCELLED) must NOT arm the latch —
+      // those are historical orders where we don't want drain behavior.
+      const ACTIVE_JOB_STATUSES = new Set([
+        'PENDING', 'RUNNING', 'LLM_COMPLETE', 'FAILED_RETRYABLE',
+      ]);
+      if (data?.status && ACTIVE_JOB_STATUSES.has(data.status) && !hadLiveProgressRef.current) {
         hadLiveProgressRef.current = true;
       }
 
@@ -2115,11 +2127,11 @@ The render condition now uses the latch ref + `clientProgressState` to keep the 
       {/* PROCESSING — Progress                                            */}
       {/* ================================================================ */}
       {(order.status === 'PROCESSING' || analysisStarted ||
-        // Keep mounted during drain AND during the order-first gap (order left
-        // PROCESSING but useEffect hasn't set 'draining' yet). hadLiveProgressRef
-        // prevents this from firing on historical COMPLETED/FAILED page loads.
+        // Keep mounted during drain, the order-first gap, AND terminal
+        // failure/cancel (feed + leaderboard + banner stay visible).
+        // hadLiveProgressRef prevents this from firing on historical page loads.
         (hadLiveProgressRef.current &&
-         (clientProgressState === 'processing' || clientProgressState === 'draining') &&
+         (clientProgressState === 'processing' || clientProgressState === 'draining' || clientProgressState === 'terminal') &&
          !(isAdmin && adminViewMode === 'admin'))
       ) && (() => {
 ```
@@ -2142,8 +2154,16 @@ Inside the PROCESSING IIFE, before the existing `progress?.isPaused` ternary, ad
               onResume={() => progress?.jobId && resumeJobMutation.mutate(progress.jobId)}
               onRetry={handleRetryAnalysis}
               onDrainStart={() => setClientProgressState('draining')}
-              onComplete={() => {
-                setClientProgressState('done');
+              onComplete={(terminalStatus) => {
+                const isSuccess = terminalStatus === 'COMPLETED' || terminalStatus === 'LLM_COMPLETE';
+                if (isSuccess) {
+                  // Success: unmount component, show metrics dashboard
+                  setClientProgressState('done');
+                } else {
+                  // FAILED_FATAL, CANCELLED, FAILED — keep component mounted
+                  // so terminal banner + feed + leaderboard stay visible.
+                  setClientProgressState('terminal');
+                }
                 queryClient.invalidateQueries({ queryKey: ['order', id] });
                 queryClient.invalidateQueries({ queryKey: ['metrics', id] });
                 queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
@@ -2236,6 +2256,12 @@ Replace the existing `order?.status` watcher `useEffect` (around line 736) entir
       return;
     }
 
+    // If showing terminal banner (failure/cancel after drain), keep state
+    // until user starts a new analysis (prepareAnalysisLaunch resets everything).
+    if (clientProgressState === 'terminal') {
+      return;
+    }
+
     // If client progress was actively processing (non-admin view) AND
     // this session actually had live progress data (not a historical page load),
     // trigger drain so remaining queued events can finish displaying.
@@ -2246,7 +2272,7 @@ Replace the existing `order?.status` watcher `useEffect` (around line 736) entir
       return;
     }
 
-    // Normal cleanup: admin view, no live progress, or drain already done.
+    // Normal cleanup: admin view, no live progress, or done (success drain).
     hadLiveProgressRef.current = false;  // clear latch for next lifecycle
     setAnalysisJobId(null);
     logSinceRef.current = 0;
@@ -2259,7 +2285,10 @@ Replace the existing `order?.status` watcher `useEffect` (around line 736) entir
   }, [order?.status, queryClient, id, clientProgressState, adminViewMode]);
 ```
 
-Note that `clientProgressState` and `adminViewMode` are added to the dependency array. This means the effect re-runs when drain completes (`clientProgressState` transitions 'draining' → 'done'). On that re-run, none of the early-return guards match, so it falls through to normal cleanup. This is the intended behavior: cleanup happens AFTER drain, not before.
+Note that `clientProgressState` and `adminViewMode` are added to the dependency array. The effect re-runs on every state transition:
+- `'draining' → 'done'` (success): falls through to normal cleanup — unmount + invalidate.
+- `'draining' → 'terminal'` (failure/cancel): hits the `terminal` early-return — state preserved, component stays mounted with banner + feed + leaderboard.
+- `'terminal' → 'processing'` (user starts new analysis via prepareAnalysisLaunch): resets everything, the new analysis cycle begins fresh.
 
 - [ ] **Step 7: Verify the build compiles**
 
