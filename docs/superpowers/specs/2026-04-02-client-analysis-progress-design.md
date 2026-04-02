@@ -49,8 +49,8 @@ type ClientEvent = {
   category: 'phase' | 'commit' | 'repo' | 'stat';
   text: string;                              // i18n key
   params: Record<string, string | number>;   // i18n interpolation params
-  developer?: string;                        // email — for leaderboard
-  effortHours?: number;                      // for leaderboard
+  developerId?: string;                      // stable hash of email — links event to leaderboard bar
+  effortHours?: number;                      // for leaderboard delta
 };
 ```
 
@@ -163,6 +163,7 @@ File: `api/orders/[id]/progress/route.ts`
   error: string | null;          // sanitized, user-friendly
   isPaused: boolean;
   pauseReason: string | null;
+  isRetrying: boolean;             // server-computed: retryCount < maxRetries (hides raw counters)
   currentRepoName: string;
   orderStatus: string;
   clientEvents: ClientEvent[];
@@ -182,15 +183,22 @@ function useDripFeed(opts: {
   rawEvents: ClientEvent[];
   rawLeaderboard: LeaderboardData;
   pollIntervalMs: number;
-  isComplete: boolean;
+  orderStatus: string;             // drives state machine transitions
 }): {
   visibleEvents: ClientEvent[];
   counters: { commits: number; files: number; lines: number };
   leaderboard: LeaderboardData;
-  isDraining: boolean;
-  onDrainComplete: () => void;
+  isDraining: boolean;             // true while fast-forwarding remaining queue
+  isDrained: boolean;              // true when queue empty after completion
 };
 ```
+
+The hook observes `orderStatus` to trigger state transitions internally:
+- `PROCESSING` → normal drip
+- `COMPLETED` / `FAILED` / `CANCELLED` → enter draining mode, set `isDraining: true`
+- Queue empty after draining → set `isDrained: true`
+
+The component reads `isDrained` to fire its `onComplete` callback. No imperative callback — the hook is purely declarative.
 
 #### Base delays per tier
 
@@ -295,8 +303,9 @@ The `onDrainComplete` from the original spec is replaced by the `isDrained` bool
 - Button: "Start New Analysis"
 
 **FAILED_RETRYABLE (non-quota, client):**
-- Same as FAILED but with "Retrying automatically..." message if retryCount < maxRetries
-- If max retries exhausted, same as FAILED
+- Non-admin response includes `isRetrying: boolean` (server computes `retryCount < maxRetries`, raw counters stay hidden)
+- If `isRetrying: true`: show "Temporary issue — retrying automatically..." with subtle spinner. No user action needed.
+- If `isRetrying: false` (retries exhausted): same as FAILED — error card with "Try Again" button
 
 **LLM_COMPLETE (client):**
 - Client sees this as "Finalizing results..." phase in the dashboard
@@ -360,26 +369,37 @@ When `isPaused` is true:
 File: `app/[locale]/(dashboard)/orders/[id]/page.tsx`
 
 ```tsx
-// New state for admin toggle
+// New state
 const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>('admin');
+const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
 
-// In PROCESSING section:
-{(order.status === 'PROCESSING' || analysisStarted) && (
+// PROCESSING section — stays visible during 'draining' for client view
+const showProcessing = order.status === 'PROCESSING' || analysisStarted
+  || (clientProgressState === 'draining' && !(isAdmin && adminViewMode === 'admin'));
+
+{showProcessing && (
   isAdmin && adminViewMode === 'admin'
     ? <current admin UI with toggle button>
     : <ClientAnalysisProgress
         progress={progress}
+        orderStatus={order.status}
         isAdmin={isAdmin}
         onToggleView={() => setAdminViewMode(m => m === 'admin' ? 'client' : 'admin')}
         onCancel={() => cancelJobMutation.mutate(analysisJobId)}
         onResume={() => resumeJobMutation.mutate(progress.jobId)}
         onRetry={handleRetryAnalysis}
-        isComplete={order.status === 'COMPLETED'}
+        onDrainStart={() => setClientProgressState('draining')}
+        onComplete={() => {
+          setClientProgressState('done');
+          // existing invalidation logic from current useEffect
+        }}
       />
 )}
 ```
 
-Admin toggle: button in card header, switches `adminViewMode`. Instant — no server request needed since admin response includes both data sets.
+Admin toggle: button in card header, switches `adminViewMode`. Instant — no server request, admin response includes both data sets.
+
+The component internally uses `useDripFeed` with `orderStatus`. When the hook reports `isDrained: true`, the component calls `onComplete`, and the page transitions to results/error/cancelled view.
 
 ## File inventory
 
