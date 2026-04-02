@@ -1,6 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NextRequest } from 'next/server';
 
+const mockMapToClientEvents = vi.fn().mockReturnValue([]);
+const mockHashEmail = vi.fn((email: string) => `h_${email}`);
+const mockCommitAnalysisGroupBy = vi.fn().mockResolvedValue([]);
+const mockCommitAnalysisFindMany = vi.fn().mockResolvedValue([]);
+const mockOrderFindUnique = vi.fn().mockResolvedValue(null);
+
+vi.mock('@/lib/services/client-event-mapper', () => ({
+  mapToClientEvents: (...args: unknown[]) => mockMapToClientEvents(...args),
+  hashEmail: (email: string) => mockHashEmail(email),
+}));
+
 const mockJobFindFirst = vi.fn();
 const mockEventFindMany = vi.fn();
 const mockCommitAnalysisCount = vi.fn();
@@ -15,6 +26,11 @@ vi.mock('@/lib/db', () => ({
     },
     commitAnalysis: {
       count: (...args: unknown[]) => mockCommitAnalysisCount(...args),
+      groupBy: (...args: unknown[]) => mockCommitAnalysisGroupBy(...args),
+      findMany: (...args: unknown[]) => mockCommitAnalysisFindMany(...args),
+    },
+    order: {
+      findUnique: (...args: unknown[]) => mockOrderFindUnique(...args),
     },
   },
 }));
@@ -87,6 +103,10 @@ describe('GET /api/orders/[id]/progress', () => {
     mockGetJobMeta.mockReturnValue(null);
     mockEventFindMany.mockResolvedValue([]);
     mockCommitAnalysisCount.mockResolvedValue(0);
+    mockCommitAnalysisGroupBy.mockResolvedValue([]);
+    mockCommitAnalysisFindMany.mockResolvedValue([]);
+    mockOrderFindUnique.mockResolvedValue(null);
+    mockMapToClientEvents.mockReturnValue([]);
   });
 
   it('returns 404 when no job exists for order/user', async () => {
@@ -116,6 +136,9 @@ describe('GET /api/orders/[id]/progress', () => {
   });
 
   it('returns incremental diagnostics events and cursor when sinceEventId is provided', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'admin-1', role: 'ADMIN' },
+    } as never);
     mockJobFindFirst.mockResolvedValue(makeJob());
     mockEventFindMany.mockResolvedValue([
       {
@@ -163,6 +186,9 @@ describe('GET /api/orders/[id]/progress', () => {
   });
 
   it('returns full diagnostics history on initial request (without sinceEventId)', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'admin-1', role: 'ADMIN' },
+    } as never);
     mockJobFindFirst.mockResolvedValue(makeJob());
     mockEventFindMany.mockResolvedValue([
       {
@@ -206,6 +232,9 @@ describe('GET /api/orders/[id]/progress', () => {
   });
 
   it('returns full persisted pipeline log for terminal modal statuses', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'admin-1', role: 'ADMIN' },
+    } as never);
     const persistedLog = [{ ts: 1000, sha: 'abc123', status: 'ok', method: 'llm' }];
     const terminalStatuses = ['FAILED_RETRYABLE', 'FAILED_FATAL', 'LLM_COMPLETE'] as const;
 
@@ -229,6 +258,9 @@ describe('GET /api/orders/[id]/progress', () => {
   });
 
   it('uses in-memory live log for local RUNNING jobs', async () => {
+    vi.mocked(requireUserSession).mockResolvedValue({
+      user: { id: 'admin-1', role: 'ADMIN' },
+    } as never);
     mockJobFindFirst.mockResolvedValue(makeJob({
       status: 'RUNNING',
       executionMode: 'local',
@@ -273,5 +305,65 @@ describe('GET /api/orders/[id]/progress', () => {
     });
     expect(json.data.currentCommit).toBe(860);
     expect(json.data.totalCommits).toBe(1250);
+  });
+
+  describe('role-based response filtering', () => {
+    it('non-admin response excludes internal fields and includes clientEvents', async () => {
+      (requireUserSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+        user: { id: 'user-1', role: 'USER' },
+      });
+      mockJobFindFirst.mockResolvedValue(makeJob());
+      mockEventFindMany.mockResolvedValue([]);
+      mockGetPipelineLogs.mockReturnValue([]);
+      mockGetJobMeta.mockReturnValue(null);
+
+      mockMapToClientEvents.mockReturnValue([
+        { id: 'ce-1', ts: 1000, tier: 'major', category: 'commit',
+          text: 'clientProgress.commitAnalyzed', params: { subject: 'test' } },
+      ]);
+
+      const res = await GET(makeRequest(), { params: Promise.resolve({ id: 'order-1' }) });
+      const json = await res.json();
+      const data = json.data;
+
+      // Must include client events
+      expect(data.clientEvents).toHaveLength(1);
+      expect(data.leaderboard).toBeDefined();
+
+      // Must NOT include internal fields
+      expect(data.events).toBeUndefined();
+      expect(data.log).toBeUndefined();
+      expect(data.modalCallId).toBeUndefined();
+      expect(data.heartbeatAt).toBeUndefined();
+      expect(data.llmProvider).toBeUndefined();
+      expect(data.llmModel).toBeUndefined();
+      expect(data.llmConcurrency).toBeUndefined();
+      expect(data.totalPromptTokens).toBeUndefined();
+      expect(data.totalCostUsd).toBeUndefined();
+      expect(data.retryCount).toBeUndefined();
+      expect(data.executionMode).toBeUndefined();
+      expect(data.cloneSizeMb).toBeUndefined();
+    });
+
+    it('admin response includes both internal fields and clientEvents', async () => {
+      (requireUserSession as ReturnType<typeof vi.fn>).mockResolvedValue({
+        user: { id: 'admin-1', role: 'ADMIN' },
+      });
+      mockJobFindFirst.mockResolvedValue(makeJob());
+      mockEventFindMany.mockResolvedValue([]);
+      mockGetPipelineLogs.mockReturnValue([]);
+      mockGetJobMeta.mockReturnValue(null);
+
+      const res = await GET(makeRequest(), { params: Promise.resolve({ id: 'order-1' }) });
+      const json = await res.json();
+      const data = json.data;
+
+      // Admin gets both
+      expect(data.clientEvents).toBeDefined();
+      expect(data.leaderboard).toBeDefined();
+      expect(data.events).toBeDefined();
+      expect(data.log).toBeDefined();
+      expect(data.llmProvider).toBeDefined();
+    });
   });
 });

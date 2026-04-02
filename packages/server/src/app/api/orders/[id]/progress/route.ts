@@ -3,6 +3,8 @@ import type { Prisma } from '@prisma/client';
 import prisma from '@/lib/db';
 import { apiError, requireUserSession, isErrorResponse } from '@/lib/api-utils';
 import { getPipelineLogs, getJobMeta } from '@/lib/services/pipeline-log-store';
+import { mapToClientEvents, hashEmail } from '@/lib/services/client-event-mapper';
+import { GHOST_NORM } from '@devghost/shared';
 
 function toPositiveNumber(value: unknown): number | null {
   if (typeof value === 'number') {
@@ -31,6 +33,63 @@ function envPositiveInt(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number.parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function asPayload(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  return {};
+}
+
+/** Count weekdays in analysis scope. For LAST_N, aggregates ALL extract events. */
+async function computeScopeWorkDays(orderId: string, jobId: string): Promise<number> {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      analysisPeriodMode: true,
+      analysisStartDate: true,
+      analysisEndDate: true,
+      availableStartDate: true,
+      availableEndDate: true,
+    },
+  });
+  if (!order) return 0;
+
+  let startDate: Date | null = null;
+  let endDate: Date | null = null;
+
+  if (order.analysisPeriodMode === 'DATE_RANGE') {
+    startDate = order.analysisStartDate;
+    endDate = order.analysisEndDate;
+  } else if (order.analysisPeriodMode === 'LAST_N_COMMITS') {
+    // Aggregate ALL REPO_EXTRACT_DONE events — min(earliest), max(latest)
+    const extractEvents = await prisma.analysisJobEvent.findMany({
+      where: { jobId, code: 'REPO_EXTRACT_DONE' },
+      select: { payload: true },
+    });
+    for (const evt of extractEvents) {
+      const ep = asPayload(evt.payload);
+      const earliest = ep.earliestDate ? new Date(ep.earliestDate as string) : null;
+      const latest = ep.latestDate ? new Date(ep.latestDate as string) : null;
+      if (earliest && (!startDate || earliest < startDate)) startDate = earliest;
+      if (latest && (!endDate || latest > endDate)) endDate = latest;
+    }
+  } else {
+    startDate = order.availableStartDate;
+    endDate = order.availableEndDate;
+  }
+
+  if (!startDate || !endDate) return 0;
+
+  let count = 0;
+  const d = new Date(startDate);
+  while (d <= endDate) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) count++;
+    d.setDate(d.getDate() + 1);
+  }
+  return count;
 }
 
 const LEGACY_QUOTA_RE = /quota|rate.?limit|too many requests|429|402/i;
@@ -213,6 +272,110 @@ export async function GET(
   const llmConcurrency = toPositiveNumber(snapConcurrency?.llm) ?? envPositiveInt('LLM_CONCURRENCY', 1);
   const fdLlmConcurrency = toPositiveNumber(snapConcurrency?.fd) ?? envPositiveInt('FD_LLM_CONCURRENCY', llmConcurrency);
 
+  // Map events to client-safe format (for all roles)
+  const devNames = new Map<string, string>();
+  const clientEvents = mapToClientEvents(
+    events.map(event => ({
+      id: event.id.toString(),
+      createdAt: event.createdAt,
+      level: event.level,
+      phase: event.phase,
+      code: event.code,
+      message: event.message,
+      repo: event.repo,
+      sha: event.sha,
+      payload: event.payload,
+    })),
+    devNames,
+  );
+
+  // Cumulative leaderboard from CommitAnalysis
+  const devAggRows = await prisma.commitAnalysis.groupBy({
+    by: ['authorEmail'],
+    where: {
+      orderId: id,
+      jobId: null,
+      method: { not: 'error' },
+    },
+    _sum: { effortHours: true },
+    _count: { _all: true },
+  });
+
+  const devNameRows = devAggRows.length > 0
+    ? await prisma.commitAnalysis.findMany({
+        where: {
+          orderId: id,
+          jobId: null,
+          authorEmail: { in: devAggRows.map(r => r.authorEmail) },
+        },
+        select: { authorEmail: true, authorName: true, authorDate: true },
+        orderBy: { authorDate: 'desc' },
+        distinct: ['authorEmail'],
+      })
+    : [];
+  const emailToName = new Map(devNameRows.map(r => [r.authorEmail, r.authorName]));
+
+  const isAdmin = session.user.role === 'ADMIN';
+
+  const leaderboardDevs = devAggRows.map(row => {
+    const devId = hashEmail(row.authorEmail);
+    const displayName = emailToName.get(row.authorEmail) ?? row.authorEmail.split('@')[0];
+    return {
+      id: devId,
+      name: isAdmin ? displayName : (devNames.get(devId) ?? displayName.split(' ')[0]),
+      totalHours: Math.round((row._sum.effortHours?.toNumber() ?? 0) * 100) / 100,
+      commitCount: row._count._all,
+    };
+  });
+
+  const scopeWorkDays = await computeScopeWorkDays(id, job.id);
+
+  const ghostTotalHours = Math.round(
+    GHOST_NORM * scopeWorkDays * (effectiveProgress / 100),
+  );
+
+  const leaderboard = {
+    developers: leaderboardDevs,
+    ghost: { totalHours: ghostTotalHours },
+    scopeWorkDays,
+  };
+
+  if (!isAdmin) {
+    const sanitizedError = job.error
+      ? (job.error.toLowerCase().includes('clone') || job.error.toLowerCase().includes('repository')
+        ? 'Repository access issue. Please check permissions and try again.'
+        : job.error.toLowerCase().includes('quota') || job.error.toLowerCase().includes('rate')
+          ? 'Analysis service temporarily unavailable. Please try again later.'
+          : 'Analysis encountered an issue. Please try again.')
+      : null;
+
+    return NextResponse.json(
+      {
+        success: true,
+        data: {
+          jobId: job.id,
+          status: job.status,
+          progress: effectiveProgress,
+          currentStep: (isLive ? meta?.currentStep : undefined) ?? job.currentStep,
+          currentCommit: effectiveCurrentCommit,
+          totalCommits: effectiveTotalCommits,
+          startedAt: job.startedAt,
+          completedAt: job.completedAt,
+          error: sanitizedError,
+          isPaused,
+          pauseReason: isPaused ? 'EXTERNAL_QUOTA' : null,
+          isRetrying: job.status === 'FAILED_RETRYABLE' && job.retryCount < job.maxRetries,
+          currentRepoName: job.order.currentRepoName,
+          clientEvents,
+          eventCursor,
+          leaderboard,
+        },
+      },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+
+  // Admin: full response + client data
   // No browser caching — this endpoint is polled for real-time progress
   return NextResponse.json(
     {
@@ -268,6 +431,8 @@ export async function GET(
           payload: event.payload,
         })),
         eventCursor,
+        clientEvents,
+        leaderboard,
       },
     },
     { headers: { 'Cache-Control': 'no-store' } },
