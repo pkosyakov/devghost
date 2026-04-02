@@ -128,17 +128,23 @@ export function GhostDistributionPanel({
   }, [timeline]);
 
   const hasSliderData = allDates.length >= 2;
+  const maxIdx = Math.max(0, allDates.length - 1);
 
-  // Slider state: [startIdx, endIdx] — null means full range
-  const [range, setRange] = useState<[number, number] | null>(null);
+  // Visual slider position (updates on every drag tick for smooth UX)
+  const [sliderPos, setSliderPos] = useState<[number, number] | null>(null);
+  // Committed range for metrics recalculation (updates on thumb release)
+  const [committedRange, setCommittedRange] = useState<[number, number] | null>(null);
 
   // Reset slider when order or data changes
-  useEffect(() => { setRange(null); }, [orderId, allDates.length]);
+  useEffect(() => { setSliderPos(null); setCommittedRange(null); }, [orderId, allDates.length]);
 
-  // Effective range: default to full, clamp to valid indices
-  const maxIdx = Math.max(0, allDates.length - 1);
-  const startIdx = range ? Math.min(range[0], maxIdx) : 0;
-  const endIdx = range ? Math.min(range[1], maxIdx) : maxIdx;
+  // Visual indices (for date labels — follow drag in real time)
+  const visStartIdx = sliderPos ? Math.min(sliderPos[0], maxIdx) : 0;
+  const visEndIdx = sliderPos ? Math.min(sliderPos[1], maxIdx) : maxIdx;
+
+  // Committed indices (for metrics recalculation — only on release)
+  const startIdx = committedRange ? Math.min(committedRange[0], maxIdx) : 0;
+  const endIdx = committedRange ? Math.min(committedRange[1], maxIdx) : maxIdx;
   const isFullRange = startIdx === 0 && endIdx === maxIdx;
 
   // Recalculate metrics for sub-range, or use original for full range
@@ -153,7 +159,8 @@ export function GhostDistributionPanel({
     );
   }, [hasSliderData, isFullRange, timeline, startIdx, endIdx, allDates, metrics, effectiveGhostNorm]);
 
-  const daysInRange = hasSliderData ? endIdx - startIdx + 1 : 0;
+  const daysInRange = hasSliderData ? visEndIdx - visStartIdx + 1 : 0;
+  const visIsFullRange = visStartIdx === 0 && visEndIdx === maxIdx;
 
   return (
     <div className="space-y-3">
@@ -161,21 +168,22 @@ export function GhostDistributionPanel({
       {hasSliderData && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>{formatSliderDate(allDates[startIdx], locale)}</span>
+            <span>{formatSliderDate(allDates[visStartIdx], locale)}</span>
             <span>
-              {isFullRange
+              {visIsFullRange
                 ? t('sliderFullRange', { count: allDates.length })
                 : t('sliderSubRange', { selected: daysInRange, total: allDates.length })}
             </span>
-            <span>{formatSliderDate(allDates[endIdx], locale)}</span>
+            <span>{formatSliderDate(allDates[visEndIdx], locale)}</span>
           </div>
           <Slider
             aria-label={t('sliderAriaLabel')}
             min={0}
             max={maxIdx}
             step={1}
-            value={[startIdx, endIdx]}
-            onValueCommit={([s, e]) => setRange([s, e])}
+            value={[visStartIdx, visEndIdx]}
+            onValueChange={([s, e]) => setSliderPos([s, e])}
+            onValueCommit={([s, e]) => { setSliderPos([s, e]); setCommittedRange([s, e]); }}
           />
         </div>
       )}
