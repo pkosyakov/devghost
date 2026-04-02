@@ -953,6 +953,7 @@
       "total": "total",
       "cached": "cached",
       "cacheIgnored": "Cache will be ignored — all {count} commits will be re-analyzed",
+      "cacheError": "Could not load cache info",
       "recalculate": "Recalculate all commits (ignore cache)",
       "saveAndAnalyze": "Save & Analyze",
       "cancel": "Cancel"
@@ -1766,5 +1767,13 @@
       "editSuccess": "Team updated",
       "editError": "Failed to update team"
     }
+  },
+  "viewAs": {
+    "label": "View as user",
+    "searchPlaceholder": "Search by email or name...",
+    "viewing": "Viewing as: {email}",
+    "exit": "Exit",
+    "noResults": "No users found",
+    "switchUser": "Switch user"
   }
 }

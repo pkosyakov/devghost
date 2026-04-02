@@ -99,7 +99,7 @@ interface AnalysisTechnicalPanelProps {
   onCancelJob: (jobId: string) => void;
   cancelIsPending: boolean;
   // Scope
-  onScopeSubmit: (settings: AnalysisPeriodSettings) => void;
+  onScopeSubmit: (settings: AnalysisPeriodSettings, forceRecalculate: boolean) => void;
   scopeIsPending: boolean;
   // Publish
   metrics: GhostMetric[];

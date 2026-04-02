@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useDeferredValue } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslations } from 'next-intl';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -63,25 +63,31 @@ export function EditScopePanel({
   const [settings, setSettings] = useState<AnalysisPeriodSettings>(currentSettings);
   const [forceRecalculate, setForceRecalculate] = useState(false);
 
-  // Debounce settings changes to avoid excessive API calls
-  const deferredSettings = useDeferredValue(settings);
+  // True debounce: delay API calls by 500ms after last settings change
+  const [debouncedSettings, setDebouncedSettings] = useState(settings);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    timerRef.current = setTimeout(() => setDebouncedSettings(settings), 500);
+    return () => clearTimeout(timerRef.current);
+  }, [settings.mode, settings.startDate?.getTime(), settings.endDate?.getTime(), settings.commitLimit]);
 
-  const { data: cacheStats, isLoading: cacheLoading } = useQuery<{
+  const { data: cacheStats, isLoading: cacheLoading, isError } = useQuery<{
     totalScopedCommits: number;
     reusableCachedCommits: number;
     billableCommits: number;
     isFirstRunEstimate: boolean;
     repos?: RepoCacheBreakdown[];
   }>({
-    queryKey: ['billing-preview', orderId, deferredSettings.mode, deferredSettings.startDate?.toISOString(), deferredSettings.endDate?.toISOString(), deferredSettings.commitLimit],
+    queryKey: ['billing-preview', orderId, debouncedSettings.mode, debouncedSettings.startDate?.toISOString(), debouncedSettings.endDate?.toISOString(), debouncedSettings.commitLimit],
     queryFn: async () => {
-      const params = buildPreviewParams(deferredSettings);
+      const params = buildPreviewParams(debouncedSettings);
       const res = await fetch(`/api/orders/${orderId}/billing-preview?${params}`);
       const json = await res.json();
       if (!res.ok || !json.success) throw new Error(json.error || 'Failed to fetch');
       return json.data;
     },
     staleTime: 10_000,
+    placeholderData: (prev) => prev,
   });
 
   const showCacheStats = cacheStats && !cacheStats.isFirstRunEstimate;
@@ -114,6 +120,12 @@ export function EditScopePanel({
           <div className="flex items-center gap-2 text-sm text-muted-foreground p-3 bg-muted/50 rounded-lg">
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
             {t('calculatingCache')}
+          </div>
+        )}
+
+        {isError && !cacheLoading && (
+          <div className="text-sm text-muted-foreground p-3 bg-muted/50 rounded-lg">
+            {t('cacheError')}
           </div>
         )}
 

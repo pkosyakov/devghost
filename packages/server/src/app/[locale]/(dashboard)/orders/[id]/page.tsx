@@ -1884,7 +1884,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             onRerunOptionsChange={handleAdminRerunOptionsChange}
             onCancelJob={(jobId) => cancelJobMutation.mutate(jobId)}
             cancelIsPending={cancelJobMutation.isPending}
-            onScopeSubmit={(settings) => handleScopeSubmit(settings, false)}
+            onScopeSubmit={(settings, forceRecalculate) => handleScopeSubmit(settings, forceRecalculate)}
             scopeIsPending={scopeMutation.isPending}
             metrics={finalMetrics}
             shareToken={shareToken}

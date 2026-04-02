@@ -437,23 +437,44 @@ async function computeRepoBreakdownRerun(
 export async function computeRepoCacheBreakdown(
   input: BillingPreviewInput,
 ): Promise<{ totals: BillingPreviewResult; repos: RepoCacheBreakdown[] }> {
-  const totals = await computeBillingPreview(input);
-
-  if (totals.isFirstRunEstimate) {
-    return { totals, repos: [] };
-  }
-
   const {
     userId, orderId, selectedRepos, excludedEmails, cacheMode, scope,
   } = input;
 
   const repoNames = parseRepoNames(selectedRepos);
+  if (repoNames.length === 0) {
+    const totals = await computeBillingPreview(input);
+    return { totals, repos: [] };
+  }
+
+  // Check for existing rows once (shared between totals + breakdown)
+  const existingRows = await prisma.commitAnalysis.count({
+    where: { orderId, jobId: null, method: { not: 'error' } },
+  });
+
+  if (existingRows === 0) {
+    // First-run: no CommitAnalysis rows, can't compute breakdown
+    const totals = await computeBillingPreview(input);
+    return { totals, repos: [] };
+  }
+
+  // Re-run path: resolve LLM model once, compute totals + breakdown in parallel
   const llmModel = await resolveLlmModel(cacheMode);
 
-  const repos = await computeRepoBreakdownRerun(
-    userId, orderId, repoNames, excludedEmails,
-    cacheMode, llmModel, scope,
-  );
+  const [rerunResult, repos] = await Promise.all([
+    computeRerunPreview(userId, orderId, repoNames, excludedEmails, cacheMode, llmModel, scope),
+    computeRepoBreakdownRerun(userId, orderId, repoNames, excludedEmails, cacheMode, llmModel, scope),
+  ]);
+
+  const billable = Math.max(0, rerunResult.total - rerunResult.cached);
+
+  const totals: BillingPreviewResult = {
+    totalScopedCommits: rerunResult.total,
+    reusableCachedCommits: rerunResult.cached,
+    billableCommits: billable,
+    estimatedCredits: billable,
+    isFirstRunEstimate: false,
+  };
 
   return { totals, repos };
 }
