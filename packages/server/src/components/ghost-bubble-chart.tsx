@@ -296,12 +296,17 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
           <ReferenceLine y={100} stroke="#666" strokeDasharray="5 5" label="Ghost Norm" />
           <ReferenceLine y={80} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
           <Tooltip
-            allowEscapeViewBox={{ x: true, y: true }}
-            content={({ payload }) => {
-              if (!payload?.length) return null;
+            allowEscapeViewBox={{ x: false, y: true }}
+            content={({ payload, coordinate }) => {
+              if (!payload?.length || !coordinate) return null;
               const d = payload[0]!.payload as ChartPoint;
+              const tipWidth = 180;
+              const flipLeft = (coordinate.x ?? 0) + tipWidth > containerWidth;
               return (
-                <div className="bg-white p-3 border rounded shadow text-sm">
+                <div
+                  className="bg-white p-3 border rounded shadow text-sm"
+                  style={flipLeft ? { transform: `translateX(-${tipWidth}px)` } : undefined}
+                >
                   <p className="font-bold">{d.name}</p>
                   <p>Ghost: {d.realGhost}%</p>
                   <p>Work Days: {d.realDays}</p>

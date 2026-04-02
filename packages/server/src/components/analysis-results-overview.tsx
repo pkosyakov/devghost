@@ -130,7 +130,9 @@ export function AnalysisResultsOverview({
           </CardHeader>
           <CardContent>
             <GhostDistributionPanel
+              orderId={orderId}
               metrics={displayMetrics}
+              effectiveGhostNorm={effectiveGhostNorm}
               onDeveloperClick={demoMode ? undefined : (email) =>
                 router.push(`/orders/${orderId}/developers/${encodeURIComponent(email)}`)
               }
