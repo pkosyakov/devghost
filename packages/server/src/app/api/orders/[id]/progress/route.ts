@@ -82,12 +82,15 @@ async function computeScopeWorkDays(orderId: string, jobId: string): Promise<num
 
   if (!startDate || !endDate) return 0;
 
-  let count = 0;
-  const d = new Date(startDate);
-  while (d <= endDate) {
-    const day = d.getDay();
+  const totalDays = Math.floor((endDate.getTime() - startDate.getTime()) / 86_400_000) + 1;
+  if (totalDays <= 0) return 0;
+  const fullWeeks = Math.floor(totalDays / 7);
+  const remainder = totalDays % 7;
+  let count = fullWeeks * 5;
+  const startDay = startDate.getDay(); // 0=Sun..6=Sat
+  for (let i = 0; i < remainder; i++) {
+    const day = (startDay + i) % 7;
     if (day !== 0 && day !== 6) count++;
-    d.setDate(d.getDate() + 1);
   }
   return count;
 }
@@ -322,7 +325,7 @@ export async function GET(
     const displayName = emailToName.get(row.authorEmail) ?? row.authorEmail.split('@')[0];
     return {
       id: devId,
-      name: isAdmin ? displayName : (devNames.get(devId) ?? displayName.split(' ')[0]),
+      name: isAdmin ? displayName : (devNames.get(devId) ?? 'Developer'),
       totalHours: Math.round((row._sum.effortHours?.toNumber() ?? 0) * 100) / 100,
       commitCount: row._count._all,
     };

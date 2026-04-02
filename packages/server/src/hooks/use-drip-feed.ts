@@ -24,7 +24,6 @@ const DRAIN_STATUSES = new Set([
 interface UseDripFeedOpts {
   rawEvents: ClientEvent[];
   rawLeaderboard: LeaderboardData;
-  pollIntervalMs: number;
   jobStatus: string;  // job-level status (RUNNING, COMPLETED, FAILED_FATAL, etc.)
   isPaused?: boolean; // EXTERNAL_QUOTA pause freezes feed/leaderboard in place
 }
@@ -38,7 +37,7 @@ interface UseDripFeedResult {
 }
 
 export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
-  const { rawEvents, rawLeaderboard, pollIntervalMs, jobStatus, isPaused = false } = opts;
+  const { rawEvents, rawLeaderboard, jobStatus, isPaused = false } = opts;
 
   const [visibleEvents, setVisibleEvents] = useState<ClientEvent[]>([]);
   const [counters, setCounters] = useState({ commits: 0, files: 0, lines: 0 });
@@ -231,9 +230,6 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [isPaused, isDraining, getExpectedBatchSize, emitLeaderboardUpdate]);
-
-  // Suppress unused warning for pollIntervalMs (kept for API compatibility)
-  void pollIntervalMs;
 
   return { visibleEvents, counters, leaderboard: dripLeaderboard, isDraining, isDrained };
 }

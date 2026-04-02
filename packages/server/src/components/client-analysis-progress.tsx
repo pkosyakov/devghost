@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { useDripFeed } from '@/hooks/use-drip-feed';
@@ -130,7 +129,6 @@ function LeaderboardRace({
         <div
           key={participant.id}
           className="flex items-center gap-2 transition-all duration-500 ease-in-out"
-          style={{ transform: `translateY(${index * 0}px)` }}
         >
           <div className="w-24 text-xs truncate text-right">
             {participant.isGhost ? (
@@ -222,7 +220,6 @@ export function ClientAnalysisProgress({
   } = useDripFeed({
     rawEvents: allClientEvents,
     rawLeaderboard: progress?.leaderboard ?? { developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0 },
-    pollIntervalMs: 1000,
     jobStatus,
     isPaused,
   });

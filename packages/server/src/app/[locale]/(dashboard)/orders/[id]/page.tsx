@@ -907,6 +907,18 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     analyzeMutation.mutate();
   }, [analyzeMutation, handleAdminRerun, isAdmin]);
 
+  const handleDrainStart = useCallback(() => {
+    setClientProgressState('draining');
+  }, []);
+
+  const handleClientComplete = useCallback((terminalStatus: string) => {
+    const isSuccess = terminalStatus === 'COMPLETED' || terminalStatus === 'LLM_COMPLETE';
+    setClientProgressState(isSuccess ? 'done' : 'terminal');
+    queryClient.invalidateQueries({ queryKey: ['order', id] });
+    queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+    queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+  }, [queryClient, id]);
+
   // Contributor selector derived values
   // Filter out developers without a usable email — they cannot be keyed,
   // excluded, or billed. Legacy orders may contain blank-email rows.
@@ -1442,18 +1454,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
               onCancel={() => analysisJobId && cancelJobMutation.mutate(analysisJobId)}
               onResume={() => progress?.jobId && resumeJobMutation.mutate(progress.jobId)}
               onRetry={handleRetryAnalysis}
-              onDrainStart={() => setClientProgressState('draining')}
-              onComplete={(terminalStatus) => {
-                const isSuccess = terminalStatus === 'COMPLETED' || terminalStatus === 'LLM_COMPLETE';
-                if (isSuccess) {
-                  setClientProgressState('done');
-                } else {
-                  setClientProgressState('terminal');
-                }
-                queryClient.invalidateQueries({ queryKey: ['order', id] });
-                queryClient.invalidateQueries({ queryKey: ['metrics', id] });
-                queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
-              }}
+              onDrainStart={handleDrainStart}
+              onComplete={handleClientComplete}
               cancelPending={cancelJobMutation.isPending}
               resumePending={resumeJobMutation.isPending}
             />

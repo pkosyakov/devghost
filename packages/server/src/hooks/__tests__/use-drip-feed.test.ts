@@ -37,7 +37,6 @@ describe('useDripFeed', () => {
       useDripFeed({
         rawEvents: [],
         rawLeaderboard: emptyLeaderboard,
-        pollIntervalMs: 1000,
         jobStatus: 'RUNNING',
       }),
     );
@@ -56,7 +55,6 @@ describe('useDripFeed', () => {
       useDripFeed({
         rawEvents: events,
         rawLeaderboard: emptyLeaderboard,
-        pollIntervalMs: 1000,
         jobStatus: 'RUNNING',
       }),
     );
@@ -83,8 +81,7 @@ describe('useDripFeed', () => {
         useDripFeed({
           rawEvents: events,
           rawLeaderboard: emptyLeaderboard,
-          pollIntervalMs: 1000,
-          jobStatus: status,
+            jobStatus: status,
         }),
       { initialProps: { status: 'RUNNING' } },
     );
@@ -117,7 +114,6 @@ describe('useDripFeed', () => {
       useDripFeed({
         rawEvents: events,
         rawLeaderboard: emptyLeaderboard,
-        pollIntervalMs: 1000,
         jobStatus: 'RUNNING',
       }),
     );
