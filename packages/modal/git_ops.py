@@ -112,6 +112,7 @@ def clone_or_update(
             # TOCTOU: repo may have been unshallowed between check and fetch
             if needs_unshallow and "does not make sense" in str(err):
                 logger.info("Repo already unshallowed for %s, retrying fetch without --unshallow", full_name)
+                # NB: fetch_args already has --filter=blob:none stripped (line 98)
                 retry_args = [a for a in fetch_args if a != "--unshallow"]
                 _run_git_with_partial_clone_fallback(
                     retry_args,

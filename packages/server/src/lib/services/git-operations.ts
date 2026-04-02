@@ -213,6 +213,7 @@ export async function cloneOrUpdateRepo(
         // TOCTOU: repo may have been unshallowed between check and fetch
         if (needsUnshallow && String(error).includes('does not make sense')) {
           gitLogger.info({ repoPath }, 'Repo already unshallowed, retrying fetch without --unshallow');
+          // NB: fetchArgs already has --filter=blob:none spliced out above
           const retryArgs = fetchArgs.filter(a => a !== '--unshallow');
           await execGitWithFilterFallback(retryArgs, { cwd: repoPath, env: gitEnv, timeout: GIT_FETCH_TIMEOUT_MS });
         } else {
@@ -222,15 +223,19 @@ export async function cloneOrUpdateRepo(
 
       await execGit(['reset', '--hard', `origin/${branch}`], { cwd: repoPath, env: gitEnv });
 
+      // Diagnostic: verify unshallow worked
+      const stillShallow = await isShallowRepo(repoPath);
       const { stdout } = await execGit(['rev-list', '--count', 'HEAD'], { cwd: repoPath });
+      const commitCount = parseInt(stdout.trim(), 10) || 0;
       const sizeKb = await getRepoSizeKb(repoPath);
-      return { repoPath, isNewClone: false, commitCount: parseInt(stdout.trim(), 10) || 0, sizeKb };
+      gitLogger.info({ repoPath, shallow: stillShallow, commitCount, sizeKb }, 'Post-fetch state');
+      return { repoPath, isNewClone: false, commitCount, sizeKb };
     }
 
     // Fresh clone
     await fs.mkdir(path.dirname(repoPath), { recursive: true });
 
-    const cloneArgs = ['-c', 'core.longpaths=true', '-c', 'protocol.version=2', 'clone', '--single-branch', '--branch', branch, '--no-tags'];
+    const cloneArgs = ['-c', 'core.longpaths=true', '-c', 'core.symlinks=false', '-c', 'protocol.version=2', 'clone', '--single-branch', '--branch', branch, '--no-tags'];
     if (GIT_PARTIAL_CLONE) cloneArgs.push('--filter=blob:none');
     if (shallowDate) cloneArgs.push(`--shallow-since=${shallowDate}`);
     cloneArgs.push(authUrl, repoPath);

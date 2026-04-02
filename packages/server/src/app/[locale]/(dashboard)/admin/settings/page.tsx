@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSession } from 'next-auth/react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -170,6 +171,10 @@ export default function AdminSettingsPage() {
   const t = useTranslations('admin.settings');
   const tc = useTranslations('common');
   const { toast } = useToast();
+  const { data: session, status: sessionStatus } = useSession();
+  const isAdmin = session?.user?.role === 'ADMIN';
+  const isAuthenticated = sessionStatus === 'authenticated';
+  const canUseAdminApis = isAuthenticated && isAdmin;
 
   // LLM settings
   const [llmSettings, setLlmSettings] = useState<LlmSettings>({
@@ -207,18 +212,20 @@ export default function AdminSettingsPage() {
   // Cache management
   const queryClient = useQueryClient();
 
-  const { data: cacheStats, isLoading: cacheLoading } = useQuery<CacheStats>({
+  const { data: cacheStats, isLoading: cacheStatsLoading } = useQuery<CacheStats>({
     queryKey: ['cache-stats'],
     queryFn: async () => {
       const res = await fetch('/api/cache');
       if (!res.ok) throw new Error('Failed to fetch cache stats');
       return res.json();
     },
+    enabled: canUseAdminApis,
   });
+  const cacheLoading = sessionStatus === 'loading' || (canUseAdminApis && cacheStatsLoading);
 
   const {
     data: estimatorHealth,
-    isLoading: estimatorHealthLoading,
+    isLoading: estimatorHealthQueryLoading,
     isFetching: estimatorHealthFetching,
     isError: estimatorHealthError,
     refetch: refetchEstimatorHealth,
@@ -230,8 +237,10 @@ export default function AdminSettingsPage() {
       const json = await res.json();
       return json.data;
     },
-    refetchInterval: 30_000,
+    enabled: canUseAdminApis,
+    refetchInterval: canUseAdminApis ? 30_000 : false,
   });
+  const estimatorHealthLoading = sessionStatus === 'loading' || estimatorHealthQueryLoading;
 
   const estimatorHealthUnavailable = !estimatorHealthLoading && (estimatorHealthError || !estimatorHealth);
 
@@ -267,6 +276,9 @@ export default function AdminSettingsPage() {
 
   const clearCacheMutation = useMutation({
     mutationFn: async (level: string) => {
+      if (!canUseAdminApis) {
+        throw new Error('Unauthorized');
+      }
       setClearingLevel(level);
       const res = await fetch(`/api/cache?level=${level}`, { method: 'DELETE' });
       if (!res.ok) throw new Error('Failed to clear cache');
@@ -295,13 +307,21 @@ export default function AdminSettingsPage() {
 
   // Load LLM settings
   useEffect(() => {
+    if (sessionStatus === 'loading') return;
+    if (!canUseAdminApis) {
+      setLlmLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
     const loadLlmSettings = async () => {
       setLlmLoading(true);
       try {
         const response = await fetch('/api/admin/llm-settings');
         if (response.ok) {
           const result = await response.json();
-          if (result.success && result.data) {
+          if (!cancelled && result.success && result.data) {
             setLlmSettings((prev) => ({
               ...prev,
               ...result.data,
@@ -312,17 +332,26 @@ export default function AdminSettingsPage() {
       } catch {
         // Settings will use defaults
       } finally {
-        setLlmLoading(false);
+        if (!cancelled) {
+          setLlmLoading(false);
+        }
       }
     };
 
     loadLlmSettings();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseAdminApis, sessionStatus]);
 
   // Load OpenRouter model list when provider is openrouter
   useEffect(() => {
+    if (!canUseAdminApis) return;
     if (llmSettings.llmProvider !== 'openrouter') return;
     if (orModels.length > 0) return; // already loaded
+
+    let cancelled = false;
 
     const loadModels = async () => {
       setOrModelsLoading(true);
@@ -330,19 +359,25 @@ export default function AdminSettingsPage() {
         const response = await fetch('/api/admin/openrouter-models');
         if (response.ok) {
           const result = await response.json();
-          if (result.success && result.data?.models) {
+          if (!cancelled && result.success && result.data?.models) {
             setOrModels(result.data.models);
           }
         }
       } catch {
         // Models will remain empty — user can type manually
       } finally {
-        setOrModelsLoading(false);
+        if (!cancelled) {
+          setOrModelsLoading(false);
+        }
       }
     };
 
     loadModels();
-  }, [llmSettings.llmProvider, orModels.length]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [canUseAdminApis, llmSettings.llmProvider, orModels.length]);
 
   // Filtered model list
   const filteredModels = useMemo(() => {
@@ -354,6 +389,8 @@ export default function AdminSettingsPage() {
   }, [orModels, orModelSearch]);
 
   const handleLlmSave = async () => {
+    if (!canUseAdminApis || llmSaving) return;
+
     setLlmSaving(true);
     setLlmError('');
     try {
@@ -400,6 +437,8 @@ export default function AdminSettingsPage() {
   };
 
   const handleRefreshPricing = async () => {
+    if (!canUseAdminApis || priceRefreshing) return;
+
     setPriceRefreshing(true);
     try {
       const response = await fetch('/api/admin/openrouter-models');
@@ -444,10 +483,11 @@ export default function AdminSettingsPage() {
               })}
             </Badge>
             <Button
+              type="button"
               variant="outline"
               size="sm"
               onClick={() => refetchEstimatorHealth()}
-              disabled={estimatorHealthFetching}
+              disabled={estimatorHealthFetching || !canUseAdminApis}
             >
               <RefreshCw className={`mr-2 h-4 w-4 ${estimatorHealthFetching ? 'animate-spin' : ''}`} />
               {t('refreshHealth')}
@@ -744,6 +784,7 @@ export default function AdminSettingsPage() {
                       <Popover open={orPopoverOpen} onOpenChange={setOrPopoverOpen}>
                         <PopoverTrigger asChild>
                           <Button
+                            type="button"
                             variant="outline"
                             role="combobox"
                             aria-expanded={orPopoverOpen}
@@ -799,6 +840,7 @@ export default function AdminSettingsPage() {
                                 )}
                                 {filteredModels.map((model) => (
                                   <button
+                                    type="button"
                                     key={model.id}
                                     className={`w-full text-left px-2 py-1.5 rounded-sm text-sm hover:bg-accent hover:text-accent-foreground cursor-pointer ${
                                       model.id === llmSettings.openrouterModel
@@ -940,6 +982,7 @@ export default function AdminSettingsPage() {
                       </div>
                     </div>
                     <Button
+                      type="button"
                       variant="outline"
                       size="icon"
                       onClick={handleRefreshPricing}
@@ -960,7 +1003,7 @@ export default function AdminSettingsPage() {
               )}
 
               <div className="flex justify-end">
-                <Button onClick={handleLlmSave} disabled={llmSaving} size="sm">
+                <Button type="button" onClick={handleLlmSave} disabled={llmSaving || !canUseAdminApis} size="sm">
                   {llmSaving ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1176,9 +1219,10 @@ export default function AdminSettingsPage() {
 
               <div className="flex gap-2">
                 <Button
+                  type="button"
                   variant="destructive"
                   size="sm"
-                  disabled={clearCacheMutation.isPending}
+                  disabled={clearCacheMutation.isPending || !canUseAdminApis}
                   onClick={() => clearCacheMutation.mutate('all')}
                 >
                   {clearingLevel === 'all' ? (
@@ -1189,9 +1233,10 @@ export default function AdminSettingsPage() {
                   {t('clearAll')}
                 </Button>
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
-                  disabled={clearCacheMutation.isPending}
+                  disabled={clearCacheMutation.isPending || !canUseAdminApis}
                   onClick={() => clearCacheMutation.mutate('llm')}
                 >
                   {clearingLevel === 'llm' && (
@@ -1200,9 +1245,10 @@ export default function AdminSettingsPage() {
                   {t('clearLlm')}
                 </Button>
                 <Button
+                  type="button"
                   variant="outline"
                   size="sm"
-                  disabled={clearCacheMutation.isPending}
+                  disabled={clearCacheMutation.isPending || !canUseAdminApis}
                   onClick={() => clearCacheMutation.mutate('diffs')}
                 >
                   {clearingLevel === 'diffs' && (
