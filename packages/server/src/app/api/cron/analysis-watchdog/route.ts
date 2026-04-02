@@ -421,8 +421,13 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
     });
 
     if (!skipBilling) {
-      const cachedReleased = job.creditsReleased || 0;
-      const alreadyConsumed = job.creditsConsumed || 0;
+      // Fresh read to avoid stale snapshot after partial debit resume
+      const freshJob = await prisma.analysisJob.findUnique({
+        where: { id: job.id },
+        select: { creditsConsumed: true, creditsReleased: true, creditsReserved: true },
+      });
+      const cachedReleased = freshJob?.creditsReleased || 0;
+      const alreadyConsumed = freshJob?.creditsConsumed || 0;
       const toDebit = Math.max(0, processedCount - cachedReleased - alreadyConsumed);
       let debitedNow = 0;
       let budgetExhausted = false;
@@ -477,6 +482,31 @@ async function postProcessJob(job: any, deadlineMs: number): Promise<PostProcess
           payload: { debitedNow, remaining: Math.max(0, toDebit - debitedNow) },
         });
         return { done: false, step: POST_PROCESSING_DEBIT_STEP, reason: 'partial' };
+      }
+    }
+
+    // Post-debit invariant check
+    if (!skipBilling) {
+      const afterDebit = await prisma.analysisJob.findUnique({
+        where: { id: job.id },
+        select: { creditsConsumed: true, creditsReleased: true, creditsReserved: true },
+      });
+      if (afterDebit) {
+        const { creditsConsumed, creditsReleased, creditsReserved } = afterDebit;
+        if (creditsConsumed + creditsReleased > creditsReserved) {
+          billingLogger.error(
+            { jobId: job.id, orderId: order.id, creditsConsumed, creditsReleased, creditsReserved },
+            'BILLING INVARIANT VIOLATION: consumed + released > reserved',
+          );
+          await appendJobEvent({
+            jobId: job.id,
+            level: 'error',
+            phase: 'post_processing',
+            code: 'BILLING_INVARIANT_VIOLATION',
+            message: 'consumed + released > reserved after debit phase',
+            payload: { creditsConsumed, creditsReleased, creditsReserved },
+          });
+        }
       }
     }
 
