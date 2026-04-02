@@ -22,6 +22,8 @@ import { AnalysisResultsSummary } from '@/components/analysis-results-summary';
 import { AnalysisHandoffCard } from '@/components/analysis-handoff-card';
 import { AnalysisResultsOverview } from '@/components/analysis-results-overview';
 import { AnalysisTechnicalPanel } from '@/components/analysis-technical-panel';
+import { ClientAnalysisProgress } from '@/components/client-analysis-progress';
+import type { ClientEvent } from '@/lib/services/client-event-mapper';
 import { GHOST_NORM, MIN_WORK_DAYS_FOR_GHOST, type GhostMetric, type GhostEligiblePeriod } from '@devghost/shared';
 import { Link } from '@/i18n/navigation';
 import {
@@ -160,6 +162,13 @@ interface AnalysisProgressData {
   log: PipelineLogEntry[];
   events: AnalysisEventEntry[];
   eventCursor: string | null;
+  isRetrying?: boolean;
+  clientEvents?: ClientEvent[];
+  leaderboard?: {
+    developers: { id: string; name: string; totalHours: number; commitCount: number }[];
+    ghost: { totalHours: number };
+    scopeWorkDays: number;
+  };
 }
 
 // Fetch analysis progress
@@ -314,6 +323,24 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [jobEvents, setJobEvents] = useState<AnalysisEventEntry[]>([]);
   const eventCursorRef = useRef<string | null>(null);
 
+  const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>('client');
+  const [clientProgressState, setClientProgressState] = useState<
+    'processing' | 'draining' | 'done' | 'terminal'
+  >('processing');
+
+  const hadLiveProgressRef = useRef(false);
+
+  const adminViewInitRef = useRef(false);
+  useEffect(() => {
+    if (isAdmin && !adminViewInitRef.current) {
+      adminViewInitRef.current = true;
+      setAdminViewMode('admin');
+    }
+  }, [isAdmin]);
+
+  const [allClientEvents, setAllClientEvents] = useState<ClientEvent[]>([]);
+  const clientEventSeenRef = useRef(new Set<string>());
+
   const [benchmarkJobId, setBenchmarkJobId] = useState<string | null>(null);
   const [benchmarkLog, setBenchmarkLog] = useState<PipelineLogEntry[]>([]);
   const benchmarkLogSinceRef = useRef<number>(0);
@@ -415,12 +442,35 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       if (data?.eventCursor) {
         eventCursorRef.current = data.eventCursor;
       }
+
+      const ACTIVE_JOB_STATUSES = new Set([
+        'PENDING', 'RUNNING', 'LLM_COMPLETE', 'FAILED_RETRYABLE',
+      ]);
+      if (data?.status && ACTIVE_JOB_STATUSES.has(data.status) && !hadLiveProgressRef.current) {
+        hadLiveProgressRef.current = true;
+      }
+
+      if (data?.clientEvents?.length) {
+        const incomingClientEvents = data.clientEvents;
+        setAllClientEvents(prev => {
+          const newEvents = incomingClientEvents.filter(
+            (e: { id: string }) => !clientEventSeenRef.current.has(e.id)
+          );
+          for (const e of newEvents) clientEventSeenRef.current.add(e.id);
+          return newEvents.length > 0 ? [...prev, ...newEvents] : prev;
+        });
+      }
+
       return data;
     },
     enabled:
-      (order?.status === 'PROCESSING' || order?.status === 'COMPLETED') &&
-      !(analysisStarted && order?.status !== 'PROCESSING'),
-    refetchInterval: order?.status === 'PROCESSING' ? livePollMs : false,
+      ((order?.status === 'PROCESSING'
+        || order?.status === 'COMPLETED'
+        || order?.status === 'INSUFFICIENT_CREDITS') &&
+       !(analysisStarted && order?.status !== 'PROCESSING'))
+      || clientProgressState === 'draining',
+    refetchInterval:
+      (order?.status === 'PROCESSING' || clientProgressState === 'draining') ? livePollMs : false,
   });
 
   const { data: llmInfo } = useQuery({
@@ -484,6 +534,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     logSinceRef.current = 0;
     setJobEvents([]);
     eventCursorRef.current = null;
+    setClientProgressState('processing');
+    setAllClientEvents([]);
+    clientEventSeenRef.current.clear();
+    // NOTE: do NOT arm hadLiveProgressRef here
     queryClient.removeQueries({ queryKey: ['progress', id] });
   }, [id, queryClient]);
 
@@ -593,8 +647,10 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       return res.json();
     },
     onSuccess: (_data, jobId) => {
-      // If this was the primary analysis job, reset state
-      if (jobId === analysisJobId) {
+      // Drain-aware: if client progress is still live, start draining instead of clearing
+      if (jobId === analysisJobId && clientProgressState === 'processing') {
+        setClientProgressState('draining');
+      } else if (jobId === analysisJobId) {
         setAnalysisJobId(null);
       }
       // If this was the benchmark job, clear benchmark state
@@ -737,15 +793,40 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
     if (order?.status === 'PROCESSING' || order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'INSUFFICIENT_CREDITS') {
       setAnalysisStarted(false);
     }
-    if (order?.status === 'COMPLETED' || order?.status === 'FAILED' || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS') {
-      setAnalysisJobId(null);
-      logSinceRef.current = 0;
-      eventCursorRef.current = null;
-      setJobEvents([]);
-      queryClient.invalidateQueries({ queryKey: ['progress', id] });
-      queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+    const isPausedOrder = order?.status === 'INSUFFICIENT_CREDITS' && progress?.isPaused;
+    if (isPausedOrder) {
+      return;
     }
-  }, [order?.status, queryClient, id]);
+
+    const isTerminalOrder = order?.status === 'COMPLETED' || order?.status === 'FAILED'
+      || order?.status === 'READY_FOR_ANALYSIS' || order?.status === 'INSUFFICIENT_CREDITS';
+
+    if (!isTerminalOrder) return;
+
+    if (clientProgressState === 'draining') {
+      return;
+    }
+
+    if (clientProgressState === 'terminal') {
+      return;
+    }
+
+    if (hadLiveProgressRef.current && clientProgressState === 'processing' && adminViewMode !== 'admin') {
+      setClientProgressState('draining');
+      queryClient.invalidateQueries({ queryKey: ['progress', id] });
+      return;
+    }
+
+    hadLiveProgressRef.current = false;
+    setAnalysisJobId(null);
+    logSinceRef.current = 0;
+    eventCursorRef.current = null;
+    setJobEvents([]);
+    setAllClientEvents([]);
+    clientEventSeenRef.current.clear();
+    queryClient.invalidateQueries({ queryKey: ['progress', id] });
+    queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+  }, [order?.status, progress?.isPaused, queryClient, id, clientProgressState, adminViewMode]);
 
   // Hydrate excludedDevelopers from persisted order state.
   // Also clears local state when persisted exclusions are empty/null
@@ -1341,10 +1422,44 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       {/* ================================================================ */}
       {/* PROCESSING — Progress                                            */}
       {/* ================================================================ */}
-      {(order.status === 'PROCESSING' || analysisStarted) && (() => {
+      {(order.status === 'PROCESSING' || analysisStarted ||
+        (hadLiveProgressRef.current &&
+         (clientProgressState === 'processing' || clientProgressState === 'draining' || clientProgressState === 'terminal') &&
+         !(isAdmin && adminViewMode === 'admin'))
+      ) && (() => {
         const isLaunchingTransition = analysisStarted && order.status !== 'PROCESSING';
         const startedAt = !isLaunchingTransition && progress?.startedAt ? new Date(progress.startedAt) : null;
         const elapsed = startedAt ? now - startedAt.getTime() : 0;
+
+        if (!isAdmin || adminViewMode === 'client') {
+          return (
+            <ClientAnalysisProgress
+              progress={progress as Parameters<typeof ClientAnalysisProgress>[0]['progress']}
+              allClientEvents={allClientEvents}
+              repoSizeMb={repoSizeMb}
+              isAdmin={isAdmin}
+              onToggleView={() => setAdminViewMode('admin')}
+              onCancel={() => analysisJobId && cancelJobMutation.mutate(analysisJobId)}
+              onResume={() => progress?.jobId && resumeJobMutation.mutate(progress.jobId)}
+              onRetry={handleRetryAnalysis}
+              onDrainStart={() => setClientProgressState('draining')}
+              onComplete={(terminalStatus) => {
+                const isSuccess = terminalStatus === 'COMPLETED' || terminalStatus === 'LLM_COMPLETE';
+                if (isSuccess) {
+                  setClientProgressState('done');
+                } else {
+                  setClientProgressState('terminal');
+                }
+                queryClient.invalidateQueries({ queryKey: ['order', id] });
+                queryClient.invalidateQueries({ queryKey: ['metrics', id] });
+                queryClient.invalidateQueries({ queryKey: ['workspace-stage'] });
+              }}
+              cancelPending={cancelJobMutation.isPending}
+              resumePending={resumeJobMutation.isPending}
+            />
+          );
+        }
+
         return progress?.isPaused ? (
           <Card className="border-amber-200">
             <CardHeader>
@@ -1432,6 +1547,15 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                       <Square className="h-4 w-4 mr-1" />
                     )}
                     {cancelJobMutation.isPending ? t('detail.cancelling') : t('detail.cancel')}
+                  </Button>
+                )}
+                {isAdmin && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setAdminViewMode('client')}
+                  >
+                    {t('clientProgress.clientViewToggle')}
                   </Button>
                 )}
               </div>
