@@ -2050,6 +2050,13 @@ Inside the `OrderPage` component, after the existing state declarations (around 
   const [adminViewMode, setAdminViewMode] = useState<'admin' | 'client'>('client');
   const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
 
+  // Live-progress latch: true only when THIS page session has received progress
+  // data for an active analysis. Prevents the order-status watcher from entering
+  // drain mode on historical COMPLETED/FAILED orders where clientProgressState
+  // is still at its 'processing' default. Also gates the render condition so
+  // the PROCESSING section doesn't mount/drain for non-live orders.
+  const hadLiveProgressRef = useRef(false);
+
   // Sync adminViewMode when session loads (isAdmin comes from useSession, initially falsy)
   const adminViewInitRef = useRef(false);
   useEffect(() => {
@@ -2079,6 +2086,12 @@ Inside the `OrderPage` component, after the existing state declarations (around 
 Inside the progress query `queryFn` (around line 379), after the existing `jobEvents` accumulation block (`if (data?.events?.length) { ... }`) and before `return data;`, add client event accumulation. Note: `fetchProgress()` returns `json.data` (not the raw envelope), so fields are accessed directly on `data`:
 
 ```typescript
+      // Latch: first progress data confirms this is a live analysis session.
+      // Gates the watcher and render condition so historical orders don't drain.
+      if (data && !hadLiveProgressRef.current) {
+        hadLiveProgressRef.current = true;
+      }
+
       // Accumulate client events (same pattern as jobEvents above)
       if (data?.clientEvents?.length) {
         setAllClientEvents(prev => {
@@ -2095,11 +2108,20 @@ Inside the progress query `queryFn` (around line 379), after the existing `jobEv
 
 Replace the PROCESSING section condition (around line 1339):
 
+The render condition now uses the latch ref + `clientProgressState` to keep the component mounted across the order-status transition (no unmount gap). `hadLiveProgressRef` prevents mounting on historical terminal orders.
+
 ```tsx
       {/* ================================================================ */}
       {/* PROCESSING — Progress                                            */}
       {/* ================================================================ */}
-      {(order.status === 'PROCESSING' || analysisStarted || (clientProgressState === 'draining' && !(isAdmin && adminViewMode === 'admin'))) && (() => {
+      {(order.status === 'PROCESSING' || analysisStarted ||
+        // Keep mounted during drain AND during the order-first gap (order left
+        // PROCESSING but useEffect hasn't set 'draining' yet). hadLiveProgressRef
+        // prevents this from firing on historical COMPLETED/FAILED page loads.
+        (hadLiveProgressRef.current &&
+         (clientProgressState === 'processing' || clientProgressState === 'draining') &&
+         !(isAdmin && adminViewMode === 'admin'))
+      ) && (() => {
 ```
 
 - [ ] **Step 3: Add admin toggle button and client view branch**
@@ -2186,6 +2208,7 @@ In the `prepareAnalysisLaunch` callback (around line 475), add:
     setClientProgressState('processing');  // reset state machine
     setAllClientEvents([]);                // reset cumulative client feed
     clientEventSeenRef.current.clear();    // reset dedup set
+    hadLiveProgressRef.current = true;     // latch: this session has live progress
     queryClient.removeQueries({ queryKey: ['progress', id] });
   }, [id, queryClient]);
 ```
@@ -2208,17 +2231,18 @@ Replace the existing `order?.status` watcher `useEffect` (around line 736) entir
       return;
     }
 
-    // If client progress was actively processing (non-admin view),
-    // this terminal order status means a server-driven failure/completion.
-    // Trigger drain so remaining queued events can finish displaying.
-    if (clientProgressState === 'processing' && adminViewMode !== 'admin') {
+    // If client progress was actively processing (non-admin view) AND
+    // this session actually had live progress data (not a historical page load),
+    // trigger drain so remaining queued events can finish displaying.
+    if (hadLiveProgressRef.current && clientProgressState === 'processing' && adminViewMode !== 'admin') {
       setClientProgressState('draining');
       // One more progress poll to pick up the terminal job status
       queryClient.invalidateQueries({ queryKey: ['progress', id] });
       return;
     }
 
-    // Normal cleanup: admin view, no active client progress, or drain already done.
+    // Normal cleanup: admin view, no live progress, or drain already done.
+    hadLiveProgressRef.current = false;  // clear latch for next lifecycle
     setAnalysisJobId(null);
     logSinceRef.current = 0;
     eventCursorRef.current = null;
