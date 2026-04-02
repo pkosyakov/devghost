@@ -71,6 +71,33 @@ type ClientEvent = {
 
 One `LLM_COMMIT_RESULT` event expands into 3-5 client events (commit subject + files + lines + change type + estimation done).
 
+#### Worker payload enrichment (prerequisite)
+
+The current `LLM_COMMIT_RESULT` payload in `worker.py` lacks fields needed for client events and leaderboard. The `commit_lookup` dict already contains `author_email`, `author_name`, `additions`, `deletions`, `files_count` from `git_ops.extract_commits()`, but `_emit_commit_live_results()` does not include them in the event payload. Required changes to `worker.py`:
+
+**`_emit_commit_live_results()` — add to payload:**
+```python
+payload = {
+    ...existing fields...,
+    # New fields for client event mapper:
+    "authorEmail": commit.get("author_email"),
+    "authorName": commit.get("author_name"),
+    "filesCount": commit.get("files_count"),
+    "additions": commit.get("additions"),
+    "deletions": commit.get("deletions"),
+}
+```
+
+All data is already in `commit_lookup` (populated from `extract_commits()` in `git_ops.py`), so this is a pure payload enrichment — no new data sources needed.
+
+**`REPO_PROCESS_DONE` — enrich payload:**
+
+Current payload has `totalAnalyzed` and `durationSec`. Add `totalHours` (sum of estimated hours for the repo). The calling function `_process_single_repo()` already tracks `total_analyzed`; it needs to also accumulate hours from chunk results.
+
+**`REPO_EXTRACT_DONE` — enrich payload for LAST_N_COMMITS:**
+
+Current payload has `commitCount`. Add `earliestDate` and `latestDate` (from `commit[0]["author_date"]` and `commit[-1]["author_date"]` after sorting). Needed to compute scope work days for ghost baseline when analysis mode is `LAST_N_COMMITS`.
+
 #### Filtered out (never sent to client)
 
 - SHA hashes
@@ -82,16 +109,17 @@ One `LLM_COMMIT_RESULT` event expands into 3-5 client events (commit subject + f
 - Retry count, max retries, failure class
 - Internal event codes (HEARTBEAT_*, WORKER_*, TRIGGER_*, ROLLBACK_*)
 - Pipeline log entries (raw log)
+- Raw author emails (leaderboard uses display names only; email used server-side for aggregation but not sent to non-admin clients)
 
 #### Leaderboard data
 
-The mapper accumulates effort-hours per developer from `LLM_COMMIT_RESULT` events and computes ghost baseline:
+The mapper accumulates effort-hours per developer from `LLM_COMMIT_RESULT` events (using the new `authorEmail`/`authorName`/`estimatedHours` fields) and computes ghost baseline:
 
 ```typescript
 type LeaderboardData = {
   developers: {
-    name: string;
-    email: string;
+    id: string;         // stable hash of email (not the raw email)
+    name: string;       // display name from authorName
     totalHours: number;
     commitCount: number;
   }[];
@@ -101,6 +129,8 @@ type LeaderboardData = {
   scopeWorkDays: number;
 };
 ```
+
+Developer identity: the mapper groups by `authorEmail` server-side for aggregation, but sends only a stable hash (`id`) and display name to non-admin clients. Raw emails are never exposed in the client response. This prevents leaking contributor email addresses while still allowing the leaderboard to function.
 
 `ghost.totalHours` grows proportionally with analysis progress so the ghost bar advances alongside real developers.
 
@@ -191,13 +221,87 @@ speed = speed + (targetSpeed - speed) * 0.1
 ```
 Applied each tick. User does not perceive tempo changes.
 
-#### Fast-forward on completion
+#### Completion state machine
 
-When `isComplete` becomes true:
-1. Target speed set to maximum
+The current page immediately resets `analysisStarted` and switches UI on status change (page.tsx L731-743). The client progress component needs to intercept this transition to drain the queue before showing results.
+
+**State machine for the component (not the hook):**
+
+```
+LIVE → DRAINING → DONE
+LIVE → FAILED
+LIVE → CANCELLED
+LIVE → PAUSED
+```
+
+- `LIVE`: normal drip-feed operation, polling active
+- `DRAINING`: `order.status` changed to `COMPLETED`, but queue still has events. Component stays mounted, fast-forward active. Polling stops.
+- `DONE`: queue drained, final milestone emitted. Component calls `onComplete` callback — page transitions to results.
+- `FAILED`: `order.status` changed to `FAILED`/`FAILED_FATAL`. Flush remaining queue at fast speed, then show client-friendly error card.
+- `CANCELLED`: `order.status` changed to `CANCELLED`. Flush queue, show "Analysis cancelled" card with option to restart.
+- `PAUSED`: `isPaused` is true. Feed freezes, amber banner shown.
+
+**Page integration change:** Instead of `order.status === 'COMPLETED'` immediately hiding the PROCESSING section, the page defers to the component's state:
+
+```tsx
+// New state: 'processing' | 'draining' | 'done'
+const [clientProgressState, setClientProgressState] = useState<'processing' | 'draining' | 'done'>('processing');
+
+// PROCESSING section stays visible during 'draining'
+{(order.status === 'PROCESSING' || analysisStarted || clientProgressState === 'draining') && (
+  isAdmin && adminViewMode === 'admin'
+    ? <current admin UI>
+    : <ClientAnalysisProgress
+        progress={progress}
+        orderStatus={order.status}
+        isAdmin={isAdmin}
+        onToggleView={() => setAdminViewMode(m => m === 'admin' ? 'client' : 'admin')}
+        onCancel={() => cancelJobMutation.mutate(analysisJobId)}
+        onResume={() => resumeJobMutation.mutate(progress.jobId)}
+        onRetry={handleRetryAnalysis}
+        onDrainStart={() => setClientProgressState('draining')}
+        onComplete={() => {
+          setClientProgressState('done');
+          // existing invalidation logic runs here
+        }}
+      />
+)}
+```
+
+**Hook fast-forward behavior:**
+
+When the component enters DRAINING state:
+1. Hook sets target speed to maximum
 2. Lerp accelerates to ~15ms intervals over ~2 seconds
-3. After queue drains, emit final milestone "Analysis complete"
-4. `onDrainComplete` callback signals component to transition to results
+3. After queue drains, hook emits final milestone "Analysis complete"
+4. Hook sets `isDrained: true`
+5. Component reads `isDrained`, calls `onComplete` callback
+
+The `onDrainComplete` from the original spec is replaced by the `isDrained` boolean return value — the component controls the transition, not the hook.
+
+#### Terminal states — client UX
+
+**FAILED / FAILED_FATAL (client):**
+- Flush remaining events at fast speed
+- Show error card: "Analysis encountered an issue" (no stack trace, no internal error codes)
+- Categorized messages: "Repository access issue", "Analysis service temporarily unavailable", or generic "Unexpected error"
+- Button: "Try Again" (same as current retry logic)
+- Leaderboard and feed stay visible (showing work done so far)
+
+**CANCELLED (client):**
+- Flush remaining events
+- Show info card: "Analysis was cancelled"
+- Leaderboard and feed stay visible
+- Button: "Start New Analysis"
+
+**FAILED_RETRYABLE (non-quota, client):**
+- Same as FAILED but with "Retrying automatically..." message if retryCount < maxRetries
+- If max retries exhausted, same as FAILED
+
+**LLM_COMPLETE (client):**
+- Client sees this as "Finalizing results..." phase in the dashboard
+- Feed continues dripping if events remain
+- No special UI — just a phase label change
 
 #### Counters and leaderboard sync
 
@@ -293,12 +397,13 @@ Admin toggle: button in card header, switches `adminViewMode`. Instant — no se
 
 | File | Changes |
 |------|---------|
+| `packages/modal/worker.py` | Enrich `LLM_COMMIT_RESULT` payload (authorEmail, authorName, filesCount, additions, deletions), enrich `REPO_PROCESS_DONE` (totalHours), enrich `REPO_EXTRACT_DONE` (earliestDate, latestDate) |
 | `api/orders/[id]/progress/route.ts` | Role-based response: call mapper for all requests, filter fields for non-admin |
-| `app/[locale]/(dashboard)/orders/[id]/page.tsx` | Admin toggle state, conditional render of ClientAnalysisProgress vs current admin UI |
+| `app/[locale]/(dashboard)/orders/[id]/page.tsx` | Admin toggle state, client progress state machine, conditional render of ClientAnalysisProgress vs current admin UI, deferred COMPLETED transition |
 | i18n message files | Keys for client events, dashboard labels, leaderboard labels |
 
 ### Unchanged
 
 - Current admin UI components (pipeline-log, analysis-event-log, commit-processing-timeline)
-- Pipeline log store, analysis worker, modal worker
+- Pipeline log store
 - Progress API admin response format (backward compatible, new fields added)
