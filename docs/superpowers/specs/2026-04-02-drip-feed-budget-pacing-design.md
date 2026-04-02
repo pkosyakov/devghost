@@ -102,7 +102,15 @@ delay(event) = max(HARD_FLOOR, clampedDelay × scaleFactor)
 
 `HARD_FLOOR = 10ms` — absolute minimum to avoid invisible events. Because of the floor, the actual sum may still exceed `budget` (see example below). This is acceptable — the goal is bounded lag, not exact timing.
 
-2. **Catch-up drain** (hard): If the queue depth exceeds a high-water mark (`queue.length > expectedBatchSize × 3`), the batch's events are stamped at `HARD_FLOOR` regardless of tier. This is a controlled flush that prevents unbounded lag. The high-water mark ensures this only triggers under sustained overload, not a single large batch.
+2. **Catch-up flush** (hard): If the queue depth exceeds a high-water mark (`queue.length > avgBatch × CATCH_UP_THRESHOLD`), the tick switches to **batch emit mode**: it dequeues multiple events per tick, emitting them all in one React state update, then scheduling the next tick at `HARD_FLOOR`. This multiplies throughput without lowering the timer resolution below 10ms.
+
+The batch size for catch-up is calculated to drain the budget's worth of events per tick:
+
+```
+catchUpBatchSize = max(1, floor(budget / HARD_FLOOR))
+```
+
+At `budget=360ms, HARD_FLOOR=10ms` this gives `catchUpBatchSize=36` — each 10ms tick emits 36 events, yielding a throughput of ~3600 events/second. This comfortably handles 60 events/300ms (200 events/second) and brings the backlog down quickly. Once `queue.length` drops below `avgBatch × CATCH_UP_THRESHOLD`, the tick returns to single-event mode with budget-weighted delays.
 
 **Example: 300ms poll, batch of 10 major + 50 micro:**
 
@@ -115,9 +123,9 @@ delay(event) = max(HARD_FLOOR, clampedDelay × scaleFactor)
 | Scale factor | 360 / 1150 | 0.313 |
 | Scaled major | max(10, 40×0.313) = max(10, 12.5) | 12.5ms |
 | Scaled micro | max(10, 15×0.313) = max(10, 4.7) | 10ms |
-| Final sum | 10×12.5 + 50×10 | 625ms |
+| Scaled sum | 10×12.5 + 50×10 | 625ms |
 
-625ms > 360ms budget — the batch takes ~1.7× longer to drip than the poll interval. With each poll adding 60 events and drip consuming them in 625ms, the backlog grows by ~60 events every two polls. This is the sustained overload scenario. After a few polls the queue depth exceeds `avgBatch × CATCH_UP_THRESHOLD`, and catch-up stamps all new events at `HARD_FLOOR (10ms)`. At that point a 60-event batch drips in 600ms (60 × 10ms), which is close enough to the 360ms budget to stabilize the queue. Once the backlog clears, normal budget-weighted pacing resumes.
+625ms > 360ms budget — at one-event-per-tick, the backlog grows. After a few polls, queue depth crosses `avgBatch × 3` and catch-up flush activates. With `catchUpBatchSize = floor(360/10) = 36`, each 10ms tick emits 36 events. The 60-event batch drains in ~20ms (2 ticks × 10ms). Backlog clears within one poll cycle. Once queue depth drops below threshold, normal single-event pacing resumes.
 
 ### Enqueue algorithm
 
@@ -166,14 +174,9 @@ useEffect(() => {
     }
   }
 
-  // ── Catch-up: if queue already deep, stamp at HARD_FLOOR ──
-  const queueDepth = queueRef.current.length;
-  const avgBatch = batchSizeEmaRef.current;
-  if (queueDepth > avgBatch * CATCH_UP_THRESHOLD) {
-    for (const item of items) {
-      item.delayMs = HARD_FLOOR;
-    }
-  }
+  // Note: catch-up flush is handled by the tick loop (batch emit mode),
+  // not at enqueue time. Events are always stamped with budget-weighted
+  // delays; the tick decides whether to emit them one-by-one or in bulk.
 
   // ── Update EMA for catch-up threshold ──
   batchSizeEmaRef.current = batchSizeEmaRef.current * 0.7 + newEvents.length * 0.3;
@@ -185,7 +188,7 @@ useEffect(() => {
 
 ### Tick loop
 
-The tick loop simplifies — it just reads the pre-stamped delay:
+The tick loop reads pre-stamped delays and supports batch emit for catch-up:
 
 ```typescript
 function tick() {
@@ -205,6 +208,27 @@ function tick() {
     return;
   }
 
+  // Catch-up mode: batch emit when queue is deep
+  const avgBatch = batchSizeEmaRef.current;
+  const inCatchUp = queue.length > avgBatch * CATCH_UP_THRESHOLD;
+
+  if (inCatchUp) {
+    const budget = measuredIntervalRef.current * BUDGET_PADDING;
+    const batchSize = Math.min(queue.length, Math.max(1, Math.floor(budget / HARD_FLOOR)));
+    const batch = queue.splice(0, batchSize);
+    const batchEvents = batch.map(it => it.event);
+
+    setVisibleEvents(prev => [...prev, ...batchEvents]);
+
+    for (const { event } of batch) {
+      // ... counter + leaderboard accumulation per event ...
+    }
+
+    timerRef.current = setTimeout(tick, HARD_FLOOR);
+    return;
+  }
+
+  // Normal mode: single event with pre-stamped delay
   const { event, delayMs } = queue.shift()!;
   setVisibleEvents(prev => [...prev, event]);
 
@@ -446,7 +470,7 @@ const { visibleEvents, counters, leaderboard, isDraining, isDrained } = useDripF
 
 4. **Overload scale-down**: Enqueue 10 major + 50 micro with budget=360ms (simulating 300ms admin demo poll). Verify clampedSum > budget triggers scale-down, no delay exceeds clamp max, and total is closer to budget.
 
-5. **Catch-up drain**: Pre-fill queue with 100 items, then enqueue a new batch. Verify new batch events are stamped at HARD_FLOOR.
+5. **Catch-up batch emit**: Pre-fill queue with 100 items (above `avgBatch × CATCH_UP_THRESHOLD`). Verify tick dequeues multiple events per tick (`catchUpBatchSize = floor(budget / HARD_FLOOR)`), all emitted in a single state update. Verify that once queue depth drops below threshold, tick returns to single-event mode with pre-stamped delays.
 
 6. **Drain speedup**: Set jobStatus to 'COMPLETED'. Verify tick applies `/DRAIN_SPEEDUP` to pre-stamped delays.
 
