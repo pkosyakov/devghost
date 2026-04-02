@@ -8,6 +8,7 @@ import {
 } from '@/lib/api-utils';
 import {
   computeBillingPreview,
+  computeRepoCacheBreakdown,
   type BillingPreviewScope,
 } from '@/lib/services/analysis-billing-preview';
 
@@ -98,7 +99,7 @@ export async function GET(
       : order.analysisCommitLimit,
   };
 
-  const preview = await computeBillingPreview({
+  const input = {
     userId: session.user.id,
     orderId: order.id,
     selectedRepos: order.selectedRepos as Array<Record<string, unknown>>,
@@ -106,7 +107,15 @@ export async function GET(
     excludedEmails,
     cacheMode,
     scope,
-  });
+  };
 
+  const includeRepoBreakdown = searchParams.get('includeRepoBreakdown') === 'true';
+
+  if (includeRepoBreakdown) {
+    const { totals, repos } = await computeRepoCacheBreakdown(input);
+    return apiResponse({ ...totals, repos });
+  }
+
+  const preview = await computeBillingPreview(input);
   return apiResponse(preview);
 }

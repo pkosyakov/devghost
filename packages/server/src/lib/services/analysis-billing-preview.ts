@@ -40,6 +40,13 @@ export type BillingPreviewResult = {
   isFirstRunEstimate: boolean;
 };
 
+export type RepoCacheBreakdown = {
+  repository: string;
+  totalCommits: number;
+  cachedCommits: number;
+  newCommits: number;
+};
+
 // ── Shared helpers ─────────────────────────────────────────
 
 function parseRepoNames(raw: Array<Record<string, unknown>>): string[] {
@@ -317,4 +324,136 @@ export async function computeBillingPreview(
     estimatedCredits: billable,
     isFirstRunEstimate: false,
   };
+}
+
+// ── Per-repo cache breakdown ──────────────────────────────
+
+async function computeRepoBreakdownRerun(
+  userId: string,
+  orderId: string,
+  repoNames: string[],
+  excludedEmails: string[],
+  cacheMode: 'any' | 'model' | 'off',
+  llmModel: string | null,
+  scope: BillingPreviewScope,
+): Promise<RepoCacheBreakdown[]> {
+  const scopeFilter = buildScopeFilter(scope);
+  const excludedFilter = buildExcludedFilter(excludedEmails);
+  const cacheFilter = buildCacheFilter(cacheMode, orderId, llmModel);
+
+  if (scope.mode === 'LAST_N_COMMITS' && scope.commitLimit && scope.commitLimit > 0) {
+    // LAST_N: rank all commits globally, then group by repo
+    return prisma.$queryRaw<RepoCacheBreakdown[]>`
+      WITH ranked AS (
+        SELECT DISTINCT ON (ca."commitHash") ca."commitHash", ca.repository, ca."authorDate"
+        FROM "CommitAnalysis" ca
+        WHERE ca."orderId" = ${orderId}
+          AND ca."jobId" IS NULL
+          AND ca.method != 'error'
+          AND ca.repository IN (${Prisma.join(repoNames)})
+          ${excludedFilter}
+        ORDER BY ca."commitHash", ca."authorDate" DESC
+      ),
+      scoped AS (
+        SELECT * FROM ranked
+        ORDER BY "authorDate" DESC
+        LIMIT ${scope.commitLimit}
+      ),
+      cached AS (
+        SELECT DISTINCT ca."commitHash", s.repository
+        FROM "CommitAnalysis" ca
+        JOIN "Order" o ON o.id = ca."orderId"
+        JOIN scoped s ON s."commitHash" = ca."commitHash"
+        WHERE ca."jobId" IS NULL
+          AND ca.method != 'error'
+          AND ca.repository IN (${Prisma.join(repoNames)})
+          AND (
+            ca."orderId" = ${orderId}
+            OR (
+              ca."orderId" != ${orderId}
+              AND o."userId" = ${userId}
+              AND o.status = 'COMPLETED'
+            )
+          )
+          ${cacheFilter}
+          ${excludedFilter}
+      )
+      SELECT
+        s.repository,
+        COUNT(DISTINCT s."commitHash")::int AS "totalCommits",
+        COUNT(DISTINCT c."commitHash")::int AS "cachedCommits",
+        (COUNT(DISTINCT s."commitHash") - COUNT(DISTINCT c."commitHash"))::int AS "newCommits"
+      FROM scoped s
+      LEFT JOIN cached c ON c."commitHash" = s."commitHash" AND c.repository = s.repository
+      GROUP BY s.repository
+      ORDER BY s.repository
+    `;
+  }
+
+  // Non-LAST_N: standard grouping
+  return prisma.$queryRaw<RepoCacheBreakdown[]>`
+    WITH scoped AS (
+      SELECT DISTINCT ca."commitHash", ca.repository
+      FROM "CommitAnalysis" ca
+      WHERE ca."orderId" = ${orderId}
+        AND ca."jobId" IS NULL
+        AND ca.method != 'error'
+        AND ca.repository IN (${Prisma.join(repoNames)})
+        ${scopeFilter}
+        ${excludedFilter}
+    ),
+    cached AS (
+      SELECT DISTINCT ca."commitHash", ca.repository
+      FROM "CommitAnalysis" ca
+      JOIN "Order" o ON o.id = ca."orderId"
+      WHERE ca."jobId" IS NULL
+        AND ca.method != 'error'
+        AND ca.repository IN (${Prisma.join(repoNames)})
+        AND (
+          ca."orderId" = ${orderId}
+          OR (
+            ca."orderId" != ${orderId}
+            AND o."userId" = ${userId}
+            AND o.status = 'COMPLETED'
+          )
+        )
+        ${cacheFilter}
+        ${scopeFilter}
+        ${excludedFilter}
+        AND ca."commitHash" IN (SELECT "commitHash" FROM scoped)
+    )
+    SELECT
+      s.repository,
+      COUNT(DISTINCT s."commitHash")::int AS "totalCommits",
+      COUNT(DISTINCT c."commitHash")::int AS "cachedCommits",
+      (COUNT(DISTINCT s."commitHash") - COUNT(DISTINCT c."commitHash"))::int AS "newCommits"
+    FROM scoped s
+    LEFT JOIN cached c ON c."commitHash" = s."commitHash" AND c.repository = s.repository
+    GROUP BY s.repository
+    ORDER BY s.repository
+  `;
+}
+
+export async function computeRepoCacheBreakdown(
+  input: BillingPreviewInput,
+): Promise<{ totals: BillingPreviewResult; repos: RepoCacheBreakdown[] }> {
+  const totals = await computeBillingPreview(input);
+
+  if (totals.isFirstRunEstimate) {
+    return { totals, repos: [] };
+  }
+
+  const {
+    userId, orderId, selectedRepos, excludedEmails, cacheMode, scope,
+  } = input;
+
+  const repoNames = parseRepoNames(selectedRepos);
+  const llmModel = await resolveLlmModel(cacheMode);
+
+  const repos = await computeRepoBreakdownRerun(
+    userId, orderId, repoNames, excludedEmails,
+    cacheMode, llmModel, scope,
+  );
+
+  return { totals, repos };
 }

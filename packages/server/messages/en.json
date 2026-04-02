@@ -945,6 +945,18 @@
       "lastCommits": "Last {count} commits",
       "dateRangeNotSet": "Date range not set"
     },
+    "editScope": {
+      "title": "Edit Analysis Scope",
+      "calculatingCache": "Calculating cache...",
+      "inCache": "in cache",
+      "needsAnalysis": "new",
+      "total": "total",
+      "cached": "cached",
+      "cacheIgnored": "Cache will be ignored — all {count} commits will be re-analyzed",
+      "recalculate": "Recalculate all commits (ignore cache)",
+      "saveAndAnalyze": "Save & Analyze",
+      "cancel": "Cancel"
+    },
     "benchmark": {
       "run": "Run Benchmark",
       "runRollout": "Run Production Pipeline Benchmark",

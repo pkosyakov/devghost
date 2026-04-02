@@ -272,6 +272,7 @@ export function AnalysisTechnicalPanel(props: AnalysisTechnicalPanelProps) {
         {/* Edit scope */}
         {showEditScope && (
           <EditScopePanel
+            orderId={orderId}
             currentSettings={orderToScopeSettings(order)}
             onSubmit={onScopeSubmit}
             onCancel={() => setShowEditScope(false)}

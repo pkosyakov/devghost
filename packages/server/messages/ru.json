@@ -945,6 +945,18 @@
       "lastCommits": "Последние {count} коммитов",
       "dateRangeNotSet": "Диапазон дат не задан"
     },
+    "editScope": {
+      "title": "Изменить скоуп анализа",
+      "calculatingCache": "Расчет кэша...",
+      "inCache": "в кэше",
+      "needsAnalysis": "новых",
+      "total": "всего",
+      "cached": "в кэше",
+      "cacheIgnored": "Кэш будет проигнорирован — все {count} коммитов будут пересчитаны",
+      "recalculate": "Пересчитать все коммиты (игнорировать кэш)",
+      "saveAndAnalyze": "Сохранить и запустить",
+      "cancel": "Отмена"
+    },
     "benchmark": {
       "run": "Запустить бенчмарк",
       "runRollout": "Запустить бенчмарк прод-пайплайна",
