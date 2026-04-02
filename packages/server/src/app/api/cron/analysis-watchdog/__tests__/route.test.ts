@@ -551,12 +551,9 @@ describe('GET /api/cron/analysis-watchdog', () => {
         data: expect.objectContaining({ status: 'PENDING' }),
       }),
     );
-    // Should emit RETRY_SKIPPED_QUOTA event
-    expect(mockAppendJobEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        jobId: 'job-quota',
-        code: 'RETRY_SKIPPED_QUOTA',
-      }),
+    // Should NOT emit any event (no event spam on every watchdog cycle)
+    expect(mockAppendJobEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-quota' }),
     );
   });
 

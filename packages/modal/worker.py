@@ -6,6 +6,7 @@ and sets LLM_COMPLETE when done. Vercel handles post-processing.
 """
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -128,14 +129,12 @@ _TRANSIENT_KEYWORDS = [
     "connectionerror", "connecttimeout",
     "temporary failure", "temporarily unavailable",
     "econnreset", "econnrefused", "epipe",
-    "broken pipe", "network", "socket",
-    "502", "503", "504",  # HTTP server error codes
+    "broken pipe", "network error", "network unreachable",
     "bad gateway", "service unavailable", "gateway timeout",
-    "retry", "retryable",
+    "retryable",
 ]
 
 _QUOTA_KEYWORDS = [
-    "402", "403", "429",  # HTTP quota/auth/rate-limit codes
     "quota", "rate limit", "rate_limit", "ratelimit",
     "billing", "credits exhausted", "credit limit",
     "budget", "insufficient funds", "payment required",
@@ -147,10 +146,14 @@ _FATAL_KEYWORDS = [
     "llm_snapshot_invalid",
     "missing llmconfigsnapshot",
     "all providers have been ignored",
-    "authentication", "permission", "invalid token",
-    "schema", "column", "relation",  # DB schema issues
+    "authentication", "invalid token",
+    "schema mismatch", "unknown column", "relation does not exist",  # DB schema issues
     "invalid api key", "unauthorized",
 ]
+
+# HTTP status codes matched with word boundaries to avoid port-number false positives
+_TRANSIENT_HTTP_RE = re.compile(r'\b(502|503|504)\b')
+_QUOTA_HTTP_RE = re.compile(r'\b(402|403|429)\b')
 
 
 def classify_failure(error_msg: str, error_type: str = "") -> str:
@@ -168,12 +171,12 @@ def classify_failure(error_msg: str, error_type: str = "") -> str:
     if any(kw in combined for kw in _FATAL_KEYWORDS):
         return FAILURE_CONFIG_FATAL
 
-    # Check EXTERNAL_QUOTA next
-    if any(kw in combined for kw in _QUOTA_KEYWORDS):
+    # Check EXTERNAL_QUOTA next (keywords + HTTP codes)
+    if any(kw in combined for kw in _QUOTA_KEYWORDS) or _QUOTA_HTTP_RE.search(combined):
         return FAILURE_EXTERNAL_QUOTA
 
-    # Check TRANSIENT
-    if any(kw in combined for kw in _TRANSIENT_KEYWORDS):
+    # Check TRANSIENT (keywords + HTTP codes)
+    if any(kw in combined for kw in _TRANSIENT_KEYWORDS) or _TRANSIENT_HTTP_RE.search(combined):
         return FAILURE_TRANSIENT
 
     # Default: unknown errors are fatal (safe default -- don't retry blindly)

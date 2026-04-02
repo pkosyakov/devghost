@@ -41,8 +41,10 @@ vi.mock('@/lib/services/job-event-service', () => ({
   appendJobEvent: (...args: unknown[]) => mockAppendJobEvent(...args),
 }));
 
+const mockClaimAndTriggerModal = vi.fn().mockResolvedValue(true);
+
 vi.mock('@/lib/services/modal-trigger', () => ({
-  claimAndTriggerModal: vi.fn().mockResolvedValue(true),
+  claimAndTriggerModal: (...args: unknown[]) => mockClaimAndTriggerModal(...args),
 }));
 
 vi.mock('@/lib/logger', () => {
@@ -156,6 +158,7 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
           lockedBy: null,
           heartbeatAt: null,
           modalCallId: null,
+          updatedAt: expect.any(Date),
         }),
       }),
     );
@@ -173,6 +176,9 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
         code: 'MANUAL_RESUME_ACCEPTED',
       }),
     );
+
+    // claimAndTriggerModal called for modal execution mode
+    expect(mockClaimAndTriggerModal).toHaveBeenCalledWith('job-1');
   });
 
   it('returns 409 when CAS fails (concurrent state change)', async () => {
@@ -198,6 +204,20 @@ describe('POST /api/orders/[id]/jobs/[jobId]/resume', () => {
     expect(mockAppendJobEvent).not.toHaveBeenCalledWith(
       expect.objectContaining({ code: 'MANUAL_RESUME_ACCEPTED' }),
     );
+  });
+
+  it('returns 400 for non-modal (local) jobs', async () => {
+    mockJobFindFirst.mockResolvedValue({
+      id: 'job-1',
+      status: 'FAILED_RETRYABLE',
+      executionMode: 'local',
+    });
+
+    const res = await POST(makeRequest(), params);
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.error).toContain('modal');
+    expect(mockJobUpdateMany).not.toHaveBeenCalled();
   });
 
   it('does not increment retryCount', async () => {

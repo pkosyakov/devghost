@@ -60,7 +60,8 @@ function maskText(text: string): string {
 }
 
 function maskName(name: string): string {
-  return name.split(/\s+/).map(part => {
+  if (!name || !name.trim()) return 'Developer';
+  return name.trim().split(/\s+/).map(part => {
     if (part.length <= 2) return part[0] + '*';
     return part.slice(0, 2) + '*'.repeat(part.length - 2);
   }).join(' ');
@@ -618,7 +619,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       queryClient.invalidateQueries({ queryKey: ['progress', id] });
     },
     onError: (error: Error) => {
-      toast.error('Resume failed', error.message);
+      toast.error(t('detail.resumeFailed'), error.message);
     },
   });
 
@@ -1348,7 +1349,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                   <span className="text-amber-700">{t('detail.analysisPausedQuota')}</span>
                 </CardTitle>
                 <Badge variant="outline" className="bg-amber-50 text-amber-700 border-amber-200">
-                  {isPaused ? t('detail.analysisPausedQuota') : 'Paused'}
+                  {t('detail.analysisPausedQuota')}
                 </Badge>
               </div>
             </CardHeader>
@@ -1400,7 +1401,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
               {resumeJobMutation.isError && (
                 <p className="text-sm text-red-600">
-                  {resumeJobMutation.error instanceof Error ? resumeJobMutation.error.message : 'Resume failed'}
+                  {resumeJobMutation.error instanceof Error ? resumeJobMutation.error.message : t('detail.resumeFailed')}
                 </p>
               )}
             </CardContent>

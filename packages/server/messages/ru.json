@@ -468,6 +468,7 @@
       "preservedProgress": "{current} из {total} коммитов проанализировано и сохранено",
       "resumeSameRun": "Продолжить анализ",
       "freshRerun": "Запустить заново",
+      "resumeFailed": "Не удалось возобновить",
       "analysisInProgress": "Анализ выполняется",
       "progressDiagnosticsTitle": "Живая диагностика",
       "jobStatusLabel": "Статус джоба",

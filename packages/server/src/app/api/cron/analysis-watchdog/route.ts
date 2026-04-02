@@ -123,15 +123,7 @@ export async function GET(request: NextRequest) {
     const failureClass = latestFailureEvent?.code?.replace('FAILURE_CLASS_', '') ?? 'UNKNOWN';
 
     if (failureClass === 'EXTERNAL_QUOTA') {
-      await appendJobEvent({
-        jobId: job.id,
-        level: 'warn',
-        phase: 'watchdog',
-        code: 'RETRY_SKIPPED_QUOTA',
-        message: 'Watchdog skipped retry: external quota exhausted',
-        payload: { failureClass },
-      });
-      log.warn({ jobId: job.id, failureClass }, 'Retry skipped: EXTERNAL_QUOTA');
+      log.debug({ jobId: job.id, failureClass }, 'Retry skipped: EXTERNAL_QUOTA (awaiting user resume)');
       continue;
     }
 
@@ -214,6 +206,10 @@ export async function GET(request: NextRequest) {
     },
   });
   for (const job of stalePlaceholders) {
+    if (Date.now() - startTime > TIME_BUDGET_MS) {
+      log.info({ processed }, 'Time budget exceeded in stale placeholder cleanup');
+      return Response.json({ ok: true, processed, partial: true });
+    }
     await prisma.analysisJob.update({
       where: { id: job.id },
       data: { modalCallId: null, updatedAt: new Date() },

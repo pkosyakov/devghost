@@ -468,6 +468,7 @@
       "preservedProgress": "{current} of {total} commits analyzed and preserved",
       "resumeSameRun": "Resume analysis",
       "freshRerun": "Start fresh",
+      "resumeFailed": "Resume failed",
       "analysisInProgress": "Analysis in Progress",
       "progressDiagnosticsTitle": "Live Diagnostics",
       "jobStatusLabel": "Job status",

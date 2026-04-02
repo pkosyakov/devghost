@@ -27,7 +27,10 @@ export async function POST(
   });
   if (!job) return apiError('Job not found', 404);
 
-  // 3. Validate: job must be in FAILED_RETRYABLE status
+  // 3. Validate: job must be modal and in FAILED_RETRYABLE status
+  if (job.executionMode !== 'modal') {
+    return apiError('Resume is only supported for modal jobs', 400);
+  }
   if (job.status !== 'FAILED_RETRYABLE') {
     return apiError(`Cannot resume job in ${job.status} state`, 400);
   }
@@ -48,7 +51,7 @@ export async function POST(
     'Manual resume requested',
   );
 
-  // 5a. Log resume attempt (for audit trail even if CAS fails)
+  // 5. Log resume attempt (for audit trail even if CAS fails)
   await appendJobEvent({
     jobId,
     phase: 'resume',
@@ -56,7 +59,7 @@ export async function POST(
     message: 'Manual resume requested by user',
   });
 
-  // 5. CAS transition: atomic conditional update
+  // 6. CAS transition: atomic conditional update
   const resumed = await prisma.analysisJob.updateMany({
     where: { id: jobId, status: 'FAILED_RETRYABLE' },
     data: {
@@ -72,7 +75,7 @@ export async function POST(
     return apiError('Job state changed, cannot resume', 409);
   }
 
-  // 6. Emit resume event
+  // 7. Emit resume event
   await appendJobEvent({
     jobId,
     phase: 'resume',
@@ -80,12 +83,17 @@ export async function POST(
     message: 'Manual resume requested and accepted',
   });
 
-  // 7. Trigger Modal via shared claim protocol
-  if (job.executionMode === 'modal') {
-    await claimAndTriggerModal(jobId);
+  // 8. Trigger Modal via shared claim protocol (best-effort; watchdog recovers on failure)
+  try {
+    const triggered = await claimAndTriggerModal(jobId);
+    if (!triggered) {
+      log.warn({ jobId }, 'Modal trigger failed after CAS — watchdog will retry');
+    }
+  } catch (err) {
+    log.error({ err, jobId }, 'claimAndTriggerModal threw after CAS — watchdog will retry');
   }
 
-  // 8. Ensure order is in PROCESSING state (only from expected pre-resume states)
+  // 9. Ensure order is in PROCESSING state (only from expected pre-resume states)
   await prisma.order.updateMany({
     where: { id, status: { in: ['FAILED', 'READY_FOR_ANALYSIS'] } },
     data: { status: 'PROCESSING', errorMessage: null },
@@ -93,6 +101,6 @@ export async function POST(
 
   log.info({ jobId, orderId: id }, 'Job resumed successfully');
 
-  // 9. Return response
+  // 10. Return response
   return apiResponse({ status: 'RESUMED', jobId });
 }

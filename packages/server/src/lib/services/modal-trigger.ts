@@ -59,7 +59,7 @@ export async function triggerModal(jobId: string): Promise<boolean> {
       code: 'MODAL_TRIGGER_NETWORK_FAIL',
       message: 'Modal trigger network error',
       payload: { error: String(err) },
-    });
+    }).catch(() => {}); // non-critical logging — don't mask the real error
     log.warn({ err, jobId }, 'Modal trigger network error');
     return false;
   }
@@ -97,7 +97,7 @@ export async function claimAndTriggerModal(jobId: string): Promise<boolean> {
       phase: 'trigger',
       code: 'TRIGGER_CLAIM_CLEARED',
       message: 'Trigger claim cleared after modal trigger failure',
-    });
+    }).catch(() => {}); // non-critical logging
   }
 
   return success;
