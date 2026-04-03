@@ -84,7 +84,8 @@ export function ViewAsUserBanner() {
         .then((r) => r.ok ? r.json() : null)
         .then((json) => {
           if (!controller.signal.aborted) {
-            setUsers(json?.data?.users ?? []);
+            const all: LookupUser[] = json?.data?.users ?? [];
+            setUsers(all.filter((u) => u.id !== session?.user?.id));
             setLoading(false);
           }
         })
