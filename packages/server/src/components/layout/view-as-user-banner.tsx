@@ -70,17 +70,15 @@ export function ViewAsUserBanner() {
     abortRef.current?.abort();
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    if (!search.trim()) {
-      setUsers([]);
-      setLoading(false);
-      return;
-    }
-
     setLoading(true);
+    const delay = search.trim() ? 300 : 0;
     debounceRef.current = setTimeout(() => {
       const controller = new AbortController();
       abortRef.current = controller;
-      fetch(`/api/admin/users/lookup?search=${encodeURIComponent(search)}`, {
+      const qs = search.trim()
+        ? `?search=${encodeURIComponent(search)}`
+        : '';
+      fetch(`/api/admin/users/lookup${qs}`, {
         signal: controller.signal,
       })
         .then((r) => r.ok ? r.json() : null)
@@ -93,8 +91,14 @@ export function ViewAsUserBanner() {
         .catch((err) => {
           if (err.name !== 'AbortError') setLoading(false);
         });
-    }, 300);
+    }, delay);
   }, []);
+
+  // Load initial users when popover opens
+  useEffect(() => {
+    if (open) fetchUsers(query);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Cleanup on unmount
   useEffect(() => {
