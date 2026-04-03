@@ -42,10 +42,40 @@ import { useToast } from '@/hooks/use-toast';
 import { useNow } from '@/hooks/use-now';
 import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 
+class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiRequestError';
+  }
+}
+
+async function buildApiRequestError(
+  res: Response,
+  fallbackMessage: string,
+): Promise<ApiRequestError> {
+  let message = fallbackMessage;
+
+  try {
+    const json = await res.json();
+    if (typeof json?.error === 'string' && json.error.trim() !== '') {
+      message = json.error;
+    }
+  } catch {
+    // Ignore malformed/non-JSON error bodies and keep fallback message.
+  }
+
+  return new ApiRequestError(message, res.status);
+}
+
 // Fetch analysis details
 async function fetchOrder(id: string) {
   const res = await fetch(`/api/orders/${id}`);
-  if (!res.ok) throw new Error('Failed to fetch analysis');
+  if (!res.ok) {
+    throw await buildApiRequestError(res, 'Failed to fetch analysis');
+  }
   const json = await res.json();
   return json.data;
 }
@@ -279,6 +309,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const { toast } = useToast();
+  const tCommon = useTranslations('common');
   const t = useTranslations('orders');
   const { data: stageData } = useWorkspaceStage();
   const isFirstRun = stageData?.workspaceStage === 'first_data';
@@ -341,9 +372,15 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   });
   const livePollMs = isAdmin && demoLiveModeEnabled ? 300 : 1000;
 
-  const { data: order, isLoading: orderLoading } = useQuery({
+  const { data: order, isLoading: orderLoading, error: orderError } = useQuery({
     queryKey: ['order', id],
     queryFn: () => fetchOrder(id),
+    retry: (failureCount, error) => {
+      if (error instanceof ApiRequestError) {
+        return error.status !== 401 && error.status !== 403 && error.status !== 404 && failureCount < 1;
+      }
+      return failureCount < 1;
+    },
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       // Poll while PROCESSING to detect completion
@@ -1012,6 +1049,73 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
       <div className="flex items-center justify-center h-64">
         <Loader2 className="h-8 w-8 animate-spin" />
       </div>
+    );
+  }
+
+  if (orderError instanceof ApiRequestError) {
+    if (orderError.status === 401) {
+      return (
+        <Card className="mx-auto max-w-2xl border-amber-200">
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex items-center gap-2 text-amber-700">
+              <AlertCircle className="h-5 w-5" />
+              <span className="font-medium">{t('detail.authRequired')}</span>
+            </div>
+            <p className="text-sm text-muted-foreground">{t('detail.authRequiredDescription')}</p>
+            <div className="flex gap-3">
+              <Button onClick={() => window.location.reload()}>
+                {t('detail.reloadPage')}
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  const callbackUrl = `${window.location.pathname}${window.location.search}`;
+                  const loginPath = locale === 'ru' ? '/ru/login' : '/login';
+                  window.location.assign(`${loginPath}?callbackUrl=${encodeURIComponent(callbackUrl)}`);
+                }}
+              >
+                {t('detail.goToLogin')}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (orderError.status === 403) {
+      return (
+        <Card className="mx-auto max-w-2xl border-red-200">
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex items-center gap-2 text-red-600">
+              <AlertCircle className="h-5 w-5" />
+              <span className="font-medium">{t('detail.accessDenied')}</span>
+            </div>
+            <p className="text-sm text-muted-foreground">{t('detail.accessDeniedDescription')}</p>
+            <Button onClick={() => router.push('/orders')}>
+              {t('detail.backToOrders')}
+            </Button>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    if (orderError.status === 404) {
+      return <div className="text-center p-8">{t('detail.orderNotFound')}</div>;
+    }
+
+    return (
+      <Card className="mx-auto max-w-2xl border-red-200">
+        <CardContent className="pt-6 space-y-4">
+          <div className="flex items-center gap-2 text-red-600">
+            <AlertCircle className="h-5 w-5" />
+            <span className="font-medium">{tCommon('errorTitle')}</span>
+          </div>
+          <p className="text-sm text-muted-foreground">{orderError.message}</p>
+          <Button onClick={() => window.location.reload()}>
+            {tCommon('retry')}
+          </Button>
+        </CardContent>
+      </Card>
     );
   }
 

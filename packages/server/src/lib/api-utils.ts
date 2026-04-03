@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { headers } from 'next/headers';
 import { auth } from '@/lib/auth';
 import prisma from '@/lib/db';
+import { logger } from '@/lib/logger';
 import { verifyAccessToken } from './mobile-auth';
 import { Order } from '@prisma/client';
 import { ZodSchema, ZodError } from 'zod';
@@ -26,6 +27,39 @@ export interface UserSession {
     email: string;
     role: string;
   };
+}
+
+const authSessionLogger = logger.child({ module: 'auth-session' });
+
+function maskEmail(email: string | null | undefined): string | null {
+  if (!email) return null;
+  const [local, domain] = email.split('@');
+  if (!domain) return '***';
+  const visible = local.slice(0, 2);
+  return `${visible || '*'}***@${domain}`;
+}
+
+async function getAuthDebugContext(): Promise<{
+  hasCookieHeader: boolean;
+  hasSessionCookie: boolean;
+}> {
+  try {
+    const headersList = await headers();
+    const cookieHeader = headersList.get('cookie') ?? '';
+    return {
+      hasCookieHeader: cookieHeader.length > 0,
+      hasSessionCookie:
+        cookieHeader.includes('authjs.session-token')
+        || cookieHeader.includes('__Secure-authjs.session-token')
+        || cookieHeader.includes('next-auth.session-token')
+        || cookieHeader.includes('__Secure-next-auth.session-token'),
+    };
+  } catch {
+    return {
+      hasCookieHeader: false,
+      hasSessionCookie: false,
+    };
+  }
 }
 
 /**
@@ -73,19 +107,66 @@ export async function getUserSession(): Promise<UserSession | null> {
     return bearerSession;
   }
 
+  const authDebug = await getAuthDebugContext();
   const session = await auth();
 
-  if (!session?.user?.email) {
+  if (!session?.user) {
+    if (authDebug.hasSessionCookie || authDebug.hasCookieHeader) {
+      authSessionLogger.warn(
+        {
+          reason: 'web_session_missing',
+          hasCookieHeader: authDebug.hasCookieHeader,
+          hasSessionCookie: authDebug.hasSessionCookie,
+        },
+        'Web API request has cookies but no valid NextAuth session'
+      );
+    }
+    return null;
+  }
+
+  const sessionUser = session.user as { id?: string; email?: string | null; role?: string };
+
+  if (!sessionUser.email) {
+    authSessionLogger.warn(
+      {
+        reason: 'web_session_missing_email',
+        hasCookieHeader: authDebug.hasCookieHeader,
+        hasSessionCookie: authDebug.hasSessionCookie,
+        hasSessionUserId: Boolean(sessionUser.id),
+        hasRole: Boolean(sessionUser.role),
+      },
+      'Web API session is missing user email'
+    );
     return null;
   }
 
   // Look up user by email to get ID, role, and blocked status
   const user = await prisma.user.findUnique({
-    where: { email: session.user.email },
+    where: { email: sessionUser.email },
     select: { id: true, email: true, role: true, isBlocked: true },
   });
 
-  if (!user || user.isBlocked) {
+  if (!user) {
+    authSessionLogger.warn(
+      {
+        reason: 'db_user_missing_for_session_email',
+        email: maskEmail(sessionUser.email),
+        hasSessionUserId: Boolean(sessionUser.id),
+      },
+      'Web API session email did not resolve to a database user'
+    );
+    return null;
+  }
+
+  if (user.isBlocked) {
+    authSessionLogger.warn(
+      {
+        reason: 'db_user_blocked',
+        userId: user.id,
+        email: maskEmail(user.email),
+      },
+      'Blocked user attempted to access a protected API route'
+    );
     return null;
   }
 
