@@ -1,4 +1,10 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "master": true,
+      "*": false
+    }
+  },
   "framework": "nextjs",
   "buildCommand": "pnpm --filter @devghost/server build",
   "outputDirectory": "packages/server/.next",
