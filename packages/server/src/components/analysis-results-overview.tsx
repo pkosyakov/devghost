@@ -73,12 +73,25 @@ function recalcMetrics(
     }
   }
 
-  const origMap = new Map(originalMetrics.map(m => [m.developerEmail, m]));
   const result: GhostMetric[] = [];
 
-  for (const [email, dev] of byDev) {
-    const orig = origMap.get(email);
-    if (!orig) continue;
+  for (const orig of originalMetrics) {
+    const dev = byDev.get(orig.developerEmail);
+
+    if (!dev) {
+      // Developer has no effort rows in this date range — show with zeroed metrics
+      result.push({
+        ...orig,
+        totalEffortHours: 0,
+        actualWorkDays: 0,
+        avgDailyEffort: 0,
+        ghostPercentRaw: null,
+        ghostPercent: null,
+        hasEnoughData: false,
+        overheadHours: 0,
+      });
+      continue;
+    }
 
     const workDays = dev.placedDates.size;
     const totalEffort = Math.round(dev.totalEffort * 100) / 100;
@@ -101,7 +114,6 @@ function recalcMetrics(
       ghostPercent,
       hasEnoughData,
       overheadHours,
-      commitCount: orig.commitCount,
     });
   }
 

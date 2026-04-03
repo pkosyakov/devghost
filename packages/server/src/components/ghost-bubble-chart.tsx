@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScatterChart, Scatter, XAxis, YAxis, CartesianGrid,
          Tooltip, ReferenceLine, ResponsiveContainer } from 'recharts';
 import type { GhostMetric } from '@devghost/shared';
@@ -19,6 +19,58 @@ interface ChartPoint {
   name: string; email: string;
   x: number; y: number; z: number; r: number; fill: string;
   realDays: number; realEffort: number; realGhost: number;
+  labelHidden?: boolean;
+}
+
+const CHAR_WIDTH = 5.5; // approx width per char at fontSize 10
+const LABEL_HEIGHT = 12;
+const LABEL_GAP = 4;
+
+/** Greedy label collision detection — hides overlapping labels (lower priority = hidden).
+ *  Priority: larger bubbles keep their labels. */
+function markLabelCollisions(
+  points: ChartPoint[],
+  plotLeft: number, plotWidth: number,
+  plotTop: number, plotHeight: number,
+  xDomain: [number, number], yDomain: [number, number],
+): void {
+  if (points.length === 0) return;
+
+  const xScale = (v: number) => plotLeft + ((v - xDomain[0]) / (xDomain[1] - xDomain[0])) * plotWidth;
+  const yScale = (v: number) => plotTop + ((yDomain[1] - v) / (yDomain[1] - yDomain[0])) * plotHeight;
+
+  // Compute label bounding boxes
+  interface LabelBox { idx: number; x1: number; y1: number; x2: number; y2: number }
+  const boxes: LabelBox[] = [];
+
+  // Sort by bubble size DESC (priority)
+  const sorted = points.map((p, i) => ({ p, i })).sort((a, b) => b.p.r - a.p.r);
+
+  for (const { p, i } of sorted) {
+    const cx = xScale(p.x);
+    const cy = yScale(p.y);
+    const labelW = p.name.length * CHAR_WIDTH;
+    const labelX = cx - labelW / 2; // centered above bubble
+    const labelY = cy - p.r - LABEL_GAP - LABEL_HEIGHT;
+
+    const box: LabelBox = { idx: i, x1: labelX, y1: labelY, x2: labelX + labelW, y2: labelY + LABEL_HEIGHT };
+
+    // Check overlap with already-placed boxes
+    let overlaps = false;
+    for (const placed of boxes) {
+      if (box.x1 < placed.x2 && box.x2 > placed.x1 && box.y1 < placed.y2 && box.y2 > placed.y1) {
+        overlaps = true;
+        break;
+      }
+    }
+
+    if (overlaps) {
+      points[i].labelHidden = true;
+    } else {
+      points[i].labelHidden = false;
+      boxes.push(box);
+    }
+  }
 }
 
 const BASE_MARGIN = { top: 20, right: 20, bottom: 30, left: 20 };
@@ -38,7 +90,12 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   const [hoveredEmail, setHoveredEmail] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(700);
-  const [chartHeight, setChartHeight] = useState(400);
+  const [chartHeight, setChartHeight] = useState(500);
+
+  // Set viewport-based height on mount (avoids SSR hydration mismatch)
+  useEffect(() => {
+    setChartHeight(Math.max(350, Math.min(900, window.innerHeight - 200)));
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -79,6 +136,158 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
   }, []);
   useEffect(() => () => { dragCleanupRef.current?.(); }, []);
 
+  // Memoize data derivation so it doesn't recompute on hover/resize
+  const { data, dimmed, allPoints, isLargeSet } = useMemo(() => {
+    if (metrics.length === 0) {
+      return { data: [] as ChartPoint[], dimmed: [] as ChartPoint[], allPoints: [] as ChartPoint[], isLargeSet: false };
+    }
+
+    const large = metrics.length >= LARGE_SET_THRESHOLD;
+    const maxEffort = Math.max(...metrics.map(m => m.totalEffortHours), 1);
+
+    const clampY = <T extends { y: number }>(pts: T[]): T[] =>
+      pts.map(p => (p.y < 0 ? { ...p, y: 0 } : p));
+
+    const xValue = (m: (typeof metrics)[number]) =>
+      xAxisMode === 'effort' ? m.totalEffortHours : m.actualWorkDays;
+
+    const d = clampY(applyJitter(
+      metrics
+        .filter(m => m.hasEnoughData && m.ghostPercent != null)
+        .map(m => ({
+          name: m.developerName,
+          email: m.developerEmail,
+          x: xValue(m),
+          y: Math.round(m.ghostPercent!),
+          z: m.totalEffortHours,
+          r: effortToRadius(m.totalEffortHours, maxEffort, large),
+          fill: ghostFill(m.ghostPercent!),
+          realDays: m.actualWorkDays,
+          realEffort: m.totalEffortHours,
+          realGhost: Math.round(m.ghostPercent!),
+        })),
+      metrics.length,
+    ));
+
+    const dim = clampY(applyJitter(
+      metrics
+        .filter(m => !m.hasEnoughData)
+        .map(m => ({
+          name: m.developerName,
+          email: m.developerEmail,
+          x: xValue(m),
+          y: Math.round(m.ghostPercent ?? 0),
+          z: m.totalEffortHours,
+          r: effortToRadius(m.totalEffortHours, maxEffort, large),
+          fill: '#d1d5db',
+          realDays: m.actualWorkDays,
+          realEffort: m.totalEffortHours,
+          realGhost: Math.round(m.ghostPercent ?? 0),
+        })),
+      metrics.length,
+    ));
+
+    return { data: d, dimmed: dim, allPoints: [...d, ...dim], isLargeSet: large };
+  }, [metrics, xAxisMode]);
+
+  // Store hover state in ref so renderers don't need identity changes
+  const hoveredEmailRef = useRef(hoveredEmail);
+  hoveredEmailRef.current = hoveredEmail;
+  const showLabelsRef = useRef(showLabels);
+  showLabelsRef.current = showLabels;
+  const containerWidthRef = useRef(containerWidth);
+  containerWidthRef.current = containerWidth;
+  const chartHeightRef = useRef(chartHeight);
+  chartHeightRef.current = chartHeight;
+  const onBubbleClickRef = useRef(onBubbleClick);
+  onBubbleClickRef.current = onBubbleClick;
+
+  const setHoveredEmailCb = useCallback((email: string | null) => setHoveredEmail(email), []);
+
+  const makeBubbleRenderer = useCallback((opts: {
+    baseOpacity: number;
+    dimOpacity: number;
+    strokeWidth: number;
+    labelColor: string;
+    clickable: boolean;
+  }) => (props: any) => {
+    const { cx, cy, payload } = props;
+    if (cx == null || cy == null) return <circle r={0} />;
+    const hovered = hoveredEmailRef.current;
+    const labels = showLabelsRef.current;
+    const cWidth = containerWidthRef.current;
+    const cHeight = chartHeightRef.current;
+    const isHovered = hovered === payload.email;
+    const isDimmed = hovered != null && !isHovered;
+    const opacity = isDimmed ? opts.dimOpacity : opts.baseOpacity;
+    const baseRadius = payload.r;
+    const desiredHoverRadius = payload.r * 2;
+    // Clamp to SVG viewport (not plot area — clip-path is disabled).
+    const maxRadius = Math.max(0, Math.min(cx, cWidth - cx, cy, cHeight - cy) - 1);
+    const radius = isHovered
+      ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadius))
+      : baseRadius;
+    const labelLeft = cx > cWidth * 0.6;
+    return (
+      <g>
+        <circle
+          cx={cx}
+          cy={cy}
+          r={radius}
+          fill={payload.fill}
+          fillOpacity={opacity}
+          stroke={payload.fill}
+          strokeWidth={opts.strokeWidth}
+          style={{ cursor: opts.clickable ? 'pointer' : undefined, transition: 'r 0.15s, fill-opacity 0.15s' }}
+          onMouseEnter={() => setHoveredEmailCb(payload.email)}
+          onMouseLeave={() => setHoveredEmailCb(null)}
+          onClick={opts.clickable ? () => onBubbleClickRef.current?.(payload.email) : undefined}
+        />
+        {isHovered && (
+          <text
+            x={labelLeft ? cx - radius - 4 : cx + radius + 4}
+            y={cy - 4}
+            textAnchor={labelLeft ? 'end' : 'start'}
+            fontSize={12}
+            fill={opts.labelColor}
+            pointerEvents="none"
+          >
+            {payload.name}
+          </text>
+        )}
+        {labels && !isHovered && !payload.labelHidden && (
+          <text
+            x={cx}
+            y={cy - radius - 4}
+            textAnchor="middle"
+            fontSize={10}
+            fill={opts.labelColor}
+            fillOpacity={isDimmed ? 0.3 : 0.8}
+            pointerEvents="none"
+          >
+            {payload.name}
+          </text>
+        )}
+      </g>
+    );
+  }, [setHoveredEmailCb]);
+
+  const renderBubble = useMemo(() => makeBubbleRenderer({
+    baseOpacity: isLargeSet ? 0.5 : 0.7,
+    dimOpacity: 0.15,
+    strokeWidth: 1.5,
+    labelColor: '#333',
+    clickable: true,
+  }), [makeBubbleRenderer, isLargeSet]);
+
+  const renderDimmedBubble = useMemo(() => makeBubbleRenderer({
+    baseOpacity: 0.25,
+    dimOpacity: 0.08,
+    strokeWidth: 1,
+    labelColor: '#999',
+    clickable: false,
+  }), [makeBubbleRenderer]);
+
   if (metrics.length === 0) {
     return (
       <div className="flex items-center justify-center h-[400px] text-muted-foreground">
@@ -87,53 +296,6 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     );
   }
 
-  const isLargeSet = metrics.length >= LARGE_SET_THRESHOLD;
-  const maxEffort = Math.max(...metrics.map(m => m.totalEffortHours), 1);
-
-  // Clamp jittered Y >= 0 so bubbles don't render below the X axis.
-  const clampY = <T extends { y: number }>(pts: T[]): T[] =>
-    pts.map(p => (p.y < 0 ? { ...p, y: 0 } : p));
-
-  const xValue = (m: (typeof metrics)[number]) =>
-    xAxisMode === 'effort' ? m.totalEffortHours : m.actualWorkDays;
-
-  const data = clampY(applyJitter(
-    metrics
-      .filter(m => m.hasEnoughData && m.ghostPercent != null)
-      .map(m => ({
-        name: m.developerName,
-        email: m.developerEmail,
-        x: xValue(m),
-        y: Math.round(m.ghostPercent!),
-        z: m.totalEffortHours,
-        r: effortToRadius(m.totalEffortHours, maxEffort, isLargeSet),
-        fill: ghostFill(m.ghostPercent!),
-        realDays: m.actualWorkDays,
-        realEffort: m.totalEffortHours,
-        realGhost: Math.round(m.ghostPercent!),
-      })),
-    metrics.length,
-  ));
-
-  const dimmed = clampY(applyJitter(
-    metrics
-      .filter(m => !m.hasEnoughData)
-      .map(m => ({
-        name: m.developerName,
-        email: m.developerEmail,
-        x: xValue(m),
-        y: Math.round(m.ghostPercent ?? 0),
-        z: m.totalEffortHours,
-        r: effortToRadius(m.totalEffortHours, maxEffort, isLargeSet),
-        fill: '#d1d5db',
-        realDays: m.actualWorkDays,
-        realEffort: m.totalEffortHours,
-        realGhost: Math.round(m.ghostPercent ?? 0),
-      })),
-    metrics.length,
-  ));
-
-  const allPoints = [...data, ...dimmed];
   const maxBubbleRadius = allPoints.length > 0
     ? Math.max(...allPoints.map((point) => point.r))
     : 8;
@@ -157,85 +319,14 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
     : 100;
   const yDomainMax = Math.max(120, Math.ceil(maxGhost / 50) * 50);
 
-  const makeBubbleRenderer = (opts: {
-    baseOpacity: number;
-    dimOpacity: number;
-    strokeWidth: number;
-    labelColor: string;
-    clickable: boolean;
-  }) => (props: any) => {
-    const { cx, cy, payload } = props;
-    if (cx == null || cy == null) return <circle r={0} />;
-    const isHovered = hoveredEmail === payload.email;
-    const isDimmed = hoveredEmail != null && !isHovered;
-    const opacity = isDimmed ? opts.dimOpacity : opts.baseOpacity;
-    const baseRadius = payload.r;
-    const desiredHoverRadius = payload.r * 2;
-    // Clamp to SVG viewport (not plot area — clip-path is disabled).
-    const maxRadius = Math.max(0, Math.min(cx, containerWidth - cx, cy, chartHeight - cy) - 1);
-    const radius = isHovered
-      ? Math.max(baseRadius, Math.min(desiredHoverRadius, maxRadius))
-      : baseRadius;
-    const labelLeft = cx > containerWidth * 0.6;
-    return (
-      <g>
-        <circle
-          cx={cx}
-          cy={cy}
-          r={radius}
-          fill={payload.fill}
-          fillOpacity={opacity}
-          stroke={payload.fill}
-          strokeWidth={opts.strokeWidth}
-          style={{ cursor: opts.clickable ? 'pointer' : undefined, transition: 'r 0.15s, fill-opacity 0.15s' }}
-          onMouseEnter={() => setHoveredEmail(payload.email)}
-          onMouseLeave={() => setHoveredEmail(null)}
-          onClick={opts.clickable ? () => onBubbleClick?.(payload.email) : undefined}
-        />
-        {isHovered && (
-          <text
-            x={labelLeft ? cx - radius - 4 : cx + radius + 4}
-            y={cy - 4}
-            textAnchor={labelLeft ? 'end' : 'start'}
-            fontSize={12}
-            fill={opts.labelColor}
-            pointerEvents="none"
-          >
-            {payload.name}
-          </text>
-        )}
-        {showLabels && !isHovered && (
-          <text
-            x={cx}
-            y={cy - radius - 4}
-            textAnchor="middle"
-            fontSize={10}
-            fill={opts.labelColor}
-            fillOpacity={isDimmed ? 0.3 : 0.8}
-            pointerEvents="none"
-          >
-            {payload.name}
-          </text>
-        )}
-      </g>
-    );
-  };
-
-  const renderBubble = makeBubbleRenderer({
-    baseOpacity: isLargeSet ? 0.5 : 0.7,
-    dimOpacity: 0.15,
-    strokeWidth: 1.5,
-    labelColor: '#333',
-    clickable: true,
-  });
-
-  const renderDimmedBubble = makeBubbleRenderer({
-    baseOpacity: 0.25,
-    dimOpacity: 0.08,
-    strokeWidth: 1,
-    labelColor: '#999',
-    clickable: false,
-  });
+  // Run label collision detection (approximate pixel positions from chart geometry)
+  if (showLabels) {
+    const plotLeft = chartMargin.left;
+    const plotWidth = Math.max(1, containerWidth - chartMargin.left - chartMargin.right);
+    const plotTop = chartMargin.top;
+    const plotHeight = Math.max(1, chartHeight - chartMargin.top - chartMargin.bottom);
+    markLabelCollisions(allPoints, plotLeft, plotWidth, plotTop, plotHeight, [0, Math.ceil(maxX)], [0, yDomainMax]);
+  }
 
   return (
     <div ref={containerRef} className="ghost-bubble-no-clip">
@@ -273,7 +364,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             dataKey="x"
             name={xAxisMode === 'effort' ? 'Total Effort' : 'Work Days'}
             type="number"
-            domain={[0, xAxisMode === 'effort' ? Math.ceil(maxX) : Math.ceil(maxX)]}
+            domain={[0, Math.ceil(maxX)]}
             allowDecimals={xAxisMode === 'effort'}
             tickFormatter={(value: number) =>
               xAxisMode === 'effort' ? `${Math.round(value)}h` : `${Math.round(value)}`
@@ -301,11 +392,14 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
               if (!payload?.length || !coordinate) return null;
               const d = payload[0]!.payload as ChartPoint;
               const tipWidth = 180;
-              const flipLeft = (coordinate.x ?? 0) + tipWidth > containerWidth;
+              const cx = coordinate.x ?? 0;
+              const rechartsOffset = 10; // Recharts default tooltip offset from cursor
+              const overflow = cx + rechartsOffset + tipWidth - containerWidth;
+              const offsetX = overflow > 0 ? -overflow - 8 : 0;
               return (
                 <div
                   className="bg-white p-3 border rounded shadow text-sm"
-                  style={flipLeft ? { transform: `translateX(-${tipWidth}px)` } : undefined}
+                  style={offsetX ? { transform: `translateX(${offsetX}px)` } : undefined}
                 >
                   <p className="font-bold">{d.name}</p>
                   <p>Ghost: {d.realGhost}%</p>
