@@ -398,21 +398,11 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
           <ReferenceLine y={100} stroke="#666" strokeDasharray="5 5" label="Ghost Norm" />
           <ReferenceLine y={80} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
           <Tooltip
-            allowEscapeViewBox={{ x: true, y: true }}
-            content={({ payload, coordinate }) => {
-              if (!payload?.length || !coordinate) return null;
+            content={({ payload }) => {
+              if (!payload?.length) return null;
               const d = payload[0]!.payload as ChartPoint;
-              const tipWidth = 180;
-              const cx = coordinate.x ?? 0;
-              const rechartsOffset = 10;
-              const wouldOverflow = cx + rechartsOffset + tipWidth > containerWidth;
-              // Flip tooltip to the left side of cursor when it would overflow right edge
-              const offsetX = wouldOverflow ? -(tipWidth + 2 * rechartsOffset) : 0;
               return (
-                <div
-                  className="bg-white p-3 border rounded shadow text-sm"
-                  style={offsetX ? { transform: `translateX(${offsetX}px)` } : undefined}
-                >
+                <div className="bg-white p-3 border rounded shadow text-sm">
                   <p className="font-bold">{d.name}</p>
                   <p>Ghost: {d.realGhost}%</p>
                   <p>Work Days: {d.realDays}</p>
