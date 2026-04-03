@@ -101,6 +101,11 @@
         "description": "See each developer's Ghost % — the ratio of estimated productive output to expected capacity."
       }
     },
+    "explore": {
+      "title": "Public Analytics",
+      "description": "Browse open source repository analytics powered by DevGhost. See real Ghost % metrics and effort breakdowns — no account required.",
+      "browseAnalytics": "Browse public analytics"
+    },
     "footer": {
       "brand": "DevGhost",
       "version": "v1.0.0"

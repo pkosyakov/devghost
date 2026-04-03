@@ -11,6 +11,7 @@ export default async function LandingPage({
   const tHeader = await getTranslations('layout.header');
   const tFeatures = await getTranslations('landing.features');
   const tSteps = await getTranslations('landing.steps');
+  const tExplore = await getTranslations('landing.explore');
   const tFooter = await getTranslations('landing.footer');
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-slate-100 dark:from-slate-950 dark:to-slate-900">
@@ -111,6 +112,24 @@ export default async function LandingPage({
                 description={tSteps('reviewGhost.description')}
               />
             </div>
+          </div>
+        </section>
+
+        {/* Public Analytics */}
+        <section className="mt-32">
+          <div className="border rounded-2xl p-12 text-center">
+            <h2 className="text-3xl font-bold mb-4">
+              {tExplore('title')}
+            </h2>
+            <p className="text-muted-foreground mb-8 max-w-2xl mx-auto">
+              {tExplore('description')}
+            </p>
+            <Link
+              href="/explore"
+              className="border border-input bg-background px-6 py-3 rounded-lg font-medium hover:bg-accent transition-colors inline-block"
+            >
+              {tExplore('browseAnalytics')}
+            </Link>
           </div>
         </section>
 
