@@ -37,8 +37,15 @@
 
 По текущим докам Vercel Functions,:[^2][^3]
 
-- Hobby / Free: максимальная длительность serverless‑функции ~300 с.
-- Pro/Enterprise: увеличивается, но предел — порядка **800–900 с** на вызов.
+**Стандартные Serverless Functions:**
+
+| План | Default | Max | С Fluid Compute |
+|------|---------|-----|-----------------|
+| Hobby / Free | 10 с | **60 с** | до 300 с |
+| Pro | 15 с | **300 с** (5 мин) | до 800 с |
+| Enterprise | 15 с | **900 с** (15 мин) | до 900 с |
+
+> **Fluid Compute** — режим Vercel, объединяющий ресурсы serverless‑функций для увеличения таймаутов и конкурентности. Включается в настройках проекта, но не меняет фундаментальную природу serverless‑окружения.[^43]
 
 **Следствие для DevGhost:**
 
@@ -124,13 +131,22 @@ Vercel остаётся идеальной платформой для:
 - Жёсткая политика регистрации:
     - нужна карта иностранного банка;
     - есть риск отклонения аккаунта/закрытия без объяснения (репутационные кейсы на Reddit,).[^7][^9]
+- **Reclamation policy (критично!):**
+    - Oracle считает инстанс idle, если CPU‑утилизация за 7 дней <20% на 95‑м перцентиле.[^44]
+    - Idle‑инстансы **автоматически удаляются**. Для воркера DevGhost, который может простаивать между анализами, это реальный риск потери VM.
+    - Обходные пути: cron‑задача с искусственной нагрузкой, но это хак.
+- **Проблемы с ёмкостью:**
+    - В большинстве регионов Ampere A1 невозможно создать — ошибка «Out of Capacity».[^45]
+    - Для надёжного создания часто требуется переход на Pay‑As‑You‑Go аккаунт (временный hold $100 на карте).
 
 
-### 4.2. GitHub Actions как «воркерная платформа»
+### ~~4.2. GitHub Actions как «воркерная платформа»~~ — ОТКЛОНЕНО
+
+> **Статус: ОТКЛОНЕНО.** Детальное исследование (февраль 2026) показало, что этот вариант нарушает ToS GitHub и несёт неприемлемые риски. Секция сохранена для истории принятия решения.
 
 **Идея:** использовать GitHub Actions как compute‑платформу для фоновых задач.
 
-**Факты:**
+**Факты (технические):**
 
 - Раннеры GitHub Actions:
     - 2 vCPU, 7 ГБ RAM, ~14 ГБ диска.
@@ -138,27 +154,65 @@ Vercel остаётся идеальной платформой для:
 - Бесплатно:
     - для **публичных репозиториев** — неограниченно;
     - для приватных — 2000 минут/месяц на free‑аккаунт.[^10]
+- Concurrency: 20 parallel jobs (Free), 40 (Pro), 60 (Team).[^10]
 
-**Поток:**
+**Причины отклонения:**
 
-1. Пользователь инициирует анализ репозитория через UI на Vercel.
-2. Vercel‑бекенд записывает «задачу» в БД и/или дергает GitHub Actions через `workflow_dispatch` API.
-3. Action‑job:
-    - делает `git clone` целевого репозитория;
-    - прогоняет аналитику (LLM через OpenRouter);
-    - пишет результаты обратно в вашу БД (Supabase/Neon);
-    - помечает задачу как завершенную.
-4. Фронтенд периодически опрашивает БД и обновляет UI.
+**1. Прямое нарушение ToS GitHub (3 пункта):**[^53]
 
-**Плюсы:**
+> *"The provision of a stand-alone or integrated application or service offering the Actions product or service **for commercial purposes**"*
 
-- Практически бесплатный compute (особенно если весь DevGhost ориентировать на публичные репозитории на старте).
-- Нет ограничений Vercel по времени и диску.
+> *"Don't use Actions **as part of a serverless application**"*
 
-**Минусы:**
+> *"Any activity **unrelated to the production, testing, deployment, or publication of the software project** associated with the repository where GitHub Actions are used."*
 
-- Активно используете GitHub как compute‑платформу — это «хак», но рабочий.
-- Потенциальные нюансы с rate limits GitHub API и политикой использования Actions для сторонних задач.
+Использование workflow_dispatch для триггера анализа чужих репозиториев через LLM — это именно «serverless application for commercial purposes, unrelated to the repository». Санкции: прекращение jobs, отключение репозитория, **блокировка GitHub‑аккаунта**. GitHub активно мониторит и заблокировал 1000+ репо за abuse Actions.[^54]
+
+**2. Ненадёжность для user‑facing нагрузки:**
+
+- Задокументированные задержки очереди **от 30 минут до 3+ часов** на Linux runners.[^55]
+- Декабрь 2025: инцидент длительностью **~9 часов** с таймаутами API в Actions.[^56]
+- Февраль 2026: major outage, затронувший все hosted‑runner jobs.[^57]
+- Для SaaS, где пользователь ждёт результат — неприемлемо.
+
+**3. Критические риски безопасности:**
+
+- Март 2025: компрометация `tj-actions/changed-files` (CVE‑2025‑30066) — **23 000 репозиториев** потеряли секреты (AWS ключи, npm токены, RSA ключи).[^58]
+- Сентябрь 2025: кампания GhostAction — 817 репозиториев, **3 325 украденных секретов**.[^59]
+- Если DevGhost хранит OpenRouter API key и DATABASE_URL как GitHub Secrets — они уязвимы через supply chain атаки.
+
+**Ценообразование (для справки):**
+- С 1 января 2026 GitHub снизил цены runners на ~39%, но ввёл новый сбор **$0.002/мин** за «Actions cloud platform» для self‑hosted runners в приватных репо (с марта 2026).[^46]
+
+
+### 4.2.1. Альтернативы API‑triggered compute (вместо GitHub Actions)
+
+Исследование выявило платформы, **специально спроектированные** для паттерна «API‑triggered async compute»:
+
+**Modal** (https://modal.com):[^60]
+
+- Serverless Python compute, scale to zero, посекундная тарификация.
+- **Free tier: $30/мес** (~3 750 десятиминутных jobs бесплатно).
+- Стоимость: ~**$0.008** за 10‑мин job на 1 core + 2 GiB RAM.
+- Заточен под LLM/batch workloads. Встроенные очереди (до 1M inputs).
+- Ограничение: инфраструктура только в US‑East (Ashburn, VA).
+
+**Google Cloud Run Jobs**:[^61]
+
+- Контейнеры по запросу, triggered через API/Scheduler/Pub‑Sub.
+- Стоимость: ~**$0.014** за 10‑мин job на 1 vCPU.
+- Полный `git clone` возможен (контейнер с диском).
+- 2M free requests/мес.
+
+| | Modal | Cloud Run Jobs | GitHub Actions |
+|---|---|---|---|
+| ToS | Разрешено | Разрешено | **Запрещено** |
+| Надёжность | Высокая | Высокая | Непредсказуемая |
+| Cold start | 1–5 с | 5–10 с | 15–45 с + очередь |
+| Max duration | 24ч+ | настраивается | 6ч |
+| Git clone | Да | Да | Да |
+| Free tier | $30/мес | 2M req/мес | 2000 мин/мес |
+| Риск аккаунта | Нет | Нет | **Блокировка** |
 
 
 ### 4.3. Fly.io / Koyeb / Railway / Render
@@ -166,13 +220,14 @@ Vercel остаётся идеальной платформой для:
 Состояние на 2025–2026:
 
 - **Railway**:
-    - теперь даёт только разовый **кредит \$5** и дальше переходит на платную модель,;[^11][^12]
-    - это не постоянный бесплатный tier, только trial.
+    - разовый **кредит $5** (истекает через 30 дней), после trial — Free‑план с **$1/мес** бесплатного кредита,;[^11][^12]
+    - минимальный платный план — Hobby $5/мес. Trial ограничен: 1 ГБ RAM, shared vCPU, до 5 сервисов на проект.
 - **Fly.io**:
-    - когда‑то имел free‑tier, сейчас — модель «почти бесплатно», но формально **без постоянного free‑tier**, только небольшие кредиты на старт,.[^13][^14]
+    - формально **без постоянного free‑tier**; есть «free allowance» (3 shared VM, 160 ГБ bandwidth), но требуется кредитная карта,.[^13][^14]
+    - С 1 января 2026 — платные volume snapshots.[^47]
 - **Koyeb**:
-    - есть небольшой free‑tier (~512 МБ RAM на инстанс, ограниченный трафик и storage),;[^15][^16]
-    - этого мало для тяжелого анализа крупных репо.
+    - free‑tier: **512 МБ RAM, 0.1 vCPU, 2 ГБ SSD**, лимит **1 инстанс** на организацию (только Frankfurt или Washington D.C.),;[^15][^16]
+    - этого мало для тяжелого анализа крупных репо (0.1 vCPU — критически мало для парсинга диффов).
 - **Render**:
     - есть бесплатный tier для web‑сервисов и БД, но **background workers на free‑tier недоступны**,,.[^17][^18][^19]
 
@@ -185,13 +240,51 @@ Vercel остаётся идеальной платформой для:
 ### 4.4. Базы данных: Supabase / Neon
 
 - **Supabase Free**:
-    - 500 МБ БД, 1 ГБ storage, 50k MAU, безлимит запросов,.[^20][^21]
+    - 500 МБ БД, 1 ГБ storage, 50k MAU, безлимит запросов, 5 ГБ egress,.[^20][^21]
     - Этого достаточно для MVP и первых платежеспособных клиентов.
+    - **Важно:** free‑проекты **паузятся после 1 недели без API‑запросов** — данные сохраняются, но проект уходит в offline до ручного возобновления. Лимит — 2 активных free‑проекта.[^48]
 - **Neon**:
-    - 0.5 ГБ total storage, 190 compute‑часов/мес. на free‑tier, 10 проектов,.[^22][^23]
+    - 0.5 ГБ storage на проект (до 5 ГБ на 10 проектов), **100 CU‑hours/мес** на free‑tier (удвоено с 50 в октябре 2025).[^22][^23]
+    - 1 CU = 1 vCPU + 4 ГБ RAM. Compute масштабируется до нуля при простое (idle timeout 5 мин) — CU‑часы тратятся только при активных запросах.[^49]
     - Тоже хороший вариант, особенно если нравится serverless‑подход.
 
 Обе опции отлично интегрируются с Next.js/Vercel.
+
+
+### 4.5. Durable Execution Platforms (альтернативный подход)
+
+Вместо выделенного VPS или GitHub Actions можно использовать **платформы durable execution**, которые разбивают длинную задачу на шаги, каждый из которых укладывается в таймаут Vercel:
+
+- **Inngest** (https://inngest.com):
+    - Durable workflows с автоматическими ретраями, параллелизмом и throttling.
+    - Free‑tier: 50k событий/мес, до 5 concurrent functions.[^50]
+    - Интегрируется напрямую с Next.js App Router.
+- **Trigger.dev** (https://trigger.dev):
+    - Open‑source фоновые задачи для Next.js/Node.js.
+    - Free‑tier: 50k runs/мес.[^51]
+    - Поддерживает длительные задачи через step‑функции.
+- **Upstash Workflow**:
+    - Serverless‑оркестрация поверх Vercel без таймаутов.
+    - Основан на Upstash QStash; free‑tier: 500k сообщений/мес.[^52]
+
+**Применимость для DevGhost:**
+
+Анализ репозитория можно разбить на шаги:
+1. Получить список коммитов (один вызов).
+2. Для каждого коммита — отправить дифф в OpenRouter (батчами).
+3. Агрегировать результаты и записать метрики.
+
+Каждый шаг укладывается в 60–300 с таймаут Vercel. Платформа гарантирует exactly‑once выполнение и ретраи.
+
+**Плюсы:**
+- Не нужен отдельный сервер / VM.
+- Весь код остаётся в Next.js‑проекте.
+- Встроенный мониторинг и retry‑логика.
+
+**Минусы:**
+- Нет доступа к файловой системе — `git clone` невозможен; нужно работать через GitHub API (получать диффы по API).
+- Vendor lock‑in на конкретную платформу.
+- Free‑tier может быть недостаточен при большом объёме коммитов.
 
 ***
 
@@ -229,14 +322,26 @@ Vercel остаётся идеальной платформой для:
         - стримово обрабатывает историю коммитов;
         - делает запросы к OpenRouter (LLM);
         - пишет результаты в БД.
-2. **Вариант B (без надежного доступа к «нормальному» VPS): GitHub Actions‑как‑воркер**
-    - Для каждого анализа создается `analysis_job`.
-    - Vercel вызывает GitHub Actions workflow через API.
-    - Workflow:
-        - поднимается на стандартном GitHub раннере (2 vCPU, 7 ГБ RAM, 6 часов).
-        - запускает скрипт анализа (Python/Node.js).
-        - сохраняет результаты в Supabase.
-    - Можно ограничить поддержку **только публичных репозиториев** на раннем этапе, чтобы не выбиться из free‑лимитов Actions.
+2. ~~**Вариант B: GitHub Actions‑как‑воркер**~~ — **ОТКЛОНЁН** (нарушение ToS GitHub, см. секцию 4.2).
+3. **Вариант B (serverless compute): Modal или Google Cloud Run Jobs**
+    - Для каждого анализа создается `analysis_job` в БД.
+    - Vercel‑бекенд триггерит job через API платформы.
+    - Job (в изолированном контейнере):
+        - делает `git clone` целевого репозитория;
+        - парсит диффы коммитов;
+        - отправляет в OpenRouter (LLM);
+        - пишет результаты в Supabase/Neon;
+        - помечает задачу как завершённую.
+    - Modal: $30/мес free tier, ~$0.008 за 10‑мин job, scale to zero.
+    - Cloud Run: 2M free req/мес, ~$0.014 за 10‑мин job, полный контроль контейнера.
+4. **Вариант C (без внешней инфраструктуры): Durable Execution поверх Vercel**
+    - Используется Inngest, Trigger.dev или Upstash Workflow.
+    - Анализ разбивается на step‑функции:
+        - Step 1: получить список коммитов через GitHub API.
+        - Step 2–N: для каждого батча коммитов — получить дифф через GitHub API, отправить в OpenRouter, записать результат в БД.
+        - Final step: агрегировать метрики.
+    - Каждый шаг — отдельный вызов serverless‑функции, укладывающийся в таймаут.
+    - **Ограничение:** нет `git clone` — вся работа через GitHub REST API (медленнее для больших репо, зато нет зависимости от файловой системы).
 
 ### 5.2. Роль Vercel в такой архитектуре
 
@@ -254,23 +359,78 @@ Vercel остаётся идеальной платформой для:
 
 При этом **никакого тяжелого анализа и клонирования** в serverless‑функциях Vercel нет — только orchestrator.
 
+### 5.3. Стратегия кэширования (Modal + Supabase)
+
+**Проблема:** Modal — эфемерный. Каждый job = новый контейнер. Без кэша каждый анализ одного и того же репо начинается с нуля: повторный git clone + повторные LLM‑вызовы.
+
+**Решение — два уровня кэша:**
+
+**L1: Modal Volume (кэш репозиториев)**
+
+- Modal Volumes — persistent сетевой диск, подключаемый к контейнерам.[^62]
+- **Бесплатно** — отдельная плата за storage не взимается (на февраль 2026).[^60]
+- Bare git repos после `git gc` содержат ~20–60 файлов на репо (packfiles). Volume v1 (лимит 500k inodes, рекомендовано <50k) справляется с сотнями репо.
+- Bandwidth: до 2.5 GB/s (не гарантировано).[^62]
+- **Concurrent access:** запись в один файл из нескольких контейнеров — last‑write‑wins. Нужен locking через Supabase при одновременном `git fetch` одного репо.
+- Потеря Volume = повторный clone (неприятно, но не фатально).
+
+**L2: Supabase `commit_cache` (кэш LLM‑результатов, source of truth)**
+
+```sql
+CREATE TABLE commit_cache (
+    repo_url    TEXT,
+    commit_sha  TEXT,
+    diff_hash   TEXT,
+    llm_result  JSONB,
+    model_id    TEXT,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (repo_url, commit_sha)
+);
+```
+
+- Перед отправкой в OpenRouter — проверить кэш: `SELECT ... WHERE repo_url = X AND commit_sha IN (...)`.
+- Найдено 400 из 500 → в OpenRouter уходят только 100 новых коммитов.
+- Потеря кэша = повторные LLM‑вызовы (деньги!).
+
+**Эффект кэширования:**
+
+| | Первый анализ | Повторный (те же коммиты) | Повторный (50 новых) |
+|---|---|---|---|
+| git | clone ~3 мин | fetch ~5 сек | fetch ~5 сек |
+| LLM | 500 вызовов, ~$0.13 | **0 вызовов, $0** | 50 вызовов, ~$0.013 |
+| Время | ~15 мин | **~30 сек** | ~2 мин |
+
+**Открытые вопросы:**
+- Лимит ГБ на Volume для Starter — не документирован. Проверить при PoC.
+- Volume v2 (beta) снимает ограничение на inodes и улучшает concurrent access — рассмотреть при росте.[^62]
+
 ***
 
 ## 6. Риски и trade‑off’ы
 
 1. **OCI Always Free:**
     - Риск закрытия/ограничения аккаунта.
+    - **Idle reclamation** — инстансы с CPU <20% за 7 дней удаляются автоматически.
+    - **Out of Capacity** — во многих регионах Ampere A1 недоступен без Pay‑As‑You‑Go.
     - Придётся инвестировать время в настройку Linux/DevOps.
-2. **GitHub Actions как воркер:**
-    - Потенциальное изменение политики GitHub по использованию Actions как compute.
-    - Важно следить за лимитами минут и аккуратно использовать workflow’ы.
-3. **Supabase Free:**
+2. ~~**GitHub Actions как воркер:**~~ — **ОТКЛОНЁН** (нарушение ToS, ненадёжность, security risks — см. секцию 4.2).
+3. **Modal / Cloud Run Jobs:**
+    - Зависимость от облачного провайдера (vendor lock‑in, но умеренный — стандартные контейнеры).
+    - Modal: инфраструктура только в US‑East; Python‑ориентирован.
+    - Cloud Run: требует Google Cloud аккаунт и минимальный DevOps (Dockerfile, IAM).
+    - Стоимость растёт линейно с числом анализов (~$0.01/job).
+4. **Supabase Free:**
     - 500 МБ БД может быстро заполниться, если:
         - хранить «сырые» диффы;
         - не делать агрессивную агрегацию/архивацию.
+    - **Автоматическая пауза** проекта после 1 недели без запросов — требует ручного возобновления.
     - Нужен дизайн схемы с упором на:
         - хранение агрегатов;
         - возможность чистки старых «сырых» данных.
+4. **Durable Execution (Inngest/Trigger.dev):**
+    - Vendor lock‑in на конкретную платформу оркестрации.
+    - Нет файловой системы — невозможен `git clone`, только GitHub API.
+    - Free‑tier может быть недостаточен при анализе репо с тысячами коммитов (каждый коммит = минимум 1 event/run).
 
 ***
 
@@ -279,9 +439,11 @@ Vercel остаётся идеальной платформой для:
 1. **Жёстко зафиксировать правило:**
 Vercel используется **только** как слой UI + легкая оркестрация API.
 Любые длительные операции (дольше 10–20 секунд), работа с файловой системой и репозиториями должны уходить во внешние воркеры.
-2. **На этапе MVP выбрать одну из двух стратегий воркеров:**
-    - **Стратегия 1 (предпочтительная):** OCI Always Free как единый compute‑узел.
-    - **Стратегия 2 (alt):** GitHub Actions как compute для анализа, с ориентацией на публичные репозитории.
+2. **На этапе MVP выбрать одну из трёх стратегий воркеров:**
+    - **Стратегия A (self‑hosted):** OCI Always Free как единый compute‑узел. Учесть риски idle reclamation и out‑of‑capacity.
+    - **Стратегия B (serverless compute, рекомендуемая):** Modal или Google Cloud Run Jobs — API‑triggered контейнеры с `git clone`, scale to zero, $30/мес free (Modal) или 2M req/мес free (Cloud Run).
+    - **Стратегия C (serverless‑only, без сервера):** Durable execution (Inngest / Trigger.dev) поверх Vercel — весь код в Next.js, анализ через GitHub API без `git clone`. Подходит для быстрого старта, но ограничен по масштабу.
+    - ~~**GitHub Actions**~~ — **ОТКЛОНЁН** (нарушение ToS GitHub для коммерческого SaaS).
 3. **Использовать Supabase (или Neon) как центральную точку данных:**
     - схема БД должна быть спроектирована под:
         - idempotent‑обработку (повторный анализ тех же коммитов не дублирует записи);
@@ -388,4 +550,44 @@ Vercel используется **только** как слой UI + легка
 [^41]: https://www.reddit.com/r/Supabase/comments/1hjcc5e/will_free_tier_be_enough_for_my_project/
 
 [^42]: https://dev.to/hackmamba/run-postgres-for-free-top-3-options-2pk6
+
+[^43]: https://vercel.com/docs/functions/configuring-functions/duration
+
+[^44]: https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier.htm
+
+[^45]: https://www.freetiers.com/directory/oracle-cloud-compute-arm
+
+[^46]: https://www.blacksmith.sh/blog/actions-pricing
+
+[^47]: https://fly.io/docs/about/pricing/
+
+[^48]: https://supabase.com/docs/guides/platform/billing-on-supabase
+
+[^49]: https://neon.com/pricing
+
+[^50]: https://www.inngest.com/pricing
+
+[^51]: https://trigger.dev/pricing
+
+[^52]: https://upstash.com/pricing
+
+[^53]: https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features
+
+[^54]: https://www.trendmicro.com/en/research/22/g/unpacking-cloud-based-cryptocurrency-miners-that-abuse-github-ac.html
+
+[^55]: https://github.com/orgs/community/discussions/165400
+
+[^56]: https://github.blog/news-insights/company-news/github-availability-report-december-2025/
+
+[^57]: https://github.com/orgs/community/discussions/186197
+
+[^58]: https://www.wiz.io/blog/github-action-tj-actions-changed-files-supply-chain-attack-cve-2025-30066
+
+[^59]: https://blog.gitguardian.com/ghostaction-campaign-3-325-secrets-stolen/
+
+[^60]: https://modal.com/pricing
+
+[^61]: https://cloud.google.com/run/pricing
+
+[^62]: https://modal.com/docs/guide/volumes
 
