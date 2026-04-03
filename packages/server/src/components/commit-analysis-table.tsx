@@ -778,11 +778,11 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                                 title={t('gtCol')}
                               >
                                 {gtSaving.has(commit.commitHash) ? (
-                                  <Loader2 className="h-3 w-3 animate-spin" title={t('gtSaving')} />
+                                  <span title={t('gtSaving')}><Loader2 className="h-3 w-3 animate-spin" /></span>
                                 ) : gtSaved.has(commit.commitHash) ? (
-                                  <Check className="h-3 w-3 text-green-500" title={t('gtSaved')} />
+                                  <span title={t('gtSaved')}><Check className="h-3 w-3 text-green-500" /></span>
                                 ) : gtError.has(commit.commitHash) ? (
-                                  <X className="h-3 w-3 text-red-500" title={t('gtError')} />
+                                  <span title={t('gtError')}><X className="h-3 w-3 text-red-500" /></span>
                                 ) : null}
                                 <span className={gtMap.has(commit.commitHash) ? 'font-medium' : 'text-muted-foreground'}>
                                   {gtMap.has(commit.commitHash) ? formatEffort(gtMap.get(commit.commitHash)!) : t('gtPlaceholder')}
