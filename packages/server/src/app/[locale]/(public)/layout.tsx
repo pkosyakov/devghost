@@ -1,6 +1,5 @@
 import { getTranslations, setRequestLocale } from 'next-intl/server';
 import { Link } from '@/i18n/navigation';
-import { LanguageSwitcher } from '@/components/language-switcher';
 import { auth } from '@/lib/auth';
 
 export default async function PublicLayout({
@@ -22,7 +21,6 @@ export default async function PublicLayout({
             DevGhost
           </Link>
           <nav className="flex items-center gap-4">
-            <LanguageSwitcher />
             <Link
               href="/explore"
               className="text-sm font-medium"

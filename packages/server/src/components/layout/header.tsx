@@ -15,8 +15,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Coins } from 'lucide-react';
-import { LanguageSwitcher } from '@/components/language-switcher';
-
 interface BalanceResponse {
   balance: {
     permanent: number;
@@ -66,7 +64,6 @@ export function Header({ title }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-4">
-        <LanguageSwitcher />
         {/* Credit Balance */}
         {balanceData && (
           <Link href="/billing">

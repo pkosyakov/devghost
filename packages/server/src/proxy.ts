@@ -61,10 +61,8 @@ function redirectWithIntlHeaders(
 }
 
 export default async function proxy(req: NextRequest) {
-  // intlMiddleware handles locale detection and rewriting for all paths:
-  // /login → internal rewrite to /en/login (as-needed strips default prefix)
-  // /en/login → redirect to /login (as-needed)
-  // /ru/login → kept as-is
+  // next-intl: locale from URL prefix only (localeDetection: false — no Accept-Language/cookie pick).
+  // Still rewrites/normalizes paths, e.g. /login → /en/login internally; /en/login → /login; /ru/login unchanged.
   const intlResponse = intlMiddleware(req);
   const pathnameWithoutLocale = getPathnameWithoutLocale(
     req.nextUrl.pathname,
@@ -112,7 +110,7 @@ export default async function proxy(req: NextRequest) {
 export const config = {
   matcher: [
     '/((?!api|_next|_vercel|monitoring|.*\\..*).*)',
-    // Email in path can contain dots. Keep middleware active for this route,
+    // Email in path can contain dots. Keep proxy active for this route,
     // otherwise default-locale URLs may bypass intl rewrite and return 404.
     '/orders/:id/developers/:email*',
     '/(ru|en)/orders/:id/developers/:email*',

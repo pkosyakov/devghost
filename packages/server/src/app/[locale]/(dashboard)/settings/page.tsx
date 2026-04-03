@@ -7,7 +7,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { User, Link, Loader2, Check, Database } from 'lucide-react';
+import { User, Link, Loader2, Check, Database, Languages } from 'lucide-react';
+import { LanguageSwitcher } from '@/components/language-switcher';
 import { GitHubConnectButton } from '@/components/github-connect-button';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslations } from 'next-intl';
@@ -68,8 +69,8 @@ export default function SettingsPage() {
             setDisplayName(data.name || '');
           }
         }
-      } catch (error) {
-        console.error('Failed to load settings:', error);
+      } catch {
+        // Client-side: avoid console noise; user can retry via refresh
       } finally {
         setLoading(false);
       }
@@ -100,7 +101,6 @@ export default function SettingsPage() {
         throw new Error(result.error || t('failedSave'));
       }
     } catch (error) {
-      console.error('Failed to save settings:', error);
       toast({
         title: tCommon('error'),
         description: error instanceof Error ? error.message : tCommon('error'),
@@ -150,6 +150,19 @@ export default function SettingsPage() {
               />
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Languages className="h-5 w-5" />
+            <CardTitle>{t('language')}</CardTitle>
+          </div>
+          <CardDescription>{t('languageDescription')}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <LanguageSwitcher ariaLabel={t('language')} />
         </CardContent>
       </Card>
 

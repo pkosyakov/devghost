@@ -824,6 +824,8 @@
     "description": "Manage your account settings",
     "profile": "Profile",
     "profileDescription": "Your account information",
+    "language": "Language",
+    "languageDescription": "Interface language. Changes apply immediately.",
     "email": "Email",
     "displayName": "Display Name",
     "github": "GitHub",

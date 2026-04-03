@@ -824,6 +824,8 @@
     "description": "Управление настройками аккаунта",
     "profile": "Профиль",
     "profileDescription": "Информация о вашем аккаунте",
+    "language": "Язык",
+    "languageDescription": "Язык интерфейса. Изменения применяются сразу.",
     "email": "Email",
     "displayName": "Отображаемое имя",
     "github": "GitHub",

@@ -34,7 +34,6 @@ import { buildHrefWithActiveScope } from '@/lib/active-scope';
 import { useWorkspaceStage } from '@/hooks/use-workspace-stage';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { LanguageSwitcher } from '@/components/language-switcher';
 
 const navigation = [
   { nameKey: 'dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -302,9 +301,6 @@ export function Sidebar() {
       {/* Footer */}
       <div className="p-4 space-y-2">
         <Separator />
-        <div className="px-3 py-1">
-          <LanguageSwitcher className="w-full" />
-        </div>
         <Link
           href="/billing"
           className={cn(

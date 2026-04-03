@@ -1,7 +1,5 @@
 import { getTranslations, setRequestLocale } from 'next-intl/server';
 import { Link } from '@/i18n/navigation';
-import { LanguageSwitcher } from '@/components/language-switcher';
-
 export default async function LandingPage({
   params,
 }: {
@@ -28,7 +26,6 @@ export default async function LandingPage({
             <span className="font-semibold text-lg">DevGhost</span>
           </div>
           <div className="flex items-center gap-4">
-            <LanguageSwitcher />
             <Link
               href="/login"
               className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"

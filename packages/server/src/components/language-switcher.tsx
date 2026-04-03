@@ -20,9 +20,11 @@ const LOCALE_LABELS: Record<string, string> = {
 
 interface LanguageSwitcherProps {
   className?: string;
+  /** Accessible name for the trigger (e.g. translated "Language"). */
+  ariaLabel?: string;
 }
 
-export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
+export function LanguageSwitcher({ className, ariaLabel }: LanguageSwitcherProps) {
   const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
@@ -33,7 +35,10 @@ export function LanguageSwitcher({ className }: LanguageSwitcherProps) {
 
   return (
     <Select value={locale} onValueChange={handleChange}>
-      <SelectTrigger className={cn('h-9 w-[132px]', className)}>
+      <SelectTrigger
+        className={cn('h-9 w-[132px]', className)}
+        aria-label={ariaLabel}
+      >
         <div className="flex min-w-0 items-center gap-1.5">
           <Globe className="h-4 w-4 shrink-0 opacity-70" />
           <SelectValue />
