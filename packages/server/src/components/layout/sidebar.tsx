@@ -250,8 +250,8 @@ export function Sidebar() {
             >
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{primaryNavigation}</div>
               <div className="shrink-0 border-t pt-2">
-                <button
-                  type="button"
+                <Link
+                  href="/admin"
                   className={panelToggleButtonClass}
                   onClick={() => setActiveAdminPanel('admin')}
                 >
@@ -259,7 +259,7 @@ export function Sidebar() {
                   <span className="truncate text-xs font-semibold uppercase tracking-wider">
                     {t('adminSection')}
                   </span>
-                </button>
+                </Link>
               </div>
             </div>
 
@@ -274,14 +274,14 @@ export function Sidebar() {
               aria-hidden={activeAdminPanel !== 'admin'}
             >
               <div className="shrink-0 border-b pb-2">
-                <button
-                  type="button"
+                <Link
+                  href="/dashboard"
                   className={panelToggleButtonClass}
                   onClick={() => setActiveAdminPanel('user')}
                 >
                   <LayoutDashboard className="h-5 w-5 shrink-0" />
                   <span className="truncate">{t('dashboard')}</span>
-                </button>
+                </Link>
               </div>
               <nav className="flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
                 <p className="mb-1 shrink-0 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
