@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, useEffect, Fragment, useMemo, useCallback } from 'react';
+import { useState, useEffect, Fragment, useMemo, useCallback, useRef } from 'react';
 import { useTranslations, useLocale } from 'next-intl';
+import { useSession } from 'next-auth/react';
 import { useQuery } from '@tanstack/react-query';
 import { commitColor } from '@/components/developer-effort-chart';
 import {
@@ -36,6 +37,8 @@ import {
   Zap,
   ArrowUpDown,
   CalendarDays,
+  Check,
+  X,
 } from 'lucide-react';
 
 interface CommitAnalysis {
@@ -109,6 +112,8 @@ const complexityColors: Record<string, string> = {
 export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, highlightedCommit }: CommitAnalysisTableProps) {
   const t = useTranslations('orders.commitsTab');
   const locale = useLocale();
+  const { data: session } = useSession();
+  const gtAuthor = session?.user?.email ?? '';
   const dateLocale = locale === 'ru' ? 'ru-RU' : 'en-US';
 
   const categoryConfig: Record<string, { label: string; color: string }> = {
@@ -164,6 +169,102 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
       return next;
     });
   }, []);
+
+  // Ground truth inline editing
+  const [gtMap, setGtMap] = useState<Map<string, number>>(new Map());
+  const [gtEditing, setGtEditing] = useState<string | null>(null);
+  const [gtSaving, setGtSaving] = useState<Set<string>>(new Set());
+  const [gtSaved, setGtSaved] = useState<Set<string>>(new Set());
+  const [gtError, setGtError] = useState<Set<string>>(new Set());
+  const gtCancelledRef = useRef(false);
+
+  // Fetch existing GT entries for this order
+  useEffect(() => {
+    if (!gtAuthor) return;
+    fetch(`/api/orders/${orderId}/ground-truth`)
+      .then(res => res.ok ? res.json() : null)
+      .then(data => {
+        if (!data?.entries) return;
+        const map = new Map<string, number>();
+        for (const entry of data.entries) {
+          if (entry.author === gtAuthor) {
+            map.set(entry.commitHash, entry.hours);
+          }
+        }
+        setGtMap(map);
+      })
+      .catch(() => {}); // GT is optional, don't block UI
+  }, [orderId, gtAuthor]);
+
+  const saveGt = useCallback(async (commitHash: string, value: string) => {
+    if (!gtAuthor) return;
+
+    // Empty value = clear the GT entry (local + DB)
+    if (!value.trim()) {
+      if (gtMap.has(commitHash)) {
+        setGtMap(prev => {
+          const next = new Map(prev);
+          next.delete(commitHash);
+          return next;
+        });
+        // Fire-and-forget DELETE for this single entry
+        fetch(`/api/orders/${orderId}/ground-truth?author=${encodeURIComponent(gtAuthor)}&commitHash=${encodeURIComponent(commitHash)}`, {
+          method: 'DELETE',
+        }).catch(() => {});
+      }
+      return;
+    }
+
+    const hours = parseFloat(value);
+    if (isNaN(hours) || hours < 0) return;
+
+    setGtSaving(prev => new Set(prev).add(commitHash));
+    try {
+      const res = await fetch(`/api/orders/${orderId}/ground-truth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          entries: [{ commitHash, hours }],
+          author: gtAuthor,
+        }),
+      });
+      if (res.ok) {
+        setGtMap(prev => new Map(prev).set(commitHash, hours));
+        setGtSaved(prev => new Set(prev).add(commitHash));
+        setTimeout(() => {
+          setGtSaved(prev => {
+            const next = new Set(prev);
+            next.delete(commitHash);
+            return next;
+          });
+        }, 1500);
+      } else {
+        setGtError(prev => new Set(prev).add(commitHash));
+        setTimeout(() => {
+          setGtError(prev => {
+            const next = new Set(prev);
+            next.delete(commitHash);
+            return next;
+          });
+        }, 3000);
+      }
+    } catch {
+      setGtError(prev => new Set(prev).add(commitHash));
+      setTimeout(() => {
+        setGtError(prev => {
+          const next = new Set(prev);
+          next.delete(commitHash);
+          return next;
+        });
+      }, 3000);
+    } finally {
+      setGtSaving(prev => {
+        const next = new Set(prev);
+        next.delete(commitHash);
+        return next;
+      });
+    }
+  }, [orderId, gtAuthor, gtMap]);
 
   // Filters
   const [filterCategory, setFilterCategory] = useState<string>('all');
@@ -522,6 +623,9 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                           {sortIcon('effortHours')}
                         </button>
                       </th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider w-[80px]">
+                        {t('gtCol')}
+                      </th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-muted-foreground uppercase tracking-wider">
                         <button
                           type="button"
@@ -641,6 +745,51 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                               )}
                             </div>
                           </td>
+                          <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                            {gtEditing === commit.commitHash ? (
+                              <input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                className="w-[70px] h-7 px-1.5 text-sm text-right border rounded bg-background focus:outline-none focus:ring-1 focus:ring-ring"
+                                defaultValue={gtMap.get(commit.commitHash) ?? ''}
+                                autoFocus
+                                onFocus={() => { gtCancelledRef.current = false; }}
+                                onBlur={(e) => {
+                                  setGtEditing(null);
+                                  if (gtCancelledRef.current) return;
+                                  saveGt(commit.commitHash, e.target.value);
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    (e.target as HTMLInputElement).blur();
+                                  }
+                                  if (e.key === 'Escape') {
+                                    gtCancelledRef.current = true;
+                                    setGtEditing(null);
+                                  }
+                                }}
+                              />
+                            ) : (
+                              <button
+                                type="button"
+                                className="inline-flex items-center gap-1 text-sm hover:text-foreground min-w-[40px] justify-end"
+                                onClick={() => setGtEditing(commit.commitHash)}
+                                title={t('gtCol')}
+                              >
+                                {gtSaving.has(commit.commitHash) ? (
+                                  <Loader2 className="h-3 w-3 animate-spin" title={t('gtSaving')} />
+                                ) : gtSaved.has(commit.commitHash) ? (
+                                  <Check className="h-3 w-3 text-green-500" title={t('gtSaved')} />
+                                ) : gtError.has(commit.commitHash) ? (
+                                  <X className="h-3 w-3 text-red-500" title={t('gtError')} />
+                                ) : null}
+                                <span className={gtMap.has(commit.commitHash) ? 'font-medium' : 'text-muted-foreground'}>
+                                  {gtMap.has(commit.commitHash) ? formatEffort(gtMap.get(commit.commitHash)!) : t('gtPlaceholder')}
+                                </span>
+                              </button>
+                            )}
+                          </td>
                           <td className="px-4 py-3 text-right">
                             <span className="text-sm font-medium">
                               {(commit.confidence * 100).toFixed(0)}%
@@ -653,7 +802,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                         {/* Expanded Details Row */}
                         {expandedRows.has(commit.id) && (
                           <tr className="bg-muted/20">
-                            <td colSpan={9} className="px-4 py-4">
+                            <td colSpan={10} className="px-4 py-4">
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                 {/* Commit Details */}
                                 <div className="space-y-3">
@@ -697,7 +846,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
 
                           return (
                             <tr className="bg-muted/30">
-                              <td colSpan={9} className="px-8 py-3">
+                              <td colSpan={10} className="px-8 py-3">
                                 <div className="space-y-2">
                                   <div className="flex items-center gap-2 text-sm">
                                     <CalendarDays className="h-4 w-4 text-muted-foreground" />
