@@ -3,29 +3,46 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ClientEvent, LeaderboardData } from '@/lib/services/client-event-mapper';
 
-// ── Base delays per tier (ms) ──────────────────────────────────────
-const BASE_DELAY: Record<string, [number, number]> = {
-  milestone: [400, 600],
-  major: [150, 300],
-  micro: [30, 60],
+// ── Types ─────────────────────────────────────────────────────────
+
+type QueueItem = {
+  event: ClientEvent;
+  delayMs: number;     // pre-computed at enqueue, frozen
 };
 
-function baseDelayFor(tier: string): number {
-  const [min, max] = BASE_DELAY[tier] ?? BASE_DELAY.major;
-  return min + Math.random() * (max - min);
-}
+// ── Constants ─────────────────────────────────────────────────────
+
+const TIER_WEIGHT: Record<string, number> = {
+  milestone: 4,
+  major: 2,
+  micro: 0.5,
+};
+
+const DELAY_CLAMP: Record<string, [number, number]> = {
+  milestone: [100, 800],
+  major: [40, 400],
+  micro: [15, 80],
+};
+
+const BUDGET_PADDING = 1.2;
+const DRAIN_SPEEDUP = 5;
+const HARD_FLOOR = 10;
+const CATCH_UP_THRESHOLD = 3;
 
 // ── Terminal job statuses that trigger draining ─────────────────────
-// FAILED_RETRYABLE only drains when the run is NOT quota-paused.
+
 const DRAIN_STATUSES = new Set([
   'COMPLETED', 'LLM_COMPLETE', 'FAILED', 'FAILED_FATAL', 'FAILED_RETRYABLE', 'CANCELLED',
 ]);
 
+// ── Interface ─────────────────────────────────────────────────────
+
 interface UseDripFeedOpts {
   rawEvents: ClientEvent[];
   rawLeaderboard: LeaderboardData;
-  jobStatus: string;  // job-level status (RUNNING, COMPLETED, FAILED_FATAL, etc.)
-  isPaused?: boolean; // EXTERNAL_QUOTA pause freezes feed/leaderboard in place
+  jobStatus: string;
+  isPaused?: boolean;
+  defaultIntervalMs?: number;  // initial budget hint (livePollMs from caller)
 }
 
 interface UseDripFeedResult {
@@ -36,86 +53,131 @@ interface UseDripFeedResult {
   isDrained: boolean;
 }
 
+// ── Hook ──────────────────────────────────────────────────────────
+
 export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
-  const { rawEvents, rawLeaderboard, jobStatus, isPaused = false } = opts;
+  const {
+    rawEvents,
+    rawLeaderboard,
+    jobStatus,
+    isPaused = false,
+    defaultIntervalMs = 1000,
+  } = opts;
 
   const [visibleEvents, setVisibleEvents] = useState<ClientEvent[]>([]);
   const [counters, setCounters] = useState({ commits: 0, files: 0, lines: 0 });
   const [isDraining, setIsDraining] = useState(false);
   const [isDrained, setIsDrained] = useState(false);
 
-  // Per-event leaderboard accumulation (not snapshot replacement)
-  const dripDevMapRef = useRef(new Map<string, { name: string; totalHours: number; commitCount: number }>());
-  const drippedCommitsRef = useRef(0);
+  // Per-event leaderboard accumulation
+  const dripDevMapRef = useRef(
+    new Map<string, { name: string; totalHours: number; commitCount: number }>(),
+  );
   const [dripLeaderboard, setDripLeaderboard] = useState<LeaderboardData>({
-    developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0,
+    developers: [],
+    ghost: { totalHours: 0 },
+    scopeWorkDays: 0,
   });
 
-  // Keep latest raw leaderboard for ghost proportional calculation and final snap
   const rawLeaderboardRef = useRef(rawLeaderboard);
   useEffect(() => {
     rawLeaderboardRef.current = rawLeaderboard;
   }, [rawLeaderboard]);
 
-  const queueRef = useRef<ClientEvent[]>([]);
+  // ── Budget-based refs ──
+  const queueRef = useRef<QueueItem[]>([]);
   const seenIdsRef = useRef(new Set<string>());
-  const speedRef = useRef(1.0);
-  const targetSpeedRef = useRef(1.0);
-  const batchSizesRef = useRef<number[]>([]);
+  const lastBatchAtRef = useRef(0);
+  const measuredIntervalRef = useRef(defaultIntervalMs);
+  const batchSizeEmaRef = useRef(10);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Enqueue new events from rawEvents, deduplicating by id
+  // ── Enqueue with budget-stamped delays ──
   useEffect(() => {
-    let newCount = 0;
+    const newEvents: ClientEvent[] = [];
     for (const event of rawEvents) {
       if (!seenIdsRef.current.has(event.id)) {
         seenIdsRef.current.add(event.id);
-        queueRef.current.push(event);
-        newCount++;
+        newEvents.push(event);
       }
     }
-    if (newCount > 0) {
-      const sizes = batchSizesRef.current;
-      sizes.push(newCount);
-      if (sizes.length > 5) sizes.shift();
+    if (newEvents.length === 0) return;
+
+    // Measure interval between batch arrivals
+    const now = performance.now();
+    if (lastBatchAtRef.current > 0) {
+      measuredIntervalRef.current = now - lastBatchAtRef.current;
     }
+    lastBatchAtRef.current = now;
+
+    const budget = measuredIntervalRef.current * BUDGET_PADDING;
+
+    // Weighted delay distribution
+    const totalWeight = newEvents.reduce(
+      (s, e) => s + (TIER_WEIGHT[e.tier] ?? TIER_WEIGHT.major),
+      0,
+    );
+    const msPerWeight =
+      totalWeight > 0 ? budget / totalWeight : budget / newEvents.length;
+
+    // Clamp per tier
+    const items: QueueItem[] = newEvents.map((event) => {
+      const weight = TIER_WEIGHT[event.tier] ?? TIER_WEIGHT.major;
+      const raw = msPerWeight * weight;
+      const [minD, maxD] = DELAY_CLAMP[event.tier] ?? DELAY_CLAMP.major;
+      return { event, delayMs: Math.max(minD, Math.min(maxD, raw)) };
+    });
+
+    // Overload: scale down if clamped sum exceeds budget
+    const clampedSum = items.reduce((s, it) => s + it.delayMs, 0);
+    if (clampedSum > budget) {
+      const scale = budget / clampedSum;
+      for (const item of items) {
+        item.delayMs = Math.max(HARD_FLOOR, item.delayMs * scale);
+      }
+    }
+
+    // Update EMA for catch-up threshold
+    batchSizeEmaRef.current =
+      batchSizeEmaRef.current * 0.7 + newEvents.length * 0.3;
+
+    queueRef.current.push(...items);
   }, [rawEvents]);
 
-  // Detect drain trigger (uses job status, NOT order status)
-  // Quota-paused runs must NOT drain — feed and leaderboard freeze in place.
+  // ── Drain detection ──
   useEffect(() => {
-    if (DRAIN_STATUSES.has(jobStatus) && !isPaused && !isDraining && !isDrained) {
+    if (
+      DRAIN_STATUSES.has(jobStatus) &&
+      !isPaused &&
+      !isDraining &&
+      !isDrained
+    ) {
       setIsDraining(true);
-      targetSpeedRef.current = 5.0; // fast-forward
     }
   }, [jobStatus, isPaused, isDraining, isDrained]);
 
-  // Reset drain state when job resumes (watchdog retry or manual resume)
-  // FAILED_RETRYABLE → RUNNING, or PAUSED → RUNNING
+  // ── Resume reset (timing refs only) ──
   const prevJobStatusRef = useRef(jobStatus);
   useEffect(() => {
     const prev = prevJobStatusRef.current;
     prevJobStatusRef.current = jobStatus;
     if (
       jobStatus === 'RUNNING' &&
-      (prev === 'FAILED_RETRYABLE' || prev === 'PENDING') &&
-      (isDraining || isDrained)
+      (prev === 'FAILED_RETRYABLE' || prev === 'PENDING')
     ) {
-      setIsDraining(false);
-      setIsDrained(false);
-      targetSpeedRef.current = 1.0;
-      speedRef.current = 1.0;
+      // Reset drain state if it was active
+      if (isDraining || isDrained) {
+        setIsDraining(false);
+        setIsDrained(false);
+      }
+      // Reset timing refs only — queue and seenIds are preserved
+      lastBatchAtRef.current = 0;
+      measuredIntervalRef.current = defaultIntervalMs;
+      batchSizeEmaRef.current = 10;
     }
-  }, [jobStatus, isDraining, isDrained]);
+  }, [jobStatus, isDraining, isDrained, defaultIntervalMs]);
 
-  // Compute adaptive pressure
-  const getExpectedBatchSize = useCallback(() => {
-    const sizes = batchSizesRef.current;
-    if (sizes.length === 0) return 10;
-    return sizes.reduce((a, b) => a + b, 0) / sizes.length;
-  }, []);
-
-  // Recompute dripLeaderboard from internal dev map + proportional ghost
+  // ── Leaderboard emit ──
   const emitLeaderboardUpdate = useCallback(() => {
     const raw = rawLeaderboardRef.current;
     const devMap = dripDevMapRef.current;
@@ -126,11 +188,12 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
       commitCount: d.commitCount,
     }));
 
-    // Ghost proportional to drip progress: fraction of dripped dev hours vs raw total
     const rawDevTotal = raw.developers.reduce((s, d) => s + d.totalHours, 0);
     const dripDevTotal = developers.reduce((s, d) => s + d.totalHours, 0);
-    const fraction = rawDevTotal > 0 ? Math.min(1, dripDevTotal / rawDevTotal) : 0;
-    const ghostHours = Math.round(raw.ghost.totalHours * fraction * 100) / 100;
+    const fraction =
+      rawDevTotal > 0 ? Math.min(1, dripDevTotal / rawDevTotal) : 0;
+    const ghostHours =
+      Math.round(raw.ghost.totalHours * fraction * 100) / 100;
 
     setDripLeaderboard({
       developers,
@@ -139,69 +202,34 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
     });
   }, []);
 
-  // On drain complete, snap to raw leaderboard to close rounding gaps
+  // Snap to raw leaderboard on drain complete
   useEffect(() => {
     if (isDrained) {
       setDripLeaderboard(rawLeaderboardRef.current);
     }
   }, [isDrained]);
 
-  // Main drip loop
+  // ── Main tick loop ──
   useEffect(() => {
-    function tick() {
-      const queue = queueRef.current;
-
-      // Quota pause: freeze visible state exactly where it is. Do not dequeue,
-      // do not fast-forward, just wait for resume or a fresh rerun.
-      if (isPaused) {
-        timerRef.current = setTimeout(tick, 250);
-        return;
-      }
-
-      if (queue.length === 0) {
-        if (isDraining) {
-          setIsDrained(true);
-          return;
-        }
-        // Schedule next check
-        timerRef.current = setTimeout(tick, 50);
-        return;
-      }
-
-      // Adaptive pressure
-      const expected = getExpectedBatchSize();
-      const pressure = queue.length / expected;
-      if (pressure < 0.5) {
-        targetSpeedRef.current = isDraining ? 5.0 : 0.75;
-      } else if (pressure <= 1.5) {
-        targetSpeedRef.current = isDraining ? 5.0 : 1.0;
-      } else if (pressure <= 3.0) {
-        targetSpeedRef.current = isDraining ? 5.0 : Math.min(2.0, 1.0 + (pressure - 1.5));
-      } else {
-        targetSpeedRef.current = isDraining ? 5.0 : 3.0;
-      }
-
-      // Lerp speed
-      speedRef.current += (targetSpeedRef.current - speedRef.current) * 0.1;
-
-      // Emit next event
-      const event = queue.shift()!;
-      setVisibleEvents(prev => [...prev, event]);
-
-      // Update counters
+    function processSingleEvent(event: ClientEvent) {
       if (event.text === 'clientProgress.commitAnalyzed') {
-        setCounters(prev => ({ ...prev, commits: prev.commits + 1 }));
+        setCounters((prev) => ({ ...prev, commits: prev.commits + 1 }));
       }
       if (event.text === 'clientProgress.filesChanged') {
-        const fc = typeof event.params.fileCount === 'number' ? event.params.fileCount : 0;
-        setCounters(prev => ({ ...prev, files: prev.files + fc }));
+        const fc =
+          typeof event.params.fileCount === 'number'
+            ? event.params.fileCount
+            : 0;
+        setCounters((prev) => ({ ...prev, files: prev.files + fc }));
       }
       if (event.text === 'clientProgress.linesChanged') {
-        const lc = typeof event.params.lineCount === 'number' ? event.params.lineCount : 0;
-        setCounters(prev => ({ ...prev, lines: prev.lines + lc }));
+        const lc =
+          typeof event.params.lineCount === 'number'
+            ? event.params.lineCount
+            : 0;
+        setCounters((prev) => ({ ...prev, lines: prev.lines + lc }));
       }
 
-      // Per-event leaderboard accumulation (not snapshot replacement)
       if (event.developerId && event.effortHours != null) {
         const devMap = dripDevMapRef.current;
         const existing = devMap.get(event.developerId);
@@ -215,21 +243,125 @@ export function useDripFeed(opts: UseDripFeedOpts): UseDripFeedResult {
             commitCount: 1,
           });
         }
-        drippedCommitsRef.current += 1;
+      }
+    }
+
+    function tick() {
+      const queue = queueRef.current;
+
+      // Quota pause: freeze visible state
+      if (isPaused) {
+        timerRef.current = setTimeout(tick, 250);
+        return;
+      }
+
+      if (queue.length === 0) {
+        if (isDraining) {
+          setIsDrained(true);
+          return;
+        }
+        timerRef.current = setTimeout(tick, 50);
+        return;
+      }
+
+      // ── Catch-up mode: batch emit when queue is deep ──
+      const avgBatch = batchSizeEmaRef.current;
+      const inCatchUp = queue.length > avgBatch * CATCH_UP_THRESHOLD;
+
+      if (inCatchUp) {
+        const budget = measuredIntervalRef.current * BUDGET_PADDING;
+        const batchSize = Math.min(
+          queue.length,
+          Math.max(1, Math.floor(budget / HARD_FLOOR)),
+        );
+        const batch = queue.splice(0, batchSize);
+        const batchEvents = batch.map((it) => it.event);
+
+        // Single state update for visible events
+        setVisibleEvents((prev) => [...prev, ...batchEvents]);
+
+        // Accumulate counter deltas across the batch
+        let dCommits = 0,
+          dFiles = 0,
+          dLines = 0;
+        for (const { event } of batch) {
+          if (event.text === 'clientProgress.commitAnalyzed') dCommits++;
+          if (event.text === 'clientProgress.filesChanged') {
+            dFiles +=
+              typeof event.params.fileCount === 'number'
+                ? event.params.fileCount
+                : 0;
+          }
+          if (event.text === 'clientProgress.linesChanged') {
+            dLines +=
+              typeof event.params.lineCount === 'number'
+                ? event.params.lineCount
+                : 0;
+          }
+          // Leaderboard: mutate dripDevMapRef in-place
+          if (event.developerId && event.effortHours != null) {
+            const existing = dripDevMapRef.current.get(event.developerId);
+            if (existing) {
+              existing.totalHours += event.effortHours;
+              existing.commitCount += 1;
+            } else {
+              dripDevMapRef.current.set(event.developerId, {
+                name:
+                  (event.params.developerName as string) ?? 'Developer',
+                totalHours: event.effortHours,
+                commitCount: 1,
+              });
+            }
+          }
+        }
+        if (dCommits || dFiles || dLines) {
+          setCounters((prev) => ({
+            commits: prev.commits + dCommits,
+            files: prev.files + dFiles,
+            lines: prev.lines + dLines,
+          }));
+        }
+        // One leaderboard emit for the whole batch
+        if (
+          batch.some(
+            ({ event }) => event.developerId && event.effortHours != null,
+          )
+        ) {
+          emitLeaderboardUpdate();
+        }
+
+        timerRef.current = setTimeout(tick, HARD_FLOOR);
+        return;
+      }
+
+      // ── Normal mode: single event with pre-stamped delay ──
+      const { event, delayMs } = queue.shift()!;
+      setVisibleEvents((prev) => [...prev, event]);
+
+      processSingleEvent(event);
+
+      if (event.developerId && event.effortHours != null) {
         emitLeaderboardUpdate();
       }
 
-      // Schedule next tick with adaptive delay
-      const baseDelay = baseDelayFor(event.tier);
-      const adjustedDelay = Math.max(15, baseDelay / speedRef.current);
+      const adjustedDelay = isDraining
+        ? Math.max(HARD_FLOOR, delayMs / DRAIN_SPEEDUP)
+        : delayMs;
       timerRef.current = setTimeout(tick, adjustedDelay);
     }
 
     timerRef.current = setTimeout(tick, 50);
+
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isPaused, isDraining, getExpectedBatchSize, emitLeaderboardUpdate]);
+  }, [isPaused, isDraining, emitLeaderboardUpdate]);
 
-  return { visibleEvents, counters, leaderboard: dripLeaderboard, isDraining, isDrained };
+  return {
+    visibleEvents,
+    counters,
+    leaderboard: dripLeaderboard,
+    isDraining,
+    isDrained,
+  };
 }
