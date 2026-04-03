@@ -188,8 +188,10 @@ export async function DELETE(
     );
   }
 
+  const commitHash = req.nextUrl.searchParams.get('commitHash')?.trim() || undefined;
+
   const result = await prisma.groundTruth.deleteMany({
-    where: { orderId: id, author },
+    where: { orderId: id, author, ...(commitHash && { commitHash }) },
   });
 
   return NextResponse.json({ deleted: result.count });
