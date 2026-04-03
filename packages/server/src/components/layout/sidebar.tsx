@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useTranslations } from 'next-intl';
 import { Link, usePathname } from '@/i18n/navigation';
@@ -73,9 +73,7 @@ interface RecentOrder {
   status: string;
 }
 
-const DEFAULT_USER_SECTION_RATIO = 0.68;
-const MIN_USER_SECTION_HEIGHT = 180;
-const MIN_ADMIN_SECTION_HEIGHT = 120;
+type AdminSidebarPanel = 'user' | 'admin';
 
 export function Sidebar() {
   const t = useTranslations('layout.sidebar');
@@ -90,8 +88,11 @@ export function Sidebar() {
   const deemphasizedKeys = new Set<string>();
   if (isEarlyStage) deemphasizedKeys.add('teams');
   if (isEarlyStage || noSavedViews) deemphasizedKeys.add('reports');
-  const splitContainerRef = useRef<HTMLDivElement | null>(null);
-  const [userSectionHeight, setUserSectionHeight] = useState<number | null>(null);
+
+  const [activeAdminPanel, setActiveAdminPanel] = useState<AdminSidebarPanel>(() =>
+    pathname.startsWith('/admin') ? 'admin' : 'user',
+  );
+  const prevPathnameForPanelRef = useRef(pathname);
 
   const { data: recentOrders } = useQuery<RecentOrder[]>({
     queryKey: ['sidebar-recent-orders'],
@@ -104,88 +105,12 @@ export function Sidebar() {
     staleTime: 30 * 1000,
   });
 
-  const clampUserSectionHeight = useCallback((value: number) => {
-    const container = splitContainerRef.current;
-    if (!container) {
-      return Math.max(value, MIN_USER_SECTION_HEIGHT);
-    }
-    const containerHeight = container.clientHeight;
-    if (containerHeight <= 0) {
-      return Math.max(value, MIN_USER_SECTION_HEIGHT);
-    }
-    const maxUserHeight = Math.max(
-      MIN_USER_SECTION_HEIGHT,
-      containerHeight - MIN_ADMIN_SECTION_HEIGHT,
-    );
-    return Math.min(Math.max(value, MIN_USER_SECTION_HEIGHT), maxUserHeight);
-  }, []);
-
-  const ensureInitialSplit = useCallback(() => {
-    const container = splitContainerRef.current;
-    if (!isAdmin || !container) {
-      return;
-    }
-    const containerHeight = container.clientHeight;
-    if (containerHeight <= 0) {
-      return;
-    }
-    setUserSectionHeight((prev) => {
-      if (prev == null) {
-        return clampUserSectionHeight(
-          Math.round(containerHeight * DEFAULT_USER_SECTION_RATIO),
-        );
-      }
-      return clampUserSectionHeight(prev);
-    });
-  }, [clampUserSectionHeight, isAdmin]);
-
   useEffect(() => {
-    if (!isAdmin) {
-      setUserSectionHeight(null);
-      return;
-    }
-
-    ensureInitialSplit();
-
-    const container = splitContainerRef.current;
-    if (!container || typeof ResizeObserver === 'undefined') {
-      return;
-    }
-
-    const observer = new ResizeObserver(() => {
-      ensureInitialSplit();
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, [ensureInitialSplit, isAdmin]);
-
-  const handleDividerMouseDown = useCallback((event: ReactMouseEvent<HTMLButtonElement>) => {
     if (!isAdmin) return;
-    const container = splitContainerRef.current;
-    if (!container) return;
-
-    event.preventDefault();
-
-    const startY = event.clientY;
-    const startHeight = userSectionHeight ?? Math.round(container.clientHeight * DEFAULT_USER_SECTION_RATIO);
-
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      const deltaY = moveEvent.clientY - startY;
-      setUserSectionHeight(clampUserSectionHeight(startHeight + deltaY));
-    };
-
-    const handleMouseUp = () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.removeProperty('cursor');
-      document.body.style.removeProperty('user-select');
-    };
-
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-  }, [clampUserSectionHeight, isAdmin, userSectionHeight]);
+    if (prevPathnameForPanelRef.current === pathname) return;
+    prevPathnameForPanelRef.current = pathname;
+    setActiveAdminPanel(pathname.startsWith('/admin') ? 'admin' : 'user');
+  }, [isAdmin, pathname]);
 
   const analyticalPaths = new Set(['/dashboard', '/people', '/repositories', '/teams', '/reports']);
 
@@ -202,6 +127,9 @@ export function Sidebar() {
           <div key={item.nameKey}>
             <Link
               href={itemHref}
+              onClick={() => {
+                if (isAdmin) setActiveAdminPanel('user');
+              }}
               className={cn(
                 'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
                 isActive
@@ -223,6 +151,9 @@ export function Sidebar() {
                     <Link
                       key={order.id}
                       href={`/orders/${order.id}`}
+                      onClick={() => {
+                        if (isAdmin) setActiveAdminPanel('user');
+                      }}
                       className={cn(
                         'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors',
                         isOrderActive
@@ -246,33 +177,35 @@ export function Sidebar() {
     </nav>
   );
 
-  const adminSection = (
-    <nav className="h-full space-y-1 overflow-y-auto pr-1 py-2">
-      <p className="px-3 py-1 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-        {t('adminSection')}
-      </p>
-      {adminNavigation.map((item) => {
-        const isActive = item.href === '/admin'
-          ? pathname === '/admin'
-          : pathname.startsWith(item.href);
-        return (
-          <Link
-            key={item.nameKey}
-            href={item.href}
-            className={cn(
-              'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-              isActive
-                ? 'bg-primary text-primary-foreground'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-            )}
-          >
-            <item.icon className="h-5 w-5" />
-            {t(item.nameKey)}
-          </Link>
-        );
-      })}
-    </nav>
-  );
+  const adminNavLinks = adminNavigation.map((item) => {
+    const isActive = item.href === '/admin'
+      ? pathname === '/admin'
+      : pathname.startsWith(item.href);
+    return (
+      <Link
+        key={item.nameKey}
+        href={item.href}
+        onClick={() => {
+          if (isAdmin) setActiveAdminPanel('admin');
+        }}
+        className={cn(
+          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+          isActive
+            ? 'bg-primary text-primary-foreground'
+            : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+        )}
+      >
+        <item.icon className="h-5 w-5" />
+        {t(item.nameKey)}
+      </Link>
+    );
+  });
+
+  const panelToggleButtonClass =
+    'flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground';
+
+  const adminPanelTransitionClass =
+    'transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none motion-reduce:transform-none';
 
   return (
     <div className="flex h-full w-64 flex-col border-r bg-card">
@@ -305,29 +238,58 @@ export function Sidebar() {
       {/* Navigation */}
       <div className="flex-1 min-h-0 px-4 pb-2">
         {isAdmin ? (
-          <div ref={splitContainerRef} className="flex h-full min-h-0 flex-col">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             <div
               className={cn(
-                'min-h-0 overflow-hidden shrink-0',
-                userSectionHeight == null && 'basis-[68%]',
+                'absolute inset-0 flex min-h-0 flex-col',
+                adminPanelTransitionClass,
+                activeAdminPanel === 'user'
+                  ? 'z-10 translate-y-0 opacity-100'
+                  : 'pointer-events-none z-0 translate-y-1 opacity-0',
               )}
-              style={userSectionHeight != null ? { height: `${userSectionHeight}px` } : undefined}
+              aria-hidden={activeAdminPanel !== 'user'}
             >
-              {primaryNavigation}
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{primaryNavigation}</div>
+              <div className="shrink-0 border-t pt-2">
+                <button
+                  type="button"
+                  className={panelToggleButtonClass}
+                  onClick={() => setActiveAdminPanel('admin')}
+                >
+                  <Shield className="h-5 w-5 shrink-0" />
+                  <span className="truncate text-xs font-semibold uppercase tracking-wider">
+                    {t('adminSection')}
+                  </span>
+                </button>
+              </div>
             </div>
 
-            <button
-              type="button"
-              aria-label="Resize user/admin navigation sections"
-              onMouseDown={handleDividerMouseDown}
-              className="group my-1 flex cursor-row-resize select-none flex-col items-center py-1"
+            <div
+              className={cn(
+                'absolute inset-0 flex min-h-0 flex-col',
+                adminPanelTransitionClass,
+                activeAdminPanel === 'admin'
+                  ? 'z-10 translate-y-0 opacity-100'
+                  : 'pointer-events-none z-0 -translate-y-1 opacity-0',
+              )}
+              aria-hidden={activeAdminPanel !== 'admin'}
             >
-              <span className="h-px w-full bg-border transition-colors group-hover:bg-primary/60" />
-              <span className="mt-1 h-1.5 w-10 rounded-full bg-muted-foreground/30 transition-colors group-hover:bg-primary/60" />
-            </button>
-
-            <div className="min-h-0 flex-1 overflow-hidden border-t">
-              {adminSection}
+              <div className="shrink-0 border-b pb-2">
+                <button
+                  type="button"
+                  className={panelToggleButtonClass}
+                  onClick={() => setActiveAdminPanel('user')}
+                >
+                  <LayoutDashboard className="h-5 w-5 shrink-0" />
+                  <span className="truncate">{t('dashboard')}</span>
+                </button>
+              </div>
+              <nav className="flex min-h-0 flex-1 flex-col overflow-hidden pt-2">
+                <p className="mb-1 shrink-0 px-3 py-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {t('adminSection')}
+                </p>
+                <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">{adminNavLinks}</div>
+              </nav>
             </div>
           </div>
         ) : (
