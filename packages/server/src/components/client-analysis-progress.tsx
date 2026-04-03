@@ -159,6 +159,7 @@ interface ClientAnalysisProgressProps {
   } | null;
   allClientEvents: ClientEvent[];
   repoSizeMb?: number | null;
+  pollIntervalMs?: number;
   isAdmin: boolean;
   onToggleView: () => void;
   onCancel: () => void;
@@ -174,6 +175,7 @@ export function ClientAnalysisProgress({
   progress,
   allClientEvents,
   repoSizeMb,
+  pollIntervalMs,
   isAdmin,
   onToggleView,
   onCancel,
@@ -202,6 +204,7 @@ export function ClientAnalysisProgress({
     rawLeaderboard: progress?.leaderboard ?? { developers: [], ghost: { totalHours: 0 }, scopeWorkDays: 0 },
     jobStatus,
     isPaused,
+    defaultIntervalMs: pollIntervalMs,
   });
 
   useEffect(() => {

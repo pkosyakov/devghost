@@ -1427,9 +1427,11 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
         if (!isAdmin || adminViewMode === 'client') {
           return (
             <ClientAnalysisProgress
+              key={analysisJobId ?? 'pending'}
               progress={progress as Parameters<typeof ClientAnalysisProgress>[0]['progress']}
               allClientEvents={allClientEvents}
               repoSizeMb={repoSizeMb}
+              pollIntervalMs={livePollMs}
               isAdmin={isAdmin}
               onToggleView={() => setAdminViewMode('admin')}
               onCancel={() => analysisJobId && cancelJobMutation.mutate(analysisJobId)}
