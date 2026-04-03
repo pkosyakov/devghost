@@ -10,9 +10,15 @@ const mockJobFindFirst = vi.fn();
 const mockOrderFindFirst = vi.fn();
 const mockOrderUpdate = vi.fn();
 const mockCommitAnalysisCount = vi.fn();
+const mockCommitAnalysisFindMany = vi.fn();
 const mockUserFindUnique = vi.fn();
 const mockCreditTransactionCreate = vi.fn();
 const mockExecuteRaw = vi.fn();
+const mockAppendJobEvent = vi.fn();
+const mockCheckRateLimit = vi.fn();
+const mockComputeBillingPreview = vi.fn();
+const mockGetOrderWithAuth = vi.fn();
+const mockOrderAuthError = vi.fn();
 
 vi.mock('@/lib/db', () => ({
   default: {
@@ -22,7 +28,10 @@ vi.mock('@/lib/db', () => ({
       create: (...a: unknown[]) => mockJobCreate(...a),
       update: (...a: unknown[]) => mockJobUpdate(...a),
     },
-    commitAnalysis: { count: (...a: unknown[]) => mockCommitAnalysisCount(...a) },
+    commitAnalysis: {
+      count: (...a: unknown[]) => mockCommitAnalysisCount(...a),
+      findMany: (...a: unknown[]) => mockCommitAnalysisFindMany(...a),
+    },
     user: { findUnique: (...a: unknown[]) => mockUserFindUnique(...a) },
     creditTransaction: { create: (...a: unknown[]) => mockCreditTransactionCreate(...a) },
     $transaction: (...a: unknown[]) => mockTransaction(...a),
@@ -33,6 +42,8 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/api-utils', () => ({
   requireUserSession: vi.fn(),
   isErrorResponse: vi.fn((r: unknown) => r instanceof Response),
+  getOrderWithAuth: (...a: unknown[]) => mockGetOrderWithAuth(...a),
+  orderAuthError: (...a: unknown[]) => mockOrderAuthError(...a),
   apiResponse: vi.fn((data: unknown, status = 200) =>
     new Response(JSON.stringify({ success: true, data }), { status }),
   ),
@@ -77,6 +88,18 @@ vi.mock('@/lib/services/model-context', () => ({
   }),
 }));
 
+vi.mock('@/lib/services/job-event-service', () => ({
+  appendJobEvent: (...a: unknown[]) => mockAppendJobEvent(...a),
+}));
+
+vi.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: (...a: unknown[]) => mockCheckRateLimit(...a),
+}));
+
+vi.mock('@/lib/services/analysis-billing-preview', () => ({
+  computeBillingPreview: (...a: unknown[]) => mockComputeBillingPreview(...a),
+}));
+
 vi.mock('@/lib/logger', () => {
   const noop = () => {};
   const child = () => mockLogger;
@@ -84,7 +107,7 @@ vi.mock('@/lib/logger', () => {
   return { analysisLogger: mockLogger, billingLogger: mockLogger, logger: mockLogger, default: mockLogger };
 });
 
-import { requireUserSession } from '@/lib/api-utils';
+import { requireUserSession, getOrderWithAuth } from '@/lib/api-utils';
 import { processAnalysisJob } from '@/lib/services/analysis-worker';
 import { getLlmConfig } from '@/lib/llm-config';
 import { resolveEffectiveContext } from '@/lib/services/model-context';
@@ -145,6 +168,12 @@ describe('POST /api/orders/[id]/analyze', () => {
     delete process.env.MODAL_WEBHOOK_SECRET;
     mockOrderFindFirst.mockResolvedValue(mockOrder);
     mockCommitAnalysisCount.mockResolvedValue(0);
+    mockCommitAnalysisFindMany.mockResolvedValue([]);
+    mockCheckRateLimit.mockResolvedValue(null);
+    mockComputeBillingPreview.mockResolvedValue(10);
+    mockAppendJobEvent.mockResolvedValue(undefined);
+    mockGetOrderWithAuth.mockResolvedValue({ success: true, order: mockOrder });
+    mockOrderAuthError.mockImplementation((result: unknown) => result);
   });
 
   it('local mode: calls processAnalysisJob with contextLength (default)', async () => {
@@ -308,5 +337,52 @@ describe('POST /api/orders/[id]/analyze', () => {
     expect(flagsUpdate.data.skipBilling).toBe(true);
 
     vi.unstubAllGlobals();
+  });
+
+  it('local mode: selectedCommitHashes triggers targeted recalculation without lastAnalyzedShas persistence', async () => {
+    setupSession();
+    setupTransaction();
+    const selectedSha = 'a'.repeat(40);
+    mockCommitAnalysisFindMany.mockResolvedValue([{ commitHash: selectedSha }]);
+
+    const res = await POST(
+      makeRequest({ selectedCommitHashes: [selectedSha], forceRecalculate: true }),
+      { params: Promise.resolve({ id: 'order-1' }) },
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(json.data.jobId).toBe('job-1');
+    expect(processAnalysisJob).toHaveBeenCalledWith('job-1', {
+      cacheMode: 'off',
+      forceRecalculate: true,
+      selectedCommitHashes: [selectedSha],
+      contextLength: 49152,
+    });
+    expect(mockJobCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({
+          lastAnalyzedShas: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it('rejects selectedCommitHashes in modal mode', async () => {
+    process.env.PIPELINE_MODE = 'modal';
+    process.env.MODAL_ENDPOINT_URL = 'https://modal.test/run';
+    process.env.MODAL_WEBHOOK_SECRET = 'test-secret';
+    setupSession();
+    setupTransaction();
+
+    const res = await POST(
+      makeRequest({ selectedCommitHashes: ['b'.repeat(40)], forceRecalculate: true }),
+      { params: Promise.resolve({ id: 'order-1' }) },
+    );
+    const json = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(json.error).toContain('not supported in modal mode');
+    expect(processAnalysisJob).not.toHaveBeenCalled();
   });
 });

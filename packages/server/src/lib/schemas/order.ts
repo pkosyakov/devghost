@@ -63,6 +63,7 @@ export const updateOrderSchema = z.object({
 export const analyzeOrderSchema = z.object({
   cacheMode: z.enum(['any', 'model', 'off']).optional(),
   forceRecalculate: z.boolean().optional(),
+  selectedCommitHashes: z.array(z.string().trim().regex(/^[a-fA-F0-9]{7,64}$/, 'Invalid commit hash')).min(1).max(5000).optional(),
   analysisPeriodMode: z.enum(analysisPeriodModes).optional(),
   analysisStartDate: z.string().optional(),
   analysisEndDate: z.string().optional(),

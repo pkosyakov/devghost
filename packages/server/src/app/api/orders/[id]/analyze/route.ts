@@ -12,6 +12,7 @@ import { buildAnalysisJobLlmProfileFromSnapshot, withSplitModelSnapshot } from '
 import { analysisLogger, billingLogger } from '@/lib/logger';
 import { checkRateLimit } from '@/lib/rate-limit';
 import { analyzeOrderSchema } from '@/lib/schemas';
+import { buildScopeWhereClause, type ScopeConfig } from '@/lib/services/scope-filter';
 import { z } from 'zod';
 
 type AnalyzeRequestBody = z.infer<typeof analyzeOrderSchema>;
@@ -23,6 +24,18 @@ function toFiniteNumber(value: unknown): number | null {
     if (Number.isFinite(parsed)) return parsed;
   }
   return null;
+}
+
+function normalizeSelectedCommitHashes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const unique = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const sha = item.trim();
+    if (!sha) continue;
+    unique.add(sha);
+  }
+  return [...unique];
 }
 
 // POST /api/orders/[id]/analyze — Create analysis job and run pipeline
@@ -58,7 +71,19 @@ export async function POST(
   } catch {
     body = {} as AnalyzeRequestBody;
   }
-  const cacheMode = body.cacheMode ?? 'model';
+  const requestedSelectedCommitHashes = normalizeSelectedCommitHashes(body.selectedCommitHashes);
+  const hasSelectedCommitFilter = requestedSelectedCommitHashes.length > 0;
+  const pipelineMode = process.env.PIPELINE_MODE ?? 'local';
+
+  if (hasSelectedCommitFilter && body.forceRecalculate !== true) {
+    return apiError('forceRecalculate=true is required when selectedCommitHashes are provided', 400);
+  }
+  if (hasSelectedCommitFilter && pipelineMode === 'modal') {
+    return apiError('Selected commit recalculation is not supported in modal mode yet', 400);
+  }
+  const cacheMode: 'any' | 'model' | 'off' = hasSelectedCommitFilter
+    ? 'off'
+    : (body.cacheMode ?? 'model');
 
   // Semantic date range validation
   if (body.analysisPeriodMode === 'DATE_RANGE' && body.analysisStartDate && body.analysisEndDate) {
@@ -73,6 +98,40 @@ export async function POST(
   }
 
   const hasScopeUpdate = body.analysisPeriodMode !== undefined;
+  const hasAnyScopePayload = (
+    body.analysisPeriodMode !== undefined
+    || body.analysisStartDate !== undefined
+    || body.analysisEndDate !== undefined
+    || body.analysisCommitLimit !== undefined
+    || body.analysisYears !== undefined
+  );
+  if (hasSelectedCommitFilter && hasAnyScopePayload) {
+    return apiError('selectedCommitHashes cannot be combined with analysis scope updates', 400);
+  }
+
+  let selectedCommitHashes: string[] = [];
+  if (hasSelectedCommitFilter) {
+    const scopeConfig: ScopeConfig = {
+      analysisPeriodMode: order.analysisPeriodMode,
+      analysisYears: (order.analysisYears as number[] | null) ?? [],
+      analysisStartDate: order.analysisStartDate,
+      analysisEndDate: order.analysisEndDate,
+      analysisCommitLimit: order.analysisCommitLimit,
+    };
+    const scopeWhere = buildScopeWhereClause(order.id, scopeConfig);
+    const rows = await prisma.commitAnalysis.findMany({
+      where: {
+        ...scopeWhere,
+        commitHash: { in: requestedSelectedCommitHashes },
+      },
+      select: { commitHash: true },
+    });
+    const validSet = new Set(rows.map((row) => row.commitHash));
+    if (validSet.size !== requestedSelectedCommitHashes.length) {
+      return apiError('Some selected commits are outside the current order scope', 400);
+    }
+    selectedCommitHashes = requestedSelectedCommitHashes.filter((sha) => validSet.has(sha));
+  }
 
   // If excludedDevelopers provided in request body, persist to order
   if (body.excludedDevelopers !== undefined) {
@@ -110,17 +169,17 @@ export async function POST(
     commitLimit: toFiniteNumber(body.analysisCommitLimit ?? order.analysisCommitLimit),
   };
 
-  const billingPreview = await computeBillingPreview({
-    userId: session.user.id,
-    orderId: order.id,
-    selectedRepos: (order.selectedRepos ?? []) as Array<Record<string, unknown>>,
-    selectedDevelopers: (order.selectedDevelopers ?? []) as Array<Record<string, unknown>>,
-    excludedEmails,
-    cacheMode: body.forceRecalculate ? 'off' : cacheMode,
-    scope: effectiveScope,
-  });
-
-  const estimatedCredits = billingPreview.estimatedCredits;
+  const estimatedCredits = hasSelectedCommitFilter
+    ? selectedCommitHashes.length
+    : (await computeBillingPreview({
+        userId: session.user.id,
+        orderId: order.id,
+        selectedRepos: (order.selectedRepos ?? []) as Array<Record<string, unknown>>,
+        selectedDevelopers: (order.selectedDevelopers ?? []) as Array<Record<string, unknown>>,
+        excludedEmails,
+        cacheMode: body.forceRecalculate ? 'off' : cacheMode,
+        scope: effectiveScope,
+      })).estimatedCredits;
 
   const shouldBill = isBillingEnabled() && session.user.role !== 'ADMIN';
 
@@ -138,9 +197,6 @@ export async function POST(
       );
     }
   }
-
-  const pipelineMode = process.env.PIPELINE_MODE ?? 'local';
-
   // Atomically: update scope → check active jobs → create job → (optionally reserve credits) → set PROCESSING
   let job;
   try {
@@ -257,6 +313,7 @@ export async function POST(
       estimatedCredits,
       cacheMode,
       forceRecalculate: body.forceRecalculate === true,
+      selectedCommitCount: selectedCommitHashes.length || undefined,
       rawContextLength,
       effectiveContextLength,
     },
@@ -281,6 +338,7 @@ export async function POST(
         cacheMode,
         skipBilling: !shouldBill,
         forceRecalculate: body.forceRecalculate === true,
+        selectedCommitCount: selectedCommitHashes.length || undefined,
       },
     });
 
@@ -416,11 +474,17 @@ export async function POST(
       phase: 'launch',
       code: 'LOCAL_WORKER_START',
       message: 'Starting local analysis worker',
-      payload: { cacheMode, forceRecalculate: body.forceRecalculate === true, effectiveContextLength },
+      payload: {
+        cacheMode,
+        forceRecalculate: body.forceRecalculate === true,
+        effectiveContextLength,
+        selectedCommitCount: selectedCommitHashes.length || undefined,
+      },
     });
     processAnalysisJob(job.id, {
       cacheMode,
       forceRecalculate: body.forceRecalculate === true,
+      ...(hasSelectedCommitFilter ? { selectedCommitHashes } : {}),
       ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
     }).catch((error) => {
       analysisLogger.error({ err: error, jobId: job.id, orderId: id }, 'Pipeline failed');

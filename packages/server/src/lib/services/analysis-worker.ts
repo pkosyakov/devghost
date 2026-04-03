@@ -111,6 +111,19 @@ interface AnalysisJobOptions {
   cacheMode?: 'any' | 'model' | 'off';  // cross-order commit cache behavior
   forceRecalculate?: boolean;  // delete in-scope commits and re-analyze from scratch
   skipBillingOverride?: boolean; // force billing on/off for admin/manual reruns
+  selectedCommitHashes?: string[]; // restrict processing to selected commits only
+}
+
+function normalizeSelectedCommitHashes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const unique = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const sha = item.trim();
+    if (!sha) continue;
+    unique.add(sha);
+  }
+  return [...unique];
 }
 
 export async function processAnalysisJob(
@@ -135,8 +148,17 @@ export async function processAnalysisJob(
   const githubToken = job.order.user.githubAccessToken ?? undefined;
   const skipBilling = options.skipBillingOverride
     ?? (!!options.isBenchmark || !isBillingEnabled() || order.user.role === 'ADMIN');
+  const selectedCommitHashes = normalizeSelectedCommitHashes(options.selectedCommitHashes);
+  const selectedCommitShaSet = new Set(selectedCommitHashes);
+  const hasSelectedCommitFilter = selectedCommitShaSet.size > 0;
 
-  log.info({ orderId: order.id, orderName: order.name, hasToken: !!githubToken, skipBilling }, 'Order loaded');
+  log.info({
+    orderId: order.id,
+    orderName: order.name,
+    hasToken: !!githubToken,
+    skipBilling,
+    selectedCommitCount: hasSelectedCommitFilter ? selectedCommitShaSet.size : undefined,
+  }, 'Order loaded');
 
   // Mark RUNNING (init totalCommits to 0 so Prisma increment works on non-null)
   // Order status already set to PROCESSING by the analyze endpoint
@@ -185,20 +207,30 @@ export async function processAnalysisJob(
     //    so that cancellation during the repo loop preserves existing metrics.
     if (!options.isBenchmark) {
       if (options.forceRecalculate) {
-        // Force: delete only IN-SCOPE CommitAnalysis, preserve out-of-scope
-        const scopeConfig: ScopeConfig = {
-          analysisPeriodMode: order.analysisPeriodMode,
-          analysisYears: order.analysisYears,
-          analysisStartDate: order.analysisStartDate,
-          analysisEndDate: order.analysisEndDate,
-          analysisCommitLimit: order.analysisCommitLimit,
-        };
-        const inScopeShas = await getInScopeShas(order.id, scopeConfig);
-        if (inScopeShas.size > 0) {
+        if (hasSelectedCommitFilter) {
           const deletedCommits = await prisma.commitAnalysis.deleteMany({
-            where: { orderId: order.id, jobId: null, commitHash: { in: [...inScopeShas] } },
+            where: { orderId: order.id, jobId: null, commitHash: { in: selectedCommitHashes } },
           });
-          log.info({ deletedCommits: deletedCommits.count }, 'Force recalculate — cleared in-scope commits');
+          log.info({
+            deletedCommits: deletedCommits.count,
+            selectedCommitCount: selectedCommitHashes.length,
+          }, 'Force recalculate — cleared selected commits');
+        } else {
+          // Force: delete only IN-SCOPE CommitAnalysis, preserve out-of-scope
+          const scopeConfig: ScopeConfig = {
+            analysisPeriodMode: order.analysisPeriodMode,
+            analysisYears: order.analysisYears,
+            analysisStartDate: order.analysisStartDate,
+            analysisEndDate: order.analysisEndDate,
+            analysisCommitLimit: order.analysisCommitLimit,
+          };
+          const inScopeShas = await getInScopeShas(order.id, scopeConfig);
+          if (inScopeShas.size > 0) {
+            const deletedCommits = await prisma.commitAnalysis.deleteMany({
+              where: { orderId: order.id, jobId: null, commitHash: { in: [...inScopeShas] } },
+            });
+            log.info({ deletedCommits: deletedCommits.count }, 'Force recalculate — cleared in-scope commits');
+          }
         }
       }
     }
@@ -216,6 +248,7 @@ export async function processAnalysisJob(
       until: until ?? 'none',
       maxCount: maxCount ?? 'none',
       excludedEmails,
+      selectedCommitCount: hasSelectedCommitFilter ? selectedCommitShaSet.size : undefined,
       repos: repos.map(r => ({ fullName: r.fullName, language: r.language, isPrivate: r.isPrivate })),
     }, 'Analysis config');
 
@@ -317,6 +350,18 @@ export async function processAnalysisJob(
         commits = commits.filter(c => baseHashSet.has(c.sha));
         if (before !== commits.length) {
           rlog.info({ extracted: before, baseSet: baseHashSet.size, pinned: commits.length }, 'Pinned to base analysis commit set');
+        }
+      }
+
+      if (hasSelectedCommitFilter) {
+        const beforeSelectedFilter = commits.length;
+        commits = commits.filter((commit) => selectedCommitShaSet.has(commit.sha));
+        if (beforeSelectedFilter !== commits.length) {
+          rlog.info({
+            selectedCommitCount: selectedCommitShaSet.size,
+            before: beforeSelectedFilter,
+            after: commits.length,
+          }, 'Applied selected commit filter');
         }
       }
 

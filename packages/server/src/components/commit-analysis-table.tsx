@@ -14,6 +14,7 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -38,6 +39,7 @@ import {
   ArrowUpDown,
   CalendarDays,
   Check,
+  RefreshCw,
   X,
 } from 'lucide-react';
 
@@ -78,6 +80,8 @@ interface CommitAnalysisTableProps {
   authorEmail?: string;
   commitDistribution?: Record<string, CommitDistributionEntry[]>;
   highlightedCommit?: string | null;
+  onRecalculateSelected?: (commitHashes: string[]) => Promise<void> | void;
+  isRecalculatePending?: boolean;
 }
 
 type CommitSortField =
@@ -109,7 +113,14 @@ const complexityColors: Record<string, string> = {
   expert: 'text-red-600',
 };
 
-export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, highlightedCommit }: CommitAnalysisTableProps) {
+export function CommitAnalysisTable({
+  orderId,
+  authorEmail,
+  commitDistribution,
+  highlightedCommit,
+  onRecalculateSelected,
+  isRecalculatePending = false,
+}: CommitAnalysisTableProps) {
   const t = useTranslations('orders.commitsTab');
   const locale = useLocale();
   const { data: session } = useSession();
@@ -140,6 +151,9 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const [selectedCommitHashes, setSelectedCommitHashes] = useState<Set<string>>(new Set());
+  const [recalculateError, setRecalculateError] = useState<string | null>(null);
+  const [isRecalculateRunning, setIsRecalculateRunning] = useState(false);
 
   const toggleRow = useCallback((id: string) => {
     setExpandedRows(prev => {
@@ -307,6 +321,56 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
     if (!commitDistribution) return new Map<string, CommitDistributionEntry[]>();
     return new Map(Object.entries(commitDistribution));
   }, [commitDistribution]);
+  const selectionEnabled = Boolean(onRecalculateSelected);
+  const currentPageCommitHashes = useMemo(() => commits.map((commit) => commit.commitHash), [commits]);
+  const selectedCount = selectedCommitHashes.size;
+  const selectedOnPageCount = useMemo(
+    () => currentPageCommitHashes.reduce((acc, sha) => acc + (selectedCommitHashes.has(sha) ? 1 : 0), 0),
+    [currentPageCommitHashes, selectedCommitHashes],
+  );
+  const allOnPageSelected = currentPageCommitHashes.length > 0 && selectedOnPageCount === currentPageCommitHashes.length;
+  const someOnPageSelected = selectedOnPageCount > 0 && !allOnPageSelected;
+  const recalculatePending = isRecalculatePending || isRecalculateRunning;
+  const tableColumnCount = selectionEnabled ? 11 : 10;
+
+  const toggleCommitSelection = useCallback((commitHash: string, checked: boolean) => {
+    setSelectedCommitHashes((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(commitHash);
+      else next.delete(commitHash);
+      return next;
+    });
+  }, []);
+
+  const toggleSelectCurrentPage = useCallback((checked: boolean) => {
+    setSelectedCommitHashes((prev) => {
+      const next = new Set(prev);
+      for (const sha of currentPageCommitHashes) {
+        if (checked) next.add(sha);
+        else next.delete(sha);
+      }
+      return next;
+    });
+  }, [currentPageCommitHashes]);
+
+  const clearSelection = useCallback(() => {
+    setSelectedCommitHashes(new Set());
+  }, []);
+
+  const handleRecalculateSelected = useCallback(async () => {
+    if (!onRecalculateSelected || selectedCommitHashes.size === 0 || recalculatePending) return;
+
+    setRecalculateError(null);
+    setIsRecalculateRunning(true);
+    try {
+      await onRecalculateSelected([...selectedCommitHashes]);
+      setSelectedCommitHashes(new Set());
+    } catch (err) {
+      setRecalculateError(err instanceof Error ? err.message : t('recalculateFailed'));
+    } finally {
+      setIsRecalculateRunning(false);
+    }
+  }, [onRecalculateSelected, recalculatePending, selectedCommitHashes, t]);
 
   const fetchCommits = useCallback(async () => {
     setLoading(true);
@@ -538,6 +602,43 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
         </CardContent>
       </Card>
 
+      {selectionEnabled && (
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge variant={selectedCount > 0 ? 'default' : 'secondary'}>
+                {t('selectedCount', { count: selectedCount })}
+              </Badge>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={clearSelection}
+                disabled={selectedCount === 0 || recalculatePending}
+              >
+                {t('clearSelection')}
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleRecalculateSelected}
+                disabled={selectedCount === 0 || recalculatePending}
+              >
+                {recalculatePending ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                )}
+                {recalculatePending ? t('recalculateStarting') : t('recalculateSelected')}
+              </Button>
+            </div>
+            {recalculateError && (
+              <p className="mt-2 text-sm text-destructive">{recalculateError}</p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
       {/* Commits Table */}
       <Card>
         <CardContent className="p-0">
@@ -556,6 +657,18 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                 <table className="w-full">
                   <thead className="bg-muted/50 border-b">
                     <tr>
+                      {selectionEnabled && (
+                        <th className="w-10 px-2">
+                          <div className="flex items-center justify-center">
+                            <Checkbox
+                              checked={allOnPageSelected ? true : (someOnPageSelected ? 'indeterminate' : false)}
+                              onCheckedChange={(checked) => toggleSelectCurrentPage(checked === true)}
+                              aria-label={t('selectPage')}
+                              disabled={recalculatePending}
+                            />
+                          </div>
+                        </th>
+                      )}
                       <th className="w-8 px-2"></th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-muted-foreground uppercase tracking-wider">
                         <button
@@ -661,6 +774,18 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                           } : undefined}
                           onClick={() => toggleRow(commit.id)}
                         >
+                          {selectionEnabled && (
+                            <td className="px-2 py-3" onClick={(e) => e.stopPropagation()}>
+                              <div className="flex items-center justify-center">
+                                <Checkbox
+                                  checked={selectedCommitHashes.has(commit.commitHash)}
+                                  onCheckedChange={(checked) => toggleCommitSelection(commit.commitHash, checked === true)}
+                                  aria-label={t('selectCommit', { hash: commit.commitHash.slice(0, 7) })}
+                                  disabled={recalculatePending}
+                                />
+                              </div>
+                            </td>
+                          )}
                           <td className="px-2 py-3">
                             <Button
                               variant="ghost"
@@ -802,7 +927,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
                         {/* Expanded Details Row */}
                         {expandedRows.has(commit.id) && (
                           <tr className="bg-muted/20">
-                            <td colSpan={10} className="px-4 py-4">
+                            <td colSpan={tableColumnCount} className="px-4 py-4">
                               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                 {/* Commit Details */}
                                 <div className="space-y-3">
@@ -846,7 +971,7 @@ export function CommitAnalysisTable({ orderId, authorEmail, commitDistribution, 
 
                           return (
                             <tr className="bg-muted/30">
-                              <td colSpan={10} className="px-8 py-3">
+                              <td colSpan={tableColumnCount} className="px-8 py-3">
                                 <div className="space-y-2">
                                   <div className="flex items-center gap-2 text-sm">
                                     <CalendarDays className="h-4 w-4 text-muted-foreground" />

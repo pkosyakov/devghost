@@ -9,6 +9,7 @@ import { getLlmConfig, getConcurrencyConfig } from '@/lib/llm-config';
 import { appendJobEvent } from '@/lib/services/job-event-service';
 import { resolveEffectiveContext, configFromSnapshot } from '@/lib/services/model-context';
 import { buildAnalysisJobLlmProfileFromSnapshot, withSplitModelSnapshot } from '@/lib/services/job-llm-profile';
+import { buildScopeWhereClause, type ScopeConfig } from '@/lib/services/scope-filter';
 import { z } from 'zod';
 
 type CacheMode = 'any' | 'model' | 'off';
@@ -16,11 +17,24 @@ type CacheMode = 'any' | 'model' | 'off';
 const rerunBodySchema = z.object({
   cacheMode: z.enum(['any', 'model', 'off']).optional(),
   forceRecalculate: z.boolean().optional(),
+  selectedCommitHashes: z.array(z.string().trim().regex(/^[a-fA-F0-9]{7,64}$/, 'Invalid commit hash')).min(1).max(5000).optional(),
 });
 
 function normalizeCacheMode(value: string | null | undefined): CacheMode {
   if (value === 'any' || value === 'off') return value;
   return 'model';
+}
+
+function normalizeSelectedCommitHashes(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const unique = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const sha = item.trim();
+    if (!sha) continue;
+    unique.add(sha);
+  }
+  return [...unique];
 }
 
 function sanitizeSnapshot(snapshot: unknown): Prisma.InputJsonValue | null {
@@ -79,8 +93,40 @@ export async function POST(
     take: 10,
     select: { cacheMode: true, llmConfigSnapshot: true },
   });
-  const cacheMode = normalizeCacheMode(body.cacheMode ?? recentJobs.find(j => !!j.cacheMode)?.cacheMode);
-  const forceRecalculate = body.forceRecalculate === true;
+  const inheritedCacheMode = normalizeCacheMode(body.cacheMode ?? recentJobs.find(j => !!j.cacheMode)?.cacheMode);
+  const requestedSelectedCommitHashes = normalizeSelectedCommitHashes(body.selectedCommitHashes);
+  const hasSelectedCommitFilter = requestedSelectedCommitHashes.length > 0;
+
+  if (hasSelectedCommitFilter && pipelineMode === 'modal') {
+    return apiError('Selected commit recalculation is not supported in modal mode yet', 400);
+  }
+
+  let selectedCommitHashes: string[] = [];
+  if (hasSelectedCommitFilter) {
+    const scopeConfig: ScopeConfig = {
+      analysisPeriodMode: order.analysisPeriodMode,
+      analysisYears: (order.analysisYears as number[] | null) ?? [],
+      analysisStartDate: order.analysisStartDate,
+      analysisEndDate: order.analysisEndDate,
+      analysisCommitLimit: order.analysisCommitLimit,
+    };
+    const scopeWhere = buildScopeWhereClause(order.id, scopeConfig);
+    const rows = await prisma.commitAnalysis.findMany({
+      where: {
+        ...scopeWhere,
+        commitHash: { in: requestedSelectedCommitHashes },
+      },
+      select: { commitHash: true },
+    });
+    const validSet = new Set(rows.map((row) => row.commitHash));
+    if (validSet.size !== requestedSelectedCommitHashes.length) {
+      return apiError('Some selected commits are outside the current order scope', 400);
+    }
+    selectedCommitHashes = requestedSelectedCommitHashes.filter((sha) => validSet.has(sha));
+  }
+
+  const forceRecalculate = hasSelectedCommitFilter || body.forceRecalculate === true;
+  const cacheMode = hasSelectedCommitFilter ? 'off' : inheritedCacheMode;
 
   let snapshotConfig = sanitizeSnapshot(
     recentJobs.find(j => j.llmConfigSnapshot != null)?.llmConfigSnapshot,
@@ -190,6 +236,7 @@ export async function POST(
       skipBilling: true,
       forceRecalculate,
       resumeFromExisting: true,
+      selectedCommitCount: selectedCommitHashes.length || undefined,
     },
   });
   await appendJobEvent({
@@ -205,7 +252,13 @@ export async function POST(
     action: 'admin.order.rerun',
     targetType: 'Order',
     targetId: id,
-    details: { jobId: job.id, cacheMode, forceRecalculate, resumeFromExisting: true },
+    details: {
+      jobId: job.id,
+      cacheMode,
+      forceRecalculate,
+      resumeFromExisting: true,
+      selectedCommitCount: selectedCommitHashes.length || undefined,
+    },
   });
 
   if (pipelineMode === 'modal') {
@@ -257,6 +310,7 @@ export async function POST(
       cacheMode,
       forceRecalculate,
       skipBillingOverride: true,
+      ...(hasSelectedCommitFilter ? { selectedCommitHashes } : {}),
       ...(effectiveContextLength != null && { contextLength: effectiveContextLength }),
     }).catch((err) => {
       analysisLogger.error({ err, jobId: job.id }, 'Admin rerun failed');
