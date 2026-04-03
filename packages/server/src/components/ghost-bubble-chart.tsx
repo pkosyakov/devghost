@@ -398,7 +398,7 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
           <ReferenceLine y={100} stroke="#666" strokeDasharray="5 5" label="Ghost Norm" />
           <ReferenceLine y={80} stroke="#eab308" strokeDasharray="3 3" strokeOpacity={0.5} />
           <Tooltip
-            allowEscapeViewBox={{ x: false, y: true }}
+            allowEscapeViewBox={{ x: true, y: true }}
             content={({ payload, coordinate }) => {
               if (!payload?.length || !coordinate) return null;
               const d = payload[0]!.payload as ChartPoint;
