@@ -551,7 +551,8 @@
       "fteCalculating": "Расчёт...",
       "fteRecalculated": "FTE метрики рассчитаны",
       "fteRecalcFailed": "Ошибка расчёта FTE",
-      "fteNotAvailableTooltip": "FTE метрики не рассчитаны для этого заказа"
+      "fteNotAvailableTooltip": "FTE метрики не рассчитаны для этого заказа",
+      "fteNotAvailableSubRange": "FTE режим недоступен при выбранном поддиапазоне дат"
     },
     "clientProgress": {
       "repoConnecting": "Подключение к репозиторию {repo}",

@@ -551,7 +551,8 @@
       "fteCalculating": "Calculating...",
       "fteRecalculated": "FTE metrics calculated",
       "fteRecalcFailed": "FTE calculation failed",
-      "fteNotAvailableTooltip": "FTE metrics not calculated for this order"
+      "fteNotAvailableTooltip": "FTE metrics not calculated for this order",
+      "fteNotAvailableSubRange": "FTE mode is not available when a date sub-range is selected"
     },
     "clientProgress": {
       "repoConnecting": "Connecting to repository {repo}",

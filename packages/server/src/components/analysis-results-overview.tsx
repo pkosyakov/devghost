@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from '@/i18n/navigation';
 import { useTranslations, useLocale } from 'next-intl';
 import { useQuery } from '@tanstack/react-query';
@@ -33,6 +33,8 @@ interface AnalysisResultsOverviewProps {
   shareUpdating?: boolean;
   highlightedEmail: string | null;
   demoMode?: boolean;
+  /** Called when the date-range slider moves to/from a sub-range (true = sub-range active). */
+  onSubRangeChange?: (isSubRange: boolean) => void;
 }
 
 function median(values: number[]): number | null {
@@ -129,6 +131,7 @@ export function AnalysisResultsOverview({
   shareUpdating,
   highlightedEmail,
   demoMode,
+  onSubRangeChange,
 }: AnalysisResultsOverviewProps) {
   const t = useTranslations('orders');
   const locale = useLocale();
@@ -201,6 +204,17 @@ export function AnalysisResultsOverview({
   const startIdx = committedRange ? Math.min(committedRange[0], maxIdx) : 0;
   const endIdx = committedRange ? Math.min(committedRange[1], maxIdx) : maxIdx;
   const isFullRange = startIdx === 0 && endIdx === maxIdx;
+
+  // Notify parent when sub-range state changes
+  const prevIsFullRangeRef = useRef(true);
+  useEffect(() => {
+    const isSubRange = hasDateFilter && !isFullRange;
+    const wasSubRange = !prevIsFullRangeRef.current;
+    if (isSubRange !== wasSubRange) {
+      prevIsFullRangeRef.current = !isSubRange;
+      onSubRangeChange?.(isSubRange);
+    }
+  }, [hasDateFilter, isFullRange, onSubRangeChange]);
 
   // ---- Filtered metrics (applied to both charts and table) ----
   const filteredMetrics = useMemo(() => {

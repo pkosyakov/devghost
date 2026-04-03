@@ -319,6 +319,8 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   const [highlightedEmail, setHighlightedEmail] = useState<string>();
   const [period, setPeriod] = useState<GhostEligiblePeriod>('ALL_TIME');
   const [fteMode, setFteMode] = useState(true);
+  const [dateSubRangeActive, setDateSubRangeActive] = useState(false);
+  useEffect(() => { setDateSubRangeActive(false); }, [id]);
   const [demoMode, setDemoMode] = useState(false);
   const isAdmin = session?.user?.role === 'ADMIN';
 
@@ -1026,6 +1028,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
 
   const fteReady = metrics.length > 0 && metrics.every((m: GhostMetric) => (m.fteWorkDays ?? 0) > 0);
 
+  // FTE mode is not compatible with date sub-range (timeline rows are spread-based only)
+  const fteAvailable = fteReady && !dateSubRangeActive;
+  const handleSubRangeChange = useCallback((isSubRange: boolean) => {
+    setDateSubRangeActive(isSubRange);
+    if (isSubRange) setFteMode(false);
+  }, []);
+
   const fteRecalcMutation = useMutation({
     mutationFn: async () => {
       const res = await fetch(`/api/orders/${id}/recalculate-fte`, { method: 'POST' });
@@ -1126,7 +1135,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   // Ghost norm for orchestrator-level KPIs (fixed baseline).
   // Interactive norm selection lives inside AnalysisResultsOverview.
   const effectiveGhostNorm = GHOST_NORM;
-  const sourceMetrics = (fteMode && fteReady) ? applyFteView(metrics) : metrics;
+  const sourceMetrics = (fteMode && fteAvailable) ? applyFteView(metrics) : metrics;
   const displayMetrics: GhostMetric[] = sourceMetrics.map((metric: GhostMetric) => {
     if (!metric.hasEnoughData || metric.actualWorkDays <= 0) {
       return metric;
@@ -1163,8 +1172,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
   // Demo mode: mask developer names/emails and order name
   const finalMetrics = demoMode ? maskMetrics(displayMetrics) : displayMetrics;
   const finalOrderName = demoMode ? maskText(order.name) : order.name;
-  const overviewMetrics = (fteMode && fteReady) ? applyFteView(metrics) : metrics;
-  const finalOverviewMetrics = demoMode ? maskMetrics(overviewMetrics) : overviewMetrics;
+  const finalOverviewMetrics = demoMode ? maskMetrics(sourceMetrics) : sourceMetrics;
 
   return (
     <div className="space-y-6 p-6">
@@ -1905,11 +1913,13 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
                   className={cn(
                     'px-3 py-1 rounded-sm transition-colors',
                     fteMode ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground',
-                    !fteReady && 'opacity-50 cursor-not-allowed',
+                    !fteAvailable && 'opacity-50 cursor-not-allowed',
                   )}
-                  onClick={() => fteReady && setFteMode(true)}
-                  disabled={!fteReady}
-                  title={!fteReady ? t('detail.fteNotAvailableTooltip') : undefined}
+                  onClick={() => fteAvailable && setFteMode(true)}
+                  disabled={!fteAvailable}
+                  title={!fteAvailable
+                    ? (dateSubRangeActive ? t('detail.fteNotAvailableSubRange') : t('detail.fteNotAvailableTooltip'))
+                    : undefined}
                 >
                   {t('detail.fteToggleFte')}
                 </button>
@@ -1945,6 +1955,7 @@ export default function OrderPage({ params }: { params: Promise<{ id: string }> 
             shareUpdating={shareMutation.isPending}
             highlightedEmail={highlightedEmail ?? null}
             demoMode={demoMode}
+            onSubRangeChange={handleSubRangeChange}
           />
 
           {!demoMode && <AnalysisTechnicalPanel
