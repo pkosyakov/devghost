@@ -15,18 +15,21 @@ interface GhostBubbleChartProps {
 
 type XAxisMode = 'workDays' | 'effort';
 
+type LabelPos = 'above' | 'below' | 'right' | 'left';
+
 interface ChartPoint {
   name: string; email: string;
   x: number; y: number; z: number; r: number; fill: string;
   realDays: number; realEffort: number; realGhost: number;
   labelHidden?: boolean;
+  labelPos?: LabelPos;
 }
 
 const CHAR_WIDTH = 5.5; // approx width per char at fontSize 10
 const LABEL_HEIGHT = 12;
 const LABEL_GAP = 4;
 
-/** Greedy label collision detection — hides overlapping labels (lower priority = hidden).
+/** Greedy label placement — tries above, below, right, left before hiding.
  *  Priority: larger bubbles keep their labels. */
 function markLabelCollisions(
   points: ChartPoint[],
@@ -39,9 +42,11 @@ function markLabelCollisions(
   const xScale = (v: number) => plotLeft + ((v - xDomain[0]) / (xDomain[1] - xDomain[0])) * plotWidth;
   const yScale = (v: number) => plotTop + ((yDomain[1] - v) / (yDomain[1] - yDomain[0])) * plotHeight;
 
-  // Compute label bounding boxes
-  interface LabelBox { idx: number; x1: number; y1: number; x2: number; y2: number }
-  const boxes: LabelBox[] = [];
+  interface LabelBox { x1: number; y1: number; x2: number; y2: number }
+  const placed: LabelBox[] = [];
+
+  const collides = (box: LabelBox) =>
+    placed.some(p => box.x1 < p.x2 && box.x2 > p.x1 && box.y1 < p.y2 && box.y2 > p.y1);
 
   // Sort by bubble size DESC (priority)
   const sorted = points.map((p, i) => ({ p, i })).sort((a, b) => b.p.r - a.p.r);
@@ -50,25 +55,23 @@ function markLabelCollisions(
     const cx = xScale(p.x);
     const cy = yScale(p.y);
     const labelW = p.name.length * CHAR_WIDTH;
-    const labelX = cx - labelW / 2; // centered above bubble
-    const labelY = cy - p.r - LABEL_GAP - LABEL_HEIGHT;
 
-    const box: LabelBox = { idx: i, x1: labelX, y1: labelY, x2: labelX + labelW, y2: labelY + LABEL_HEIGHT };
+    // Candidate positions: above, below, right, left
+    const candidates: { pos: LabelPos; box: LabelBox }[] = [
+      { pos: 'above', box: { x1: cx - labelW / 2, y1: cy - p.r - LABEL_GAP - LABEL_HEIGHT, x2: cx + labelW / 2, y2: cy - p.r - LABEL_GAP } },
+      { pos: 'below', box: { x1: cx - labelW / 2, y1: cy + p.r + LABEL_GAP, x2: cx + labelW / 2, y2: cy + p.r + LABEL_GAP + LABEL_HEIGHT } },
+      { pos: 'right', box: { x1: cx + p.r + LABEL_GAP, y1: cy - LABEL_HEIGHT / 2, x2: cx + p.r + LABEL_GAP + labelW, y2: cy + LABEL_HEIGHT / 2 } },
+      { pos: 'left',  box: { x1: cx - p.r - LABEL_GAP - labelW, y1: cy - LABEL_HEIGHT / 2, x2: cx - p.r - LABEL_GAP, y2: cy + LABEL_HEIGHT / 2 } },
+    ];
 
-    // Check overlap with already-placed boxes
-    let overlaps = false;
-    for (const placed of boxes) {
-      if (box.x1 < placed.x2 && box.x2 > placed.x1 && box.y1 < placed.y2 && box.y2 > placed.y1) {
-        overlaps = true;
-        break;
-      }
-    }
-
-    if (overlaps) {
-      points[i].labelHidden = true;
-    } else {
+    const fit = candidates.find(c => !collides(c.box));
+    if (fit) {
       points[i].labelHidden = false;
-      boxes.push(box);
+      points[i].labelPos = fit.pos;
+      placed.push(fit.box);
+    } else {
+      points[i].labelHidden = true;
+      points[i].labelPos = 'above';
     }
   }
 }
@@ -255,19 +258,27 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
             {payload.name}
           </text>
         )}
-        {labels && !isHovered && !payload.labelHidden && (
-          <text
-            x={cx}
-            y={cy - radius - 4}
-            textAnchor="middle"
-            fontSize={10}
-            fill={opts.labelColor}
-            fillOpacity={isDimmed ? 0.3 : 0.8}
-            pointerEvents="none"
-          >
-            {payload.name}
-          </text>
-        )}
+        {labels && !isHovered && !payload.labelHidden && (() => {
+          const pos: LabelPos = payload.labelPos ?? 'above';
+          const lx = pos === 'above' || pos === 'below' ? cx
+            : pos === 'right' ? cx + radius + 4 : cx - radius - 4;
+          const ly = pos === 'above' ? cy - radius - 4
+            : pos === 'below' ? cy + radius + LABEL_HEIGHT
+            : cy + LABEL_HEIGHT / 2 - 2;
+          const anchor = pos === 'right' ? 'start' : pos === 'left' ? 'end' : 'middle';
+          return (
+            <text
+              x={lx} y={ly}
+              textAnchor={anchor}
+              fontSize={10}
+              fill={opts.labelColor}
+              fillOpacity={isDimmed ? 0.3 : 0.8}
+              pointerEvents="none"
+            >
+              {payload.name}
+            </text>
+          );
+        })()}
       </g>
     );
   }, [setHoveredEmailCb]);
@@ -393,9 +404,10 @@ export function GhostBubbleChart({ metrics, onBubbleClick }: GhostBubbleChartPro
               const d = payload[0]!.payload as ChartPoint;
               const tipWidth = 180;
               const cx = coordinate.x ?? 0;
-              const rechartsOffset = 10; // Recharts default tooltip offset from cursor
-              const overflow = cx + rechartsOffset + tipWidth - containerWidth;
-              const offsetX = overflow > 0 ? -overflow - 8 : 0;
+              const rechartsOffset = 10;
+              const wouldOverflow = cx + rechartsOffset + tipWidth > containerWidth;
+              // Flip tooltip to the left side of cursor when it would overflow right edge
+              const offsetX = wouldOverflow ? -(tipWidth + 2 * rechartsOffset) : 0;
               return (
                 <div
                   className="bg-white p-3 border rounded shadow text-sm"
