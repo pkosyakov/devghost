@@ -61,6 +61,7 @@ from db import (
     update_llm_usage, account_cached_batch, delete_existing_analyses, delete_analyses_since,
     delete_benchmark_analyses,
     append_job_event, clear_force_recalculate,
+    patch_runtime_state, patch_heartbeat_state,
 )
 from attribution import resolve_row_llm_model
 from git_ops import clone_or_update, extract_commits, get_repo_size_kb
@@ -68,6 +69,94 @@ from rate_limiter import RateLimiter
 
 
 HEARTBEAT_INTERVAL_S = 60
+HEARTBEAT_WARN_AFTER_S = 120
+HEARTBEAT_STALE_AFTER_S = 600
+
+
+def validate_heartbeat_contract(
+    interval: int | float,
+    warn_after: int | float,
+    stale_after: int | float,
+) -> None:
+    """Validate heartbeat timing contract. Raises ValueError on invalid config."""
+    if interval <= 0:
+        raise ValueError(f"HEARTBEAT_INTERVAL_S must be > 0, got {interval}")
+    if warn_after <= interval:
+        raise ValueError(
+            f"HEARTBEAT_WARN_AFTER_S ({warn_after}) must be > HEARTBEAT_INTERVAL_S ({interval})"
+        )
+    if stale_after <= warn_after:
+        raise ValueError(
+            f"HEARTBEAT_STALE_AFTER_S ({stale_after}) must be > HEARTBEAT_WARN_AFTER_S ({warn_after})"
+        )
+
+
+def heartbeat_contract_dict() -> dict:
+    """Return the current heartbeat contract as a serializable dict."""
+    return {
+        "intervalSec": HEARTBEAT_INTERVAL_S,
+        "warnAfterSec": HEARTBEAT_WARN_AFTER_S,
+        "staleAfterSec": HEARTBEAT_STALE_AFTER_S,
+    }
+
+
+# Validate at import time — fail fast on bad config
+validate_heartbeat_contract(HEARTBEAT_INTERVAL_S, HEARTBEAT_WARN_AFTER_S, HEARTBEAT_STALE_AFTER_S)
+
+
+def _utc_now_iso() -> str:
+    """Current UTC time as compact ISO string."""
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def build_stage_patch(
+    stage: str,
+    *,
+    repo: str | None = None,
+    attempt: int | None = None,
+) -> dict:
+    """Build a runtimeState patch for a stage transition.
+
+    Pure function — no DB or IO side effects.
+    """
+    patch: dict = {
+        "stage": stage,
+        "stageStartedAt": _utc_now_iso(),
+        "activeCommand": None,
+    }
+    if repo is not None:
+        patch["repo"] = repo
+    if attempt is not None:
+        patch["attempt"] = attempt
+    return patch
+
+
+def build_heartbeat_tick_patch(
+    loop_lag_ms: float = 0,
+) -> dict:
+    """Build a heartbeat sub-patch after a successful tick. Pure function."""
+    return {
+        "lastTickAt": _utc_now_iso(),
+        "lastWriteOk": True,
+        "consecutiveFailures": 0,
+        "lastError": None,
+        "lastLoopLagMs": round(loop_lag_ms, 1),
+    }
+
+
+def build_heartbeat_fail_patch(
+    error: str,
+    consecutive_failures: int = 1,
+) -> dict:
+    """Build a heartbeat sub-patch after a failed DB write. Pure function.
+
+    `consecutive_failures` is the total count including this failure.
+    """
+    return {
+        "lastWriteOk": False,
+        "consecutiveFailures": max(1, consecutive_failures),
+        "lastError": error[:300],
+    }
 
 
 class JobCancelled(Exception):
@@ -206,6 +295,9 @@ class HeartbeatThread(threading.Thread):
     Uses a persistent DB connection (created once in __init__) to avoid
     opening 60+ TCP+TLS connections over a 1-hour job. Reconnects on error.
     Connection is closed in stop().
+
+    Also maintains a compact heartbeat summary inside runtimeState.heartbeat
+    for post-mortem diagnosis.
     """
 
     def __init__(self, job_id: str, interval: int = HEARTBEAT_INTERVAL_S):
@@ -214,22 +306,28 @@ class HeartbeatThread(threading.Thread):
         self.interval = interval
         self._stop_event = threading.Event()
         self._conn = connect_db()  # Persistent connection for heartbeat
+        self._consecutive_failures = 0
 
     def run(self):
         while not self._stop_event.is_set():
+            tick_start = time.monotonic()
             self._stop_event.wait(self.interval)
             if self._stop_event.is_set():
                 break
+            loop_lag_ms = (time.monotonic() - tick_start - self.interval) * 1000
             try:
                 update_heartbeat(self._conn, self.job_id)
-            except Exception as err:
-                # Connection may be dead -- attempt reconnect
+                # Persist compact heartbeat evidence
                 try:
-                    self._conn.close()
+                    patch_heartbeat_state(
+                        self._conn,
+                        self.job_id,
+                        build_heartbeat_tick_patch(loop_lag_ms=max(0, loop_lag_ms)),
+                    )
                 except Exception:
-                    pass
-                try:
-                    self._conn = connect_db()
+                    pass  # Heartbeat timestamp already updated — evidence write is best-effort
+                if self._consecutive_failures > 0:
+                    # Recovered after prior failure(s)
                     append_job_event(
                         self._conn,
                         self.job_id,
@@ -237,10 +335,49 @@ class HeartbeatThread(threading.Thread):
                         level="warn",
                         phase="heartbeat",
                         code="HEARTBEAT_RECONNECTED",
-                        payload={"error": str(err)[:300]},
+                        payload={"previousFailures": self._consecutive_failures},
                     )
+                self._consecutive_failures = 0
+            except Exception as err:
+                self._consecutive_failures += 1
+                # Connection may be dead -- reconnect first so evidence writes
+                # have a chance of landing on a fresh connection.
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                try:
+                    self._conn = connect_db()
                 except Exception:
                     pass  # Next tick will retry reconnect
+                # Persist failure evidence on (possibly fresh) connection
+                try:
+                    patch_heartbeat_state(
+                        self._conn,
+                        self.job_id,
+                        build_heartbeat_fail_patch(
+                            str(err),
+                            consecutive_failures=self._consecutive_failures,
+                        ),
+                    )
+                except Exception:
+                    pass
+                # Emit structured event for failure
+                try:
+                    append_job_event(
+                        self._conn,
+                        self.job_id,
+                        "Heartbeat DB write failed",
+                        level="warn",
+                        phase="heartbeat",
+                        code="HEARTBEAT_DB_WRITE_FAIL",
+                        payload={
+                            "error": str(err)[:300],
+                            "consecutiveFailures": self._consecutive_failures,
+                        },
+                    )
+                except Exception:
+                    pass
 
     def stop(self):
         self._stop_event.set()
@@ -288,6 +425,20 @@ def run_analysis(job_id: str):
             "lockedBy": job.get("lockedBy"),
         },
     )
+
+    # Initialize runtimeState with worker_acquired stage + heartbeat contract
+    attempt_number = (job.get("retryCount") or job.get("retry_count") or 0) + 1
+    patch_runtime_state(conn, job_id, {
+        **build_stage_patch("worker_acquired", attempt=attempt_number),
+        "heartbeat": {
+            **heartbeat_contract_dict(),
+            "lastTickAt": None,
+            "lastWriteOk": True,
+            "consecutiveFailures": 0,
+            "lastError": None,
+            "lastLoopLagMs": 0,
+        },
+    })
 
     # Start background heartbeat thread (updates every 60s independently
     # of main processing loop -- prevents watchdog false positives on large repos)
@@ -465,6 +616,7 @@ def run_analysis(job_id: str):
             )
 
             # a. Clone/update
+            patch_runtime_state(conn, job_id, build_stage_patch("cloning", repo=repo_full_name))
             update_progress(conn, job_id, step="cloning",
                             repo_name=None if is_benchmark else repo_full_name)
             clone_started = time.time()
@@ -476,18 +628,13 @@ def run_analysis(job_id: str):
                 code="REPO_CLONE_START",
                 repo_name=repo_full_name,
             )
-            update_progress(conn, job_id, step="extracting")
-            extract_started = time.time()
-            append_job_event(
-                conn,
-                job_id,
-                "Extracting commits from repository",
-                phase="extract",
-                code="REPO_EXTRACT_START",
-                repo_name=repo_full_name,
-            )
 
             if is_last_n:
+                # LAST_N: clone+extract are interleaved inside the adaptive shallow
+                # helper — no distinct extraction phase. Stage stays "cloning" for
+                # the entire call; REPO_CLONE_DONE + REPO_EXTRACT_DONE events
+                # (emitted after the helper returns) provide per-phase timing.
+                extract_started = clone_started
                 repo_path, commits, adaptive_meta = _extract_last_n_commits_with_adaptive_shallow(
                     conn=conn,
                     job_id=job_id,
@@ -544,6 +691,18 @@ def run_analysis(job_id: str):
                         "durationSec": round(time.time() - clone_started, 2),
                         "cloneSizeKb": get_repo_size_kb(repo_path),
                     },
+                )
+
+                patch_runtime_state(conn, job_id, build_stage_patch("extracting", repo=repo_full_name))
+                update_progress(conn, job_id, step="extracting")
+                extract_started = time.time()
+                append_job_event(
+                    conn,
+                    job_id,
+                    "Extracting commits from repository",
+                    phase="extract",
+                    code="REPO_EXTRACT_START",
+                    repo_name=repo_full_name,
                 )
 
                 years = scope.get("years")
@@ -710,6 +869,7 @@ def run_analysis(job_id: str):
 
         if is_benchmark:
             # Benchmarks complete directly — no post-processing (metrics, DailyEffort)
+            patch_runtime_state(conn, job_id, build_stage_patch("completed"))
             set_job_status(conn, job_id, "COMPLETED", progress=100)
             append_job_event(
                 conn,
@@ -720,6 +880,7 @@ def run_analysis(job_id: str):
                 payload={"progress": 100, "totalAnalyzed": total_analyzed},
             )
         else:
+            patch_runtime_state(conn, job_id, build_stage_patch("llm_complete"))
             set_job_status(conn, job_id, "LLM_COMPLETE", progress=95)
             append_job_event(
                 conn,
@@ -738,6 +899,10 @@ def run_analysis(job_id: str):
 
     except JobCancelled:
         try:
+            patch_runtime_state(conn, job_id, build_stage_patch("cancelled"))
+        except Exception:
+            pass
+        try:
             set_job_status(conn, job_id, "CANCELLED")
         except Exception:
             pass
@@ -751,6 +916,11 @@ def run_analysis(job_id: str):
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         error_type = type(e).__name__
+
+        try:
+            patch_runtime_state(conn, job_id, build_stage_patch("failed"))
+        except Exception:
+            pass
 
         # Three-class failure taxonomy
         failure_class = classify_failure(error_msg, error_type)
@@ -1025,6 +1195,7 @@ def _process_repo_commits(
         return total_analyzed, total_cache_hits, total_commit_plan
 
     # Process via evaluate_chunk
+    patch_runtime_state(conn, job_id, build_stage_patch("analyzing", repo=repo_full_name))
     update_progress(conn, job_id, step="analyzing")
     llm_started = time.time()
     append_job_event(

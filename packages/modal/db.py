@@ -649,6 +649,46 @@ def set_job_llm_identity(
     conn.commit()
 
 
+def patch_runtime_state(conn, job_id: str, patch: dict):
+    """Merge a partial patch into AnalysisJob.runtimeState (JSONB).
+
+    Null-safe: initializes runtimeState to '{}' when currently NULL.
+    Only top-level keys in `patch` are written; unrelated fields are preserved.
+    Updates updatedAt.
+    """
+    patch_json = json.dumps(patch)
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE "AnalysisJob"
+            SET "runtimeState" = COALESCE("runtimeState", '{}'::jsonb) || %s::jsonb,
+                "updatedAt" = NOW()
+            WHERE id = %s
+        """, (patch_json, job_id))
+    conn.commit()
+
+
+def patch_heartbeat_state(conn, job_id: str, heartbeat_patch: dict):
+    """Merge a partial patch into runtimeState.heartbeat sub-key (JSONB).
+
+    Null-safe: initializes both runtimeState and runtimeState.heartbeat when NULL.
+    Only keys in `heartbeat_patch` are written; other heartbeat fields are preserved.
+    Updates updatedAt.
+    """
+    patch_json = json.dumps(heartbeat_patch)
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE "AnalysisJob"
+            SET "runtimeState" = jsonb_set(
+                    COALESCE("runtimeState", '{}'::jsonb),
+                    '{heartbeat}',
+                    COALESCE("runtimeState"->'heartbeat', '{}'::jsonb) || %s::jsonb
+                ),
+                "updatedAt" = NOW()
+            WHERE id = %s
+        """, (patch_json, job_id))
+    conn.commit()
+
+
 def set_job_error(conn, job_id: str, error_msg: str, fatal: bool = False,
                   skip_order_update: bool = False,
                   failure_class: str | None = None,
