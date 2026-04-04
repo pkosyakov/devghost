@@ -436,12 +436,14 @@ def call_ollama(system, prompt, schema=None, max_tokens=1024):
             'total_duration_ms': data.get('total_duration', 0) / 1e6,
             'prompt_eval_ms': data.get('prompt_eval_duration', 0) / 1e6,
             'eval_ms': data.get('eval_duration', 0) / 1e6,
+            'provider': 'ollama',
         }
         return parsed, meta
     except Exception as e:
         print(f"    ERROR: {e}")
         return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                      'total_duration_ms': 0, 'prompt_eval_ms': 0, 'eval_ms': 0}
+                      'total_duration_ms': 0, 'prompt_eval_ms': 0, 'eval_ms': 0,
+                      'provider': 'ollama', 'error': str(e)[:300]}
 
 
 def _extract_json(text):
@@ -486,7 +488,8 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
     if not OPENROUTER_API_KEY:
         print("    ERROR: OPENROUTER_API_KEY is empty", file=sys.stderr, flush=True)
         return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                      'total_duration_ms': 0, 'error': 'OPENROUTER_API_KEY is empty'}
+                      'total_duration_ms': 0, 'error': 'OPENROUTER_API_KEY is empty',
+                      'provider': 'unknown'}
 
     system_content = system
     if schema:
@@ -565,7 +568,8 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                     time.sleep(retry_sleep(attempt))
                     continue
                 return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                              'total_duration_ms': total_elapsed, 'error': last_error}
+                              'total_duration_ms': total_elapsed, 'error': last_error,
+                              'provider': 'unknown'}
 
             data = resp.json()
 
@@ -575,9 +579,10 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                 last_error = f'API error: {err_msg}'
                 print(f"    ERROR: OpenRouter {last_error}", file=sys.stderr, flush=True)
                 return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                              'total_duration_ms': total_elapsed, 'error': last_error}
+                              'total_duration_ms': total_elapsed, 'error': last_error,
+                              'provider': 'unknown'}
 
-            provider_name = data.get('provider', '?')
+            provider_name = data.get('provider', 'unknown')
             content = data['choices'][0]['message']['content']
             text = re.sub(r'<think>[\s\S]*?</think>', '', content).strip()
 
@@ -594,7 +599,8 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                         time.sleep(retry_sleep(attempt))
                         continue
                     return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                                  'total_duration_ms': total_elapsed, 'error': last_error}
+                                  'total_duration_ms': total_elapsed, 'error': last_error,
+                                  'provider': provider_name}
             else:
                 parsed = text
 
@@ -635,7 +641,8 @@ def call_openrouter(system, prompt, schema=None, max_tokens=1024):
                 continue
 
     return None, {'prompt_tokens': 0, 'completion_tokens': 0,
-                  'total_duration_ms': total_elapsed, 'error': last_error}
+                  'total_duration_ms': total_elapsed, 'error': last_error,
+                  'provider': 'unknown'}
 
 
 def call_openrouter_large(system, prompt, schema=None, max_tokens=1024):
@@ -645,15 +652,17 @@ def call_openrouter_large(system, prompt, schema=None, max_tokens=1024):
     Does NOT mutate any global state — builds its own API request payload
     with the large model name. Thread-safe and cache-correct.
 
+    Retry/backoff mirrors call_openrouter() for transient errors and invalid JSON.
+
     Returns (parsed_result, meta_dict) — same as call_openrouter().
     Returns (None, meta) if FD_LARGE_LLM_MODEL is not configured.
     """
     if not FD_LARGE_LLM_MODEL:
-        return None, {"error": "FD_LARGE_LLM_MODEL not configured"}
+        return None, {"error": "FD_LARGE_LLM_MODEL not configured", "provider": "unknown"}
 
     api_key = os.environ.get('OPENROUTER_API_KEY', '')
     if not api_key:
-        return None, {"error": "OPENROUTER_API_KEY not set"}
+        return None, {"error": "OPENROUTER_API_KEY not set", "provider": "unknown"}
 
     payload = {
         "model": FD_LARGE_LLM_MODEL,
@@ -676,45 +685,105 @@ def call_openrouter_large(system, prompt, schema=None, max_tokens=1024):
         "Content-Type": "application/json",
     }
 
-    connect_timeout = int(os.environ.get('OPENROUTER_CONNECT_TIMEOUT_SEC', '20'))
-    read_timeout = int(os.environ.get('OPENROUTER_READ_TIMEOUT_SEC', '120'))
+    connect_timeout = OPENROUTER_CONNECT_TIMEOUT_SEC
+    read_timeout = OPENROUTER_READ_TIMEOUT_SEC
+    max_retries = OPENROUTER_MAX_RETRIES
+    total_attempts = max_retries + 1
+    retriable_statuses = {408, 409, 425, 429, 500, 502, 503, 504}
+    last_error = None
+    total_elapsed = 0
 
-    start = time.time()
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=payload, headers=headers,
-            timeout=(connect_timeout, read_timeout),
-        )
-        elapsed_ms = (time.time() - start) * 1000
+    def retry_sleep(attempt_idx):
+        exp = OPENROUTER_RETRY_BACKOFF_BASE_SEC * (2 ** attempt_idx)
+        jitter = random.uniform(0, OPENROUTER_RETRY_BACKOFF_BASE_SEC)
+        return min(OPENROUTER_RETRY_BACKOFF_MAX_SEC, exp + jitter)
 
-        if resp.status_code != 200:
-            return None, {"error": f"HTTP {resp.status_code}", "elapsed_ms": elapsed_ms}
+    for attempt in range(total_attempts):
+        attempt_no = attempt + 1
+        start = time.time()
+        try:
+            resp = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload, headers=headers,
+                timeout=(connect_timeout, read_timeout),
+            )
+            elapsed_ms = (time.time() - start) * 1000
+            total_elapsed += elapsed_ms
 
-        rdata = resp.json()
-        if "error" in rdata:
-            return None, {"error": str(rdata["error"])[:300], "elapsed_ms": elapsed_ms}
+            if resp.status_code != 200:
+                err_body = resp.text[:500]
+                last_error = f"HTTP {resp.status_code}: {err_body}"
+                print(
+                    f"    ERROR: OpenRouter large {last_error} (attempt {attempt_no}/{total_attempts})",
+                    file=sys.stderr, flush=True,
+                )
+                if resp.status_code in retriable_statuses and attempt < max_retries:
+                    time.sleep(retry_sleep(attempt))
+                    continue
+                return None, {"error": last_error, "total_duration_ms": total_elapsed, "provider": "unknown"}
 
-        usage = rdata.get("usage", {})
-        content = rdata["choices"][0]["message"]["content"]
+            rdata = resp.json()
 
-        # Strip <think>...</think> blocks (reasoning models)
-        text = content.strip()
-        if "<think>" in text:
-            text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
+            if "error" in rdata:
+                err_msg = rdata['error'].get('message', str(rdata['error'])) if isinstance(rdata['error'], dict) else str(rdata['error'])
+                last_error = f"API error: {err_msg}"
+                print(f"    ERROR: OpenRouter large {last_error}", file=sys.stderr, flush=True)
+                return None, {"error": last_error[:300], "total_duration_ms": total_elapsed, "provider": "unknown"}
 
-        parsed = json.loads(text)
-        meta = {
-            "model": FD_LARGE_LLM_MODEL,
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
-            "total_duration_ms": elapsed_ms,
-        }
-        return parsed, meta
+            provider_name = rdata.get("provider", "unknown")
+            usage = rdata.get("usage", {})
+            content = rdata["choices"][0]["message"]["content"]
 
-    except Exception as e:
-        elapsed_ms = (time.time() - start) * 1000
-        return None, {"error": str(e)[:300], "elapsed_ms": elapsed_ms}
+            # Strip <think>...</think> blocks (reasoning models)
+            text = content.strip()
+            if "<think>" in text:
+                text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
+
+            parsed = _extract_json(text) if schema else text
+            if schema and parsed is None:
+                last_error = f"Invalid JSON from {provider_name}: {text[:200]}"
+                print(
+                    f"    WARN: large {last_error} (attempt {attempt_no}/{total_attempts})",
+                    file=sys.stderr, flush=True,
+                )
+                if attempt < max_retries:
+                    time.sleep(retry_sleep(attempt))
+                    continue
+                return None, {"error": last_error, "total_duration_ms": total_elapsed, "provider": provider_name}
+
+            meta = {
+                "model": FD_LARGE_LLM_MODEL,
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "completion_tokens": usage.get("completion_tokens", 0),
+                "total_duration_ms": total_elapsed,
+                "provider": provider_name,
+            }
+            return parsed, meta
+
+        except requests.exceptions.RequestException as e:
+            elapsed_ms = (time.time() - start) * 1000
+            total_elapsed += elapsed_ms
+            last_error = f"Network error: {e}"
+            print(
+                f"    ERROR: large {last_error} (attempt {attempt_no}/{total_attempts})",
+                file=sys.stderr, flush=True,
+            )
+            if attempt < max_retries:
+                time.sleep(retry_sleep(attempt))
+                continue
+        except Exception as e:
+            elapsed_ms = (time.time() - start) * 1000
+            total_elapsed += elapsed_ms
+            last_error = f"Unexpected error: {e}"
+            print(
+                f"    ERROR: large {last_error} (attempt {attempt_no}/{total_attempts})",
+                file=sys.stderr, flush=True,
+            )
+            if attempt < max_retries:
+                time.sleep(retry_sleep(attempt))
+                continue
+
+    return None, {"error": last_error, "total_duration_ms": total_elapsed, "provider": "unknown"}
 
 
 def call_llm(system, prompt, schema=None, max_tokens=1024):
@@ -724,6 +793,8 @@ def call_llm(system, prompt, schema=None, max_tokens=1024):
     if cached is not None:
         parsed, meta = cached
         meta['cache_hit'] = True
+        if not meta.get('provider'):
+            meta['provider'] = 'unknown_cache'
         return parsed, meta
 
     if LLM_PROVIDER == 'openrouter':
@@ -985,6 +1056,8 @@ def run_commit(repo_dir, lang, sha, msg, repo_slug=None):
                     if cached is not None:
                         cached_parsed, cached_meta = cached
                         cached_meta['cache_hit'] = True
+                        if not cached_meta.get('provider'):
+                            cached_meta['provider'] = 'unknown_cache'
                         fd_llm_calls.append({**cached_meta, 'step': 'fd_v2_large'})
                         return cached_parsed
                     parsed, meta = call_openrouter_large(system, prompt, schema, max_tokens)

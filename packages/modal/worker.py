@@ -1226,6 +1226,8 @@ def _process_repo_commits(
     )
 
     method_counts = {}
+    provider_counts: dict[str, int] = {}
+    provider_error_counts: dict[str, int] = {}
     error_samples = []
     saved_count = 0
     total_hours = 0.0
@@ -1302,12 +1304,17 @@ def _process_repo_commits(
                     "sha": result.get("sha"),
                     "error": str(result.get("error") or result.get("type") or "unknown")[:200],
                 })
-            # Track file-level LLM cache hits for diagnostics
+            # Track file-level LLM cache hits and provider counts for diagnostics
+            has_error = method == "error" or result.get("error")
             for lc in (result.get("llm_calls") or []):
                 if lc.get("cache_hit"):
                     method_counts["_file_cache_hit"] = method_counts.get("_file_cache_hit", 0) + 1
                 else:
                     method_counts["_file_cache_miss"] = method_counts.get("_file_cache_miss", 0) + 1
+                prov = str(lc.get("provider") or "unknown") if isinstance(lc, dict) else "unknown"
+                provider_counts[prov] = provider_counts.get(prov, 0) + 1
+                if has_error or lc.get("error"):
+                    provider_error_counts[prov] = provider_error_counts.get(prov, 0) + 1
 
         analyses = [
             map_to_commit_analysis(r, chunk_commits, order["id"], repo_full_name, current_llm_model)
@@ -1364,6 +1371,8 @@ def _process_repo_commits(
             "resultCount": saved_count,
             "durationSec": round(time.time() - llm_started, 2),
             "methodCounts": method_counts,
+            "providerCounts": provider_counts or None,
+            "providerErrorCounts": provider_error_counts or None,
             "errorCount": len(error_samples),
             "errorSamples": error_samples[:5],
             "chunkCount": total_chunks,
@@ -1541,6 +1550,19 @@ def _try_trigger_watchdog_post_processing(conn, job_id: str) -> None:
         )
 
 
+def _aggregate_provider_counts(llm_calls: list) -> dict | None:
+    """Count LLM calls per provider. Returns None if no calls."""
+    if not llm_calls:
+        return None
+    counts: dict[str, int] = {}
+    for call in llm_calls:
+        if not isinstance(call, dict):
+            continue
+        prov = str(call.get("provider") or "unknown")
+        counts[prov] = counts.get(prov, 0) + 1
+    return counts or None
+
+
 def _emit_commit_live_results(
     conn,
     job_id: str,
@@ -1585,6 +1607,12 @@ def _emit_commit_live_results(
             "subject": str(commit.get("message") or "")[:140] or None,
             "llmCallCount": len(llm_calls),
             "durationMs": round(duration_ms, 1) if duration_ms is not None else None,
+            # Per-commit provider aggregation
+            "llmProviderCounts": _aggregate_provider_counts(llm_calls),
+            "llmProviders": sorted(set(
+                str(c.get("provider") or "unknown")
+                for c in llm_calls if isinstance(c, dict)
+            )) or None,
             # Client event mapper fields:
             "authorEmail": commit.get("author_email"),
             "authorName": commit.get("author_name"),

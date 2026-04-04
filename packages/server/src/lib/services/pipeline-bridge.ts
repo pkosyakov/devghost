@@ -33,6 +33,9 @@ export interface PipelineCommitResult {
     completion_tokens?: number;
     total_duration_ms?: number;
     step?: string;
+    provider?: string;
+    cache_hit?: boolean;
+    error?: string;
     [key: string]: unknown;
   }>;
 }
